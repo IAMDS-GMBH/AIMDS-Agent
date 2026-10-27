@@ -34,6 +34,12 @@ from agent.model_metadata import estimate_request_tokens_rough
 logger = logging.getLogger(__name__)
 
 
+def _previous_turn_cut_off(messages: List[Dict[str, Any]]) -> bool:
+    """True when the history ends in tool results with no answer after them."""
+    tail = messages[-1] if messages else None
+    return isinstance(tail, dict) and tail.get("role") == "tool"
+
+
 @dataclass
 class TurnContext:
     """Values produced by the turn prologue and consumed by the turn loop."""
@@ -176,6 +182,19 @@ def build_turn_context(
 
     # Initialize conversation (copy to avoid mutating the caller's list).
     messages = list(conversation_history) if conversation_history else []
+
+    # AIS-736: a history that ends in tool results belongs to a turn that
+    # never finished (app restart, crash, interrupt). Close it with a short
+    # note so the model knows the work above was cut off instead of reading
+    # bare tool results followed by a new request.
+    if _previous_turn_cut_off(messages):
+        try:
+            from agent.i18n import t as _t
+
+            _note = _t("turn_end.cut_off_note")
+        except Exception:
+            _note = "My previous reply was cut off before it was finished."
+        messages.append({"role": "assistant", "content": _note})
 
     # Hydrate todo store from conversation history.
     if conversation_history and not agent._todo_store.has_items():
@@ -331,6 +350,7 @@ def build_turn_context(
                 if len(messages) >= _orig_len:
                     break  # Cannot compress further
                 conversation_history = None
+                agent._persist_compaction_rotation(messages)  # AIS-736
                 agent._empty_content_retries = 0
                 agent._thinking_prefill_retries = 0
                 agent._last_content_with_tools = None

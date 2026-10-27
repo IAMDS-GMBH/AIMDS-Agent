@@ -393,6 +393,7 @@ turn_end:
   report_yes: "Sim, reportar"
   report_no: "Não"
   report_sent: "Obrigado — o relatório foi enviado ao suporte."
+  cut_off_note: "A minha resposta anterior foi interrompida antes de terminar. Os passos acima são o que eu tinha concluído."
 
 suite_auth:
   # AIS-525: the Suite rejected the key (e.g. after a staging refresh).

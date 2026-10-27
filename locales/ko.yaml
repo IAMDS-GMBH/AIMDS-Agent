@@ -393,6 +393,7 @@ turn_end:
   report_yes: "예, 보고하기"
   report_no: "아니요"
   report_sent: "감사합니다 — 보고가 지원팀에 전송되었습니다."
+  cut_off_note: "이전 답변이 끝나기 전에 중단되었습니다. 위의 단계까지 완료했습니다."
 
 suite_auth:
   # AIS-525: the Suite rejected the key (e.g. after a staging refresh).

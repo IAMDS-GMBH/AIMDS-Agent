@@ -381,12 +381,13 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
 
     # Pass 1: drop stray tool messages that don't follow a known
     # assistant tool_call_id. Uses a rolling set of known ids refreshed
-    # on each assistant message.
+    # on each assistant message. Each kept message carries its original
+    # index so the persistence cursor can be re-anchored afterwards.
     known_tool_ids: set = set()
-    filtered: List[Dict] = []
-    for msg in messages:
+    filtered: List[tuple] = []
+    for orig_idx, msg in enumerate(messages):
         if not isinstance(msg, dict):
-            filtered.append(msg)
+            filtered.append((orig_idx, msg))
             continue
         role = msg.get("role")
         if role == "assistant":
@@ -395,11 +396,11 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
                 tc_id = tc.get("id") if isinstance(tc, dict) else None
                 if tc_id:
                     known_tool_ids.add(tc_id)
-            filtered.append(msg)
+            filtered.append((orig_idx, msg))
         elif role == "tool":
             tc_id = msg.get("tool_call_id")
             if tc_id and tc_id in known_tool_ids:
-                filtered.append(msg)
+                filtered.append((orig_idx, msg))
             else:
                 repairs += 1
         else:
@@ -408,20 +409,20 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
                 # tool messages without a fresh assistant tool_call
                 # are orphans.
                 known_tool_ids = set()
-            filtered.append(msg)
+            filtered.append((orig_idx, msg))
 
     # Pass 2: merge consecutive user messages. Preserves all user input
     # so nothing the user typed is lost.
-    merged: List[Dict] = []
-    for msg in filtered:
+    merged: List[tuple] = []
+    for orig_idx, msg in filtered:
         if (
             merged
             and isinstance(msg, dict)
             and msg.get("role") == "user"
-            and isinstance(merged[-1], dict)
-            and merged[-1].get("role") == "user"
+            and isinstance(merged[-1][1], dict)
+            and merged[-1][1].get("role") == "user"
         ):
-            prev = merged[-1]
+            prev = merged[-1][1]
             prev_content = prev.get("content", "")
             new_content = msg.get("content", "")
             # Only merge plain-text content; leave multimodal (list)
@@ -435,12 +436,24 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
                 )
                 repairs += 1
                 continue
-        merged.append(msg)
+        merged.append((orig_idx, msg))
 
     if repairs > 0:
+        kept = [orig_idx for orig_idx, _ in merged]
         # Rewrite in place so downstream paths (persistence, return
         # value, session DB flush) see the repaired sequence.
-        messages[:] = merged
+        messages[:] = [msg for _, msg in merged]
+        # The flush cursor counts list positions: removed messages that were
+        # already stored must shift it back, or the next flush skips as many
+        # new messages (AIS-736 — the assistant that issued a tool round was
+        # lost while its tool results were stored).
+        try:
+            agent._last_repair_kept_indices = kept
+            cursor = getattr(agent, "_last_flushed_db_idx", None)
+            if isinstance(cursor, int) and cursor > 0:
+                agent._last_flushed_db_idx = sum(1 for i in kept if i < cursor)
+        except Exception:
+            pass
 
     return repairs
 

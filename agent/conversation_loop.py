@@ -2346,6 +2346,7 @@ def run_conversation(
         # landed after an orphan tool result). Most providers return
         # empty content on malformed sequences, which would otherwise
         # retrigger the empty-retry loop indefinitely.
+        _history_len = len(conversation_history) if conversation_history else 0
         repaired_seq = agent._repair_message_sequence(messages)
         if repaired_seq > 0:
             request_logger.info(
@@ -2353,6 +2354,17 @@ def run_conversation(
                 repaired_seq,
                 agent.session_id or "-",
             )
+            # The repair removed messages in place. Re-anchor the history
+            # boundary the flush skips past; otherwise the first new
+            # message of this turn (often the assistant that issued the
+            # tool calls) is never stored and its tool results end up
+            # orphaned in state.db (AIS-736).
+            if _history_len:
+                _kept = getattr(agent, "_last_repair_kept_indices", None)
+                if isinstance(_kept, list):
+                    _new_len = sum(1 for _i in _kept if _i < _history_len)
+                    if _new_len != _history_len:
+                        conversation_history = messages[:_new_len]
 
         api_messages = []
         for idx, msg in enumerate(messages):
@@ -4003,6 +4015,7 @@ def run_conversation(
                         # Compression created a new session — clear history
                         # so the compressed messages land in the new session.
                         conversation_history = None
+                        agent._persist_compaction_rotation(messages)  # AIS-736
                         if len(messages) < original_len:
                             agent._buffer_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
                             _retry.restart_with_compressed_messages = True
@@ -4580,6 +4593,7 @@ def run_conversation(
                         # so _flush_messages_to_session_db writes compressed
                         # messages to the new session, not skipping them.
                         conversation_history = None
+                        agent._persist_compaction_rotation(messages)  # AIS-736
                         if len(messages) < original_len or old_ctx > _reduced_ctx:
                             agent._buffer_status(
                                 f"🗜️ Context reduced to {_reduced_ctx:,} tokens "
@@ -4754,6 +4768,7 @@ def run_conversation(
                     # so _flush_messages_to_session_db writes compressed
                     # messages to the new session, not skipping them.
                     conversation_history = None
+                    agent._persist_compaction_rotation(messages)  # AIS-736
 
                     if len(messages) < original_len:
                         agent._buffer_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
@@ -4913,6 +4928,7 @@ def run_conversation(
                     # so _flush_messages_to_session_db writes compressed
                     # messages to the new session, not skipping them.
                     conversation_history = None
+                    agent._persist_compaction_rotation(messages)  # AIS-736
 
                     if len(messages) < original_len or new_ctx and new_ctx < old_ctx:
                         if len(messages) < original_len:
@@ -6022,6 +6038,11 @@ def run_conversation(
                     _offer_guardrail_report(agent, decision, _stop_explanation)
                     break
 
+                # AIS-736: store the finished round now. A reload, app
+                # restart or crash later in the turn keeps this work instead
+                # of losing everything since the turn started.
+                agent._persist_tool_round(messages, conversation_history)
+
                 # Reset per-turn retry counters after successful tool
                 # execution so a single truncation doesn't poison the
                 # entire conversation.
@@ -6089,6 +6110,9 @@ def run_conversation(
                     # _flush_messages_to_session_db writes compressed messages
                     # to the new session (see preflight compression comment).
                     conversation_history = None
+                    # AIS-736: the continuation gets its transcript now, not
+                    # only when the turn ends.
+                    agent._persist_compaction_rotation(messages)
                 
                 # Save session log incrementally (so progress is visible even if interrupted)
                 agent._session_messages = messages

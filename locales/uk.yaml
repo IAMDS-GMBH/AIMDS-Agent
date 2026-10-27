@@ -393,6 +393,7 @@ turn_end:
   report_yes: "Так, повідомити"
   report_no: "Ні"
   report_sent: "Дякую — повідомлення надіслано в підтримку."
+  cut_off_note: "Мою попередню відповідь було перервано до завершення. Кроки вище — це те, що я встиг виконати."
 
 suite_auth:
   # AIS-525: the Suite rejected the key (e.g. after a staging refresh).

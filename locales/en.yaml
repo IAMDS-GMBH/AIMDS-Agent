@@ -405,6 +405,9 @@ turn_end:
   report_yes: "Yes, report it"
   report_no: "No"
   report_sent: "Thanks — the report has been sent to support."
+  # AIS-736: opens the next turn when the previous one ended without an
+  # answer (app restart, crash, interrupt) - keeps the history consistent.
+  cut_off_note: "My previous reply was cut off before it was finished. The steps above are what I had completed."
 
 suite_auth:
   # AIS-525: the Suite rejected the key (e.g. after a staging refresh).

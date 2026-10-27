@@ -2491,72 +2491,120 @@ class SessionDB:
         platform-specific flows like yuanbao's recall guard to redact a
         message by its platform-side identifier.
         """
-        # Serialize structured fields to JSON before entering the write txn
-        reasoning_details_json = (
-            json.dumps(reasoning_details)
-            if reasoning_details else None
+        row = self._message_insert_params(
+            session_id,
+            role=role,
+            content=content,
+            tool_name=tool_name,
+            tool_calls=tool_calls,
+            tool_call_id=tool_call_id,
+            token_count=token_count,
+            finish_reason=finish_reason,
+            reasoning=reasoning,
+            reasoning_content=reasoning_content,
+            reasoning_details=reasoning_details,
+            codex_reasoning_items=codex_reasoning_items,
+            codex_message_items=codex_message_items,
+            platform_message_id=platform_message_id,
+            observed=observed,
         )
-        codex_items_json = (
-            json.dumps(codex_reasoning_items)
-            if codex_reasoning_items else None
-        )
-        codex_message_items_json = (
-            json.dumps(codex_message_items)
-            if codex_message_items else None
-        )
-        tool_calls_json = json.dumps(tool_calls) if tool_calls else None
-        # Multimodal content (list of parts) must be JSON-encoded: sqlite3
-        # cannot bind list/dict parameters directly.
-        stored_content = self._encode_content(content)
 
-        # Pre-compute tool call count
+        def _do(conn):
+            return self._insert_message_rows(conn, session_id, [row])[0]
+
+        return self._execute_write(_do)
+
+    def append_messages(self, session_id: str, messages: List[Dict[str, Any]]) -> List[int]:
+        """Append several messages in ONE write transaction (AIS-736).
+
+        A tool round (the assistant message carrying ``tool_calls`` plus every
+        matching tool result) must land atomically: a restart between two
+        single-row commits used to leave tool results without the assistant
+        message that called them. Each dict takes the keyword arguments of
+        :meth:`append_message`. Returns the new row ids in order.
+        """
+        if not messages:
+            return []
+        rows = [self._message_insert_params(session_id, **msg) for msg in messages]
+
+        def _do(conn):
+            return self._insert_message_rows(conn, session_id, rows)
+
+        return self._execute_write(_do)
+
+    def _message_insert_params(
+        self,
+        session_id: str,
+        role: str,
+        content: Any = None,
+        tool_name: str = None,
+        tool_calls: Any = None,
+        tool_call_id: str = None,
+        token_count: int = None,
+        finish_reason: str = None,
+        reasoning: str = None,
+        reasoning_content: str = None,
+        reasoning_details: Any = None,
+        codex_reasoning_items: Any = None,
+        codex_message_items: Any = None,
+        platform_message_id: str = None,
+        observed: bool = False,
+    ) -> Dict[str, Any]:
+        """Serialize one message for INSERT outside the write transaction."""
         num_tool_calls = 0
         if tool_calls is not None:
             num_tool_calls = len(tool_calls) if isinstance(tool_calls, list) else 1
+        return {
+            "params": (
+                session_id,
+                role,
+                # Multimodal content (list of parts) must be JSON-encoded:
+                # sqlite3 cannot bind list/dict parameters directly.
+                self._encode_content(content),
+                tool_call_id,
+                json.dumps(tool_calls) if tool_calls else None,
+                tool_name,
+                None,  # timestamp — taken inside the transaction
+                token_count,
+                finish_reason,
+                reasoning,
+                reasoning_content,
+                json.dumps(reasoning_details) if reasoning_details else None,
+                json.dumps(codex_reasoning_items) if codex_reasoning_items else None,
+                json.dumps(codex_message_items) if codex_message_items else None,
+                platform_message_id,
+                1 if observed else 0,
+            ),
+            "num_tool_calls": num_tool_calls,
+        }
 
-        def _do(conn):
+    @staticmethod
+    def _insert_message_rows(conn, session_id: str, rows: List[Dict[str, Any]]) -> List[int]:
+        """INSERT prepared rows and bump the session counters once."""
+        ids: List[int] = []
+        now_ts = time.time()
+        total_tool_calls = 0
+        for row in rows:
+            params = list(row["params"])
+            params[6] = now_ts
             cursor = conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    session_id,
-                    role,
-                    stored_content,
-                    tool_call_id,
-                    tool_calls_json,
-                    tool_name,
-                    time.time(),
-                    token_count,
-                    finish_reason,
-                    reasoning,
-                    reasoning_content,
-                    reasoning_details_json,
-                    codex_items_json,
-                    codex_message_items_json,
-                    platform_message_id,
-                    1 if observed else 0,
-                ),
+                tuple(params),
             )
-            msg_id = cursor.lastrowid
-
-            # Update counters
-            if num_tool_calls > 0:
-                conn.execute(
-                    """UPDATE sessions SET message_count = message_count + 1,
-                       tool_call_count = tool_call_count + ? WHERE id = ?""",
-                    (num_tool_calls, session_id),
-                )
-            else:
-                conn.execute(
-                    "UPDATE sessions SET message_count = message_count + 1 WHERE id = ?",
-                    (session_id,),
-                )
-            return msg_id
-
-        return self._execute_write(_do)
+            ids.append(cursor.lastrowid)
+            total_tool_calls += row["num_tool_calls"]
+            # Keep the in-batch order stable for timestamp-ordered readers.
+            now_ts += 1e-6
+        conn.execute(
+            """UPDATE sessions SET message_count = message_count + ?,
+               tool_call_count = tool_call_count + ? WHERE id = ?""",
+            (len(rows), total_tool_calls, session_id),
+        )
+        return ids
 
     def replace_messages(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Atomically replace every message for a session.
