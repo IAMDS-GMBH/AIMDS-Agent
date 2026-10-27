@@ -4267,9 +4267,44 @@ class SessionDB:
             return cur.rowcount > 0
         return self._execute_write(_do)
 
+    def sync_progress(self, session_id: str, *, gen: int, upto: int, remote: str) -> None:
+        """Part of a long transcript arrived (AIS-726): the remote holds the
+        first *upto* messages as of *gen*. Unlike :meth:`sync_record` the
+        failure streak and its backoff stay — only a complete sync clears them.
+        """
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET synced_gen = ?, synced_upto = ?, sync_remote = ?, synced_at = ? WHERE id = ?",
+                (gen, upto, remote, time.time(), session_id),
+            )
+        self._execute_write(_do)
+
+    def sync_older_segment_pending(self, session_id: str) -> bool:
+        """Whether an older segment of this compression chain still waits to sync.
+
+        The segments share one remote transcript and the server appends in
+        arrival order, so a newer segment waits for the older ones (AIS-726).
+        """
+        with self._lock:
+            chain = self._compression_chain_ids(self._conn, [session_id])
+            others = [sid for sid in chain if sid != session_id]
+            if not others:
+                return False
+            placeholders = ",".join("?" * len(others))
+            row = self._conn.execute(
+                f"SELECT 1 FROM sessions WHERE id IN ({placeholders}) AND sync_dirty = 1 "
+                "AND started_at < (SELECT started_at FROM sessions WHERE id = ?) LIMIT 1",
+                [*others, session_id],
+            ).fetchone()
+        return row is not None
+
+    #: A session that keeps failing is retried at most this rarely (AIS-726: an
+    #: hourly retry of one stuck session filled errors.log for three weeks).
+    SYNC_BACKOFF_MAX_SECONDS = 6 * 3600.0
+
     def sync_fail(self, session_id: str, error: str, *, attempts: int) -> None:
-        """Back off exponentially (30 s … 1 h) after a failed sync."""
-        delay = min(3600.0, 30.0 * (2 ** max(0, attempts - 1)))
+        """Back off exponentially (30 s … 6 h) after a failed sync."""
+        delay = min(self.SYNC_BACKOFF_MAX_SECONDS, 30.0 * (2 ** max(0, attempts - 1)))
         def _do(conn):
             conn.execute(
                 "UPDATE sessions SET sync_error = ?, sync_attempts = ?, sync_next_at = ? WHERE id = ?",
