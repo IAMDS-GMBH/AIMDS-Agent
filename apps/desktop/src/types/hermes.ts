@@ -100,7 +100,7 @@ export interface OAuthPollResponse {
 
 export interface MicrosoftAdminConsentResponse {
   client_id: string
-  granted_tier: 'admin' | 'self' | 'standard' | null
+  granted_tier: 'admin' | 'channels' | 'groups' | 'self' | 'standard' | null
   org_consent_scopes: string[]
   org_consented: boolean
   scopes: string[]

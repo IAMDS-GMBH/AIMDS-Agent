@@ -19,7 +19,14 @@ approve them. The single source of truth for the lists is
 |---|---|---|---|
 | 0 `self` | `M365_SELF_CONSENT_SCOPES` | User.Read, Mail.ReadWrite, Mail.Send, Calendars.ReadWrite, Contacts.ReadWrite, Files.ReadWrite.All | Every user for themselves (default Entra policy) |
 | 1 `standard` | `M365_ORG_CONSENT_SCOPES` (+ tier 0) | Mail.ReadWrite.Shared, Mail.Send.Shared, Calendars.ReadWrite.Shared, Chat.ReadWrite, Presence.Read, OnlineMeetings.Read, Tasks.ReadWrite | Tenant admin, once, org-wide |
-| 2 `admin` | `M365_ADMIN_SCOPES` (+ tiers 0 and 1) | User.Read.All, Directory.Read.All, Sites.ReadWrite.All | Tenant admin, once, org-wide (or an admin signing in for themselves) |
+| 1b `groups` | `M365_GROUP_SCOPES` (+ tiers 0 and 1) | Group.Read.All | Tenant admin, once, org-wide |
+| 2 `admin` | `M365_ADMIN_SCOPES` (+ tiers 0, 1, 1b) | User.Read.All, Directory.Read.All, Sites.ReadWrite.All | Tenant admin, once, org-wide (or an admin signing in for themselves) |
+| 3 `channels` | `M365_CHANNEL_SCOPES` (+ all tiers below) | Team.ReadBasic.All, Channel.ReadBasic.All, ChannelMessage.Read.All, ChannelMessage.Send | Tenant admin, once, org-wide (ChannelMessage.Read.All needs admin consent) |
+
+`groups` and `channels` are separate tiers on purpose: a silent token request for a tier
+fails as a whole when one scope in it is not consented, so a tenant that approved the app
+before these scopes existed keeps its old tier instead of losing it. The admin-consent URL
+(`M365_ALL_SCOPES`) always grants every tier; re-running it once upgrades an older tenant.
 
 **Every sign-in entry point requests tier 0 only**: the "Microsoft 365 (OAuth)" button in
 Settings → Providers → Accounts, `hermes mcp install MSOffice365MCP`, and the
@@ -29,7 +36,7 @@ consent altogether and an admin has to onboard the tenant (next section).
 
 Higher tiers arrive **silently**. MSAL refresh tokens are not scope-bound, so once an
 administrator has consented org-wide, `acquire_token_silent` returns the wider token to
-every already-signed-in user. The server probes `admin → standard → self` and caches the
+every already-signed-in user. The server probes `channels → admin → groups → standard → self` and caches the
 granted tier per account for ten minutes, so a Graph call never pays failing network
 round-trips more than once per window.
 
@@ -38,8 +45,10 @@ What the tiers unlock:
 | Tool family | Needs |
 |---|---|
 | Outlook mail, calendar, contacts, OneDrive | tier 0 |
-| Teams chats and channel messages, presence, online meetings, shared mailboxes/calendars, To Do | tier 1 |
+| Teams chats, presence, online meetings, shared mailboxes/calendars, To Do | tier 1 |
+| Microsoft 365 group calendars | tier 1b |
 | Directory-wide user search (`m365_search_users`), SharePoint sites | tier 2 |
+| Teams channels: read (`m365_list_channel_messages`) and post (`m365_send_channel_message`) | tier 3 |
 
 ## Tenant onboarding (what a customer admin does once)
 
@@ -92,13 +101,30 @@ Nobody has to sign in again. The next Graph call picks up the wider token.
 |---|---|---|
 | Dashboard / Desktop button | `hermes_cli/web_server.py` `_start_device_code_flow("microsoft")` + `_microsoft_device_code_worker` | `M365_LOGIN_SCOPES` |
 | CLI install | `hermes_cli/mcp_catalog.py` `_microsoft_device_code_login` | `M365_LOGIN_SCOPES` (a manifest may narrow, never widen) |
-| Chat | `m365_initiate_login(scope_tier="self" \| "standard" \| "admin")` → `m365_complete_login(flow_data)` | tier of choice, default `self` |
+| Chat | `m365_initiate_login(scope_tier="self" \| "standard" \| "groups" \| "admin" \| "channels")` → `m365_complete_login(flow_data)` | tier of choice, default `self` |
 | MCP server CLI | `python server.py --login [--standard \| --admin]` | tier of choice |
 
 `m365_complete_login` reports `granted_tier`; when it is `self` the response also carries
-`admin_consent_hint.admin_consent_url` to hand to an administrator. A Graph `403` on a
-tier 1 or tier 2 endpoint is rewritten into the same hint, so the agent can tell the user
-which consent step is missing instead of guessing.
+`admin_consent_hint.admin_consent_url` to hand to an administrator.
+
+`m365_complete_login` polls for at most 25 seconds (the MCP call timeout is 120 s, the device
+code lives 15 minutes) and otherwise answers `status: "pending"` with `expires_in_seconds`, so
+the agent asks the user and calls again with the same `flow_data`. If the shared token cache
+already holds a sign-in that reaches the requested tier (for example from the desktop
+accounts page), it reports success with `superseded: true` instead of waiting for a code
+nobody will enter. An expired code answers `status: "expired"` without polling.
+
+A Graph `403` is classified deterministically from the scopes Graph names in the error
+body ("API requires one of '…'") and the tier the token was redeemed for:
+
+| Kind | Meaning | What the agent says |
+|---|---|---|
+| `consent` | A wider tier is missing | The approval link; an administrator opens it themselves |
+| `item` | The token already has the needed tier | Microsoft refuses this team/channel/chat; no re-login |
+| `unsupported` | No tier contains any of the named scopes | Not available through this connection; no re-login, no "ask IT" |
+
+The channel tools return this classification as a result (`forbidden`, `user_message`,
+`next_step`); every other tool carries it in the error text.
 
 Optional overrides: `M365_CLIENT_ID` / `M365_TENANT_ID` (also `OUTLOOK_*` / `TEAMS_*`)
 switch to a customer-owned app registration. The token cache lives in
@@ -134,6 +160,15 @@ chat and only falls back to the directory (admin tier) or the raw UPN. Markdown 
 `content` is rendered to the HTML Teams displays, so the preview shown in chat equals the
 message that arrives; `rendered_html` and `plain_text` in the result let the agent confirm
 what went out. `dry_run=true` resolves and renders without sending.
+
+Team channels are a different target. `m365_send_channel_message(channel=<name | "#name" |
+"Team / Channel" | channel link>, content=<Markdown>)` (or `team_id` + `channel_id`)
+resolves the channel among the user's joined teams, renders the Markdown the same way and
+posts only after the same preview → `confirm=true` step; the preview names team and
+channel. `m365_send_chat_message` hands a channel link or a `#name` over to it, and when a
+name that is not a person (e.g. "LBBW") matches a chat topic *and* a channel it sends
+nothing and returns both (`resolution: "ambiguous_target"`), so the agent asks. Its own
+preview names the chat type (1:1, group or meeting chat).
 
 `m365_get_chat_style(to=…)` derives the register the user actually uses with that person
 (language, du/Sie, greeting, sign-off, length, emoji, formality) from their own recent

@@ -7851,7 +7851,8 @@ async def microsoft_admin_consent_url(request: Request, use_default_scope: bool 
         "self_consent_scopes": list(M365_SELF_CONSENT_SCOPES),
         "org_consent_scopes": list(M365_ORG_CONSENT_SCOPES),
         "granted_tier": granted_tier,
-        "org_consented": granted_tier in ("standard", "admin"),
+        # Every tier above "self" needs the org-wide consent (groups and channels too).
+        "org_consented": granted_tier not in (None, "self"),
     }
 
 
