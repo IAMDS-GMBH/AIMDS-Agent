@@ -1760,7 +1760,9 @@ class TestLargeServerOpenProject:
             defs.append(_td(f"mcp_AtlassianMCP_{tool}", desc))
         catalog = ts.build_catalog(defs)
         top = lambda q, n=3: [h.name for h in search_catalog(catalog, q, limit=n)]
-        assert "mcp_op_pm_search_work_packages" in top("openproject arbeitspakete suchen")
+        # AIS-711: the deprecated search hands its match to pm_list_work_packages(query).
+        assert top("openproject arbeitspakete suchen")[0] == "mcp_op_pm_list_work_packages"
+        assert top("mcp_op_pm_search_work_packages")[0] == "mcp_op_pm_search_work_packages"  # named outright
         assert top("arbeitspaket erstellen")[0] == "mcp_op_pm_create_work_package"
         assert "mcp_op_pm_create_time_entry" in top("zeit buchen openproject")
         assert "mcp_op_pm_comment_work_package" in top("openproject kommentar hinzufügen")
@@ -1985,3 +1987,21 @@ def test_skill_catalog_drops_skills_whose_required_tools_are_missing(tmp_path, m
     assert "jira-flow" not in without and "plain" in without
     assert "jira-flow" in with_jira
     assert "jira-flow" in explicit  # tool_describe by name still finds it
+
+
+def test_deprecated_tool_names_its_successor_on_the_same_server():
+    """AIS-711: "DEPRECATED — use pm_list_work_packages(query=…)" resolves to
+    the successor of the same server (Suite names use `-` before `pm_`)."""
+    from tools.tool_search import CatalogEntry, _is_deprecated, _successor_entry
+
+    def entry(name, source, desc):
+        return CatalogEntry(name, desc, _td(name, desc), "mcp", source)
+
+    dep = entry("mcp_AIMDSSuiteMCP_mcp_openproject-pm_search_work_packages", "mcp-AIMDSSuiteMCP",
+                "DEPRECATED — use pm_list_work_packages(query=…), which takes the same arguments.")
+    suite_list = entry("mcp_AIMDSSuiteMCP_mcp_openproject-pm_list_work_packages", "mcp-AIMDSSuiteMCP", "List or search.")
+    local_list = entry("mcp_op_pm_list_work_packages", "mcp-OpenProjectMCP", "List or search.")
+    assert _is_deprecated(dep.description) and not _is_deprecated(suite_list.description)
+    assert _is_deprecated("[Deprecated] use x") and not _is_deprecated("Lists deprecated APIs.")
+    assert _successor_entry([local_list, dep, suite_list], dep) is suite_list
+    assert _successor_entry([local_list, dep], dep) is None

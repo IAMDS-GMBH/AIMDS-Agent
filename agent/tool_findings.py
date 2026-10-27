@@ -123,7 +123,9 @@ def build_review_prompt(triggers: Dict[str, List[str]], save_tool_hint: str) -> 
         "session should know before calling them. Save each finding to the memory vault with "
         f"{save_tool_hint} as ONE note per tool: title exactly `{TOOL_NOTE_PREFIX}<tool name>`, "
         "type `reference`, tags [`tool-finding`, `<server>`]. If a note with that title exists, "
-        "write the merged note (keep what still holds, add what is new) — never a second note.\n",
+        "write the merged note (keep what still holds, add what is new) — never a second note. "
+        "A lookup that answers not found (`found: false`) only means there is no note yet: write a new "
+        "one, do not retry the lookup or report it.\n",
         "Tools that earned a look:",
     ]
     for name, reasons in triggers.items():

@@ -574,7 +574,7 @@ def test_suite_include_list_carries_session_sync_and_openproject_contract():
     assert "memory_session" in include
     snapshot = Path(__file__).resolve().parents[1] / "optional-mcps" / "OpenProjectMCP" / "contract" / "go-mcp-openproject.tools.json"
     contract = [t["name"] for t in json.loads(snapshot.read_text(encoding="utf-8"))["tools"]]
-    assert len(contract) == 26
+    assert len(contract) == 27  # go-mcp-openproject 0.6.1 (AIS-711)
     assert set(contract) <= set(include)
 
 

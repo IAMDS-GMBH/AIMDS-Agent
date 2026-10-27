@@ -91,3 +91,20 @@ def test_bridge_loads_the_tools_into_the_session(reachable, monkeypatch):
     rh.ticket_reference_hint(_Agent(), "PRO-6")
 
     assert loaded == [(f"{SUITE}pm_get_work_package", "ticket_reference"), (f"{SUITE}pm_search_work_packages", "ticket_reference")]
+
+
+def test_the_list_tool_is_the_search_since_openproject_mcp_060(reachable, monkeypatch):
+    """AIS-711: pm_search_work_packages is deprecated (gone with Suite 2.18.0);
+    pm_list_work_packages(query) is loaded instead whenever it exists."""
+    import agent.deferred_tools as dt
+
+    reachable += [f"{SUITE}pm_search_work_packages", f"{SUITE}pm_list_work_packages", f"{SUITE}pm_get_work_package"]
+    loaded = []
+    monkeypatch.setattr(dt, "tool_search_active", lambda agent: True)
+    monkeypatch.setattr(dt, "load_deferred_tool", lambda agent, name, **kw: loaded.append(name) or name)
+    monkeypatch.setattr("agent.openproject_suite.suite_accepts_display_ids", lambda: False)
+
+    hint = rh.ticket_reference_hint(_Agent(), "PRO-6")
+
+    assert loaded == [f"{SUITE}pm_get_work_package", f"{SUITE}pm_list_work_packages"]
+    assert f"find a key via `{SUITE}pm_list_work_packages`" in hint

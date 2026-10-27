@@ -2102,6 +2102,64 @@ class TestTicketSystemsLine:
         assert g({"mcp_Other_pm_list_work_packages", "read_file"}) == ""
 
 
+class TestOpenProjectWholeSets:
+    """AIS-711: one call per set (group_by, ids, relates_to, query) and
+    pm_link_status only on demand — named only where the schema has it."""
+
+    SUITE = "mcp_AIMDSSuiteMCP_mcp_openproject-pm_"
+    V060 = {
+        "pm_list_time_entries": {"group_by", "spent_on_from", "spent_on_to"},
+        "pm_list_work_packages": {"query", "assignee"},
+        "pm_update_work_package": {"id", "ids", "status", "status_path"},
+        "pm_create_work_package": {"project", "relates_to"},
+    }
+
+    def _names(self, prefix):
+        return {f"{prefix}{s}" for s in ("list_time_entries", "list_work_packages", "update_work_package",
+                                         "create_work_package", "link_status")}
+
+    def _params(self, monkeypatch, by_suffix):
+        # sys.modules, not the package attribute: TestPromptBuilderImports re-imports the module.
+        pb = importlib.import_module("agent.prompt_builder")
+
+        def params(name):
+            return next((p for suffix, p in by_suffix.items() if name.endswith(suffix)), set())
+
+        monkeypatch.setattr(pb, "_tool_param_names", params)
+
+    def test_suite_060_capabilities_are_named(self, monkeypatch):
+        from agent.prompt_builder import build_ticket_routing_guidance as g
+        self._params(monkeypatch, self.V060)
+        text = g(self._names(self.SUITE))
+        assert ("OpenProject covers a whole set in one call instead of one call per item: hours of a day or week "
+                "across all projects in one `pm_list_time_entries` call with the date range and `group_by`; "
+                "free-text search through `pm_list_work_packages` `query`; the same change for several work "
+                "packages through `ids`; relations of a new work package through `relates_to` when creating it.") in text
+        assert "A refused status change answers with `retry`" in text
+        assert "Call `pm_link_status` only after a tool answered `action_required`" in text
+
+    def test_older_suite_is_not_told_about_parameters_it_lacks(self, monkeypatch):
+        """Suite 2.17.8 (go-mcp-openproject 0.5): no query/group_by/ids/relates_to."""
+        from agent.prompt_builder import build_ticket_routing_guidance as g
+        self._params(monkeypatch, {"pm_list_time_entries": {"spent_on_from"}, "pm_list_work_packages": {"assignee"},
+                                   "pm_update_work_package": {"id", "status"}})
+        text = g(self._names(self.SUITE))
+        for word in ("group_by", "`query`", "`ids`", "relates_to", "retry"):
+            assert word not in text
+        assert "Call `pm_link_status` only after" in text
+
+    def test_capabilities_follow_the_server_in_use(self, monkeypatch):
+        """The Suite is preferred: a local server's schema does not speak for it."""
+        from agent.prompt_builder import build_ticket_routing_guidance as g
+        pb = importlib.import_module("agent.prompt_builder")
+        monkeypatch.setattr(pb, "_tool_param_names", lambda name: self.V060["pm_list_time_entries"]
+                            if name.startswith("mcp_op_") and name.endswith("pm_list_time_entries") else set())
+        both = self._names(self.SUITE) | self._names("mcp_op_pm_")
+        assert "group_by" not in g(both)
+        assert "group_by" in g(self._names("mcp_op_pm_"))
+        assert "pm_link_status" not in g({f"{self.SUITE}list_work_packages"})
+
+
 class TestBuildMcpStatusPrompt:
     """AIS-334 / SUP-20260908-110726: configured-but-unconnected MCP servers are
     named in the system prompt so the model stops hunting for their tools."""

@@ -2596,8 +2596,8 @@ class TestVersionPinsAndToolPrefix:
         assert env["OPENPROJECT_READ_PROJECTS"].default == "*"
         assert env["OPENPROJECT_WRITE_PROJECTS"].required is False and env["OPENPROJECT_WRITE_PROJECTS"].default == ""
         assert entry.tools.default_enabled is not None
-        # AIS-479: the Suite's 26 pm_* contract tools + pm_delete_work_package.
-        assert len(entry.tools.default_enabled) == 27
+        # AIS-479/711: the Suite's 27 pm_* contract tools (0.6.1) + pm_delete_work_package.
+        assert len(entry.tools.default_enabled) == 28
         assert all(t.startswith("pm_") for t in entry.tools.default_enabled)
         assert {"pm_search_work_packages", "pm_create_time_entry", "pm_delete_work_package"} <= set(entry.tools.default_enabled)
         # the pre-AIS-479 names and the replaced openproject-ce-mcp names migrate
