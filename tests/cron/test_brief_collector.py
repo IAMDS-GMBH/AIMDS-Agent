@@ -256,6 +256,43 @@ def test_set_up_sources_that_fail_are_named_in_plain_words(store):
     assert "jira=failed(upstream 503)" in res.sources_line()
 
 
+def test_a_slow_source_is_cut_by_its_budget_and_the_brief_still_goes_out(store, monkeypatch):
+    """AIS-711: every call is bounded by the per-call timeout AND by what is
+    left of the source's budget; a source that keeps calling fails alone, the
+    next source starts with a fresh budget and the brief names the slow one."""
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(bc.time, "monotonic", lambda: clock["now"])
+    timeouts = []
+
+    def fake_call(tool, args, timeout_s):
+        timeouts.append((tool, timeout_s))
+        clock["now"] += 40  # every call takes 40 s
+        return "{}"
+
+    monkeypatch.setattr(bc, "_call_with_timeout", fake_call)
+
+    class _Looping(_Adapter):
+        def fetch(self, window, ctx):
+            for i in range(60):  # e.g. one listing per project
+                ctx.dispatch(f"{self.name}_list", {"page": i})
+            return []
+
+    class _OneCall(_Adapter):
+        def fetch(self, window, ctx):
+            ctx.dispatch("jira_search", {})
+            return [BriefItem("jira", "ticket", "AIS-1", "Ticket", status="Open")]
+
+    res = bc.collect({"id": "brief"}, "morning-brief", now=_now(), cfg={}, store=store,
+                     adapters=[_Looping("openproject"), _OneCall("jira")],
+                     mcp_status=[], tool_names=[], vault_root=None, holidays={})
+    # 90 s budget: 45 s, 45 s (50 s left), 10 s — then the budget is gone.
+    assert timeouts[:3] == [("openproject_list", 45.0), ("openproject_list", 45.0), ("openproject_list", 10.0)]
+    assert [t for t in timeouts if t[0] == "openproject_list"] == timeouts[:3]
+    assert ("jira_search", 45.0) in timeouts
+    assert "openproject=failed(source time budget of 90s used up" in res.sources_line()
+    assert "OpenProject could not be reached just now." in res.text and "AIS-1" in res.text
+
+
 def test_all_good_has_no_source_notes(store):
     ev = BriefItem("m365", "event", "e1", "Daily", starts_at="2026-09-08T08:45+02:00", ends_at="2026-09-08T08:50+02:00")
     res = bc.collect({"id": "brief"}, "morning-brief", now=_now(), cfg={}, store=store,

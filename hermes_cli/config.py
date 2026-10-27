@@ -2695,6 +2695,9 @@ DEFAULT_CONFIG = {
             "char_budget": 5000,
             "mail_top": 15,
             "source_timeout_seconds": 45,
+            # All calls of one source together; past it that source is
+            # reported as unreachable and the rest of the brief still goes out.
+            "source_budget_seconds": 90,
             "compose_max_iterations": 3,
         },
     },

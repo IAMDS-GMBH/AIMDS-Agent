@@ -281,38 +281,33 @@ def _suite_owner(monkeypatch):
         "OpenProjectMCP" if name.startswith("mcp_op_") else "AIMDSSuiteMCP" if name.startswith("mcp_AIMDSSuiteMCP_") else None))
 
 
-def test_openproject_brief_uses_the_suite_per_project(monkeypatch):
-    """AIS-483: the Suite's pm_list_time_entries requires a project, so the
-    brief lists the visible projects first; its next_offset (offset + count)
-    is ignored in favour of the next page number."""
+def test_openproject_brief_reads_the_suite_in_one_listing_across_projects(monkeypatch):
+    """AIS-711: the Suite answers for every readable project without
+    ``project`` (go-mcp-openproject 0.4.0+), so the brief neither lists the
+    projects (that listing timed the source out) nor loops over them. A full
+    page is followed by the next page number."""
     from cron.brief_sources.openproject import OpenProjectAdapter
 
     _suite_owner(monkeypatch)
     calls = []
-    full_page = [{"id": 1000 + i, "spent_on": "2026-09-05", "hours": "PT0H", "work_package_id": 1} for i in range(199)]
-    entries = {
-        ("1", 1): {"has_more": True, "next_offset": 201, "time_entries": full_page + [
+    full_page = [{"id": 1000 + i, "spent_on": "2026-09-05", "hours": 0, "work_package_key": "X-1"} for i in range(199)]
+    pages = {
+        1: {"has_more": True, "next_offset": 2, "time_entries": full_page + [
             {"id": 1, "spent_on": "2026-09-07", "hours": "PT4H", "work_package_id": 17054}]},
-        ("1", 2): {"has_more": True, "next_offset": 202, "time_entries": [
-            {"id": 3, "spent_on": "2026-09-07", "hours": "PT0H", "work_package_id": 17054}]},
-        ("2", 1): {"has_more": False, "next_offset": None, "time_entries": [
-            {"id": 2, "spent_on": "2026-09-07", "hours": "PT2H30M", "work_package_id": 0}]},
+        2: {"has_more": False, "next_offset": None, "time_entries": [
+            # go-mcp-openproject 0.6.0 sends decimal hours
+            {"id": 2, "spent_on": "2026-09-07", "hours": 2.5, "project": "Ops"}]},
     }
-    _ctx.responses = {
-        f"{SUITE_OP}pm_list_projects": {"projects": [{"id": 1, "identifier": "suite", "active": True},
-                                                     {"id": 2, "identifier": "ops", "active": True},
-                                                     {"id": 3, "identifier": "old", "active": False}]},
-        f"{SUITE_OP}pm_list_time_entries": lambda args: entries[(args["project"], args.get("offset", 1))],
-    }
+    _ctx.responses = {f"{SUITE_OP}pm_list_time_entries": lambda args: pages[args.get("offset", 1)]}
     tools = [f"{SUITE_OP}pm_list_projects", f"{SUITE_OP}pm_list_time_entries", "mcp_op_pm_list_time_entries"]
     ctx = _ctx(tools, calls, status={"AIMDSSuiteMCP": {"connected": True}, "OpenProjectMCP": {"connected": True}},
                store=_Store(targets={"2026-09-07": 8.0}))
     adapter = OpenProjectAdapter()
     assert adapter.availability(ctx) is None
     items = adapter.fetch(bc.build_window("morning-brief", NOW, {}), ctx)
-    assert [c[0] for c in calls] == [f"{SUITE_OP}pm_list_projects"] + [f"{SUITE_OP}pm_list_time_entries"] * 3
-    assert calls[1][1] == {"spent_on_from": "2026-09-07", "spent_on_to": "2026-09-07", "user": "me", "limit": 200, "project": "1"}
-    assert calls[2][1]["offset"] == 2
+    assert [c[0] for c in calls] == [f"{SUITE_OP}pm_list_time_entries"] * 2
+    assert calls[0][1] == {"spent_on_from": "2026-09-07", "spent_on_to": "2026-09-07", "user": "me", "limit": 200}
+    assert calls[1][1]["offset"] == 2
     assert items[0].extra["hours"] == 6.5 and items[0].status == "partial"
     assert items[0].extra["by_work_package"] == {"17054": 4.0, "?": 2.5}
 
@@ -343,7 +338,7 @@ def test_openproject_brief_availability_names_the_missing_pieces(monkeypatch):
     _suite_owner(monkeypatch)
     status = {"AIMDSSuiteMCP": {"connected": True}}
     only_list = _ctx([f"{SUITE_OP}pm_list_time_entries"], [], status=status)
-    assert OpenProjectAdapter().availability(only_list).detail == "tool not in tools.include: pm_list_projects"
+    assert OpenProjectAdapter().availability(only_list) is None  # no project listing needed (AIS-711)
     assert OpenProjectAdapter().availability(_ctx([], [], status={})).detail == "not configured"
     assert OpenProjectAdapter().availability(
         _ctx([], [], status={"OpenProjectMCP": {"connected": True}})).detail == "tool not in tools.include: pm_list_time_entries"

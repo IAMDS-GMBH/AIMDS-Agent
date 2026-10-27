@@ -41,7 +41,8 @@ DEFAULT_CFG = {
     "language": "",
     "char_budget": 5000,
     "mail_top": 15,
-    "source_timeout_seconds": 45,
+    "source_timeout_seconds": 45,  # one tool call
+    "source_budget_seconds": 90,  # every call of one source together (AIS-711)
     "compose_max_iterations": 3,
 }
 
@@ -234,26 +235,51 @@ class CollectorResult:
 # ----------------------------------------------------------------------
 # dispatch with timeout
 # ----------------------------------------------------------------------
+def _call_with_timeout(tool: str, args: Dict[str, Any], timeout_s: float) -> Any:
+    from tools.registry import registry
+
+    q: "queue.Queue[tuple]" = queue.Queue(maxsize=1)
+
+    def _worker() -> None:
+        try:
+            q.put(("ok", registry.dispatch(tool, args)))
+        except Exception as exc:  # pragma: no cover - surfaced below
+            q.put(("err", exc))
+
+    threading.Thread(target=_worker, name=f"brief-collector:{tool}", daemon=True).start()
+    try:
+        status, payload = q.get(timeout=timeout_s)
+    except queue.Empty:
+        raise TimeoutError(f"{tool} timed out after {timeout_s:g}s")
+    if status == "err":
+        raise payload
+    return payload
+
+
 def _dispatch_with_timeout(timeout_s: float) -> Callable[[str, Dict[str, Any]], Any]:
     def _call(tool: str, args: Dict[str, Any]) -> Any:
-        from tools.registry import registry
+        return _call_with_timeout(tool, args, timeout_s)
 
-        q: "queue.Queue[tuple]" = queue.Queue(maxsize=1)
+    return _call
 
-        def _worker() -> None:
-            try:
-                q.put(("ok", registry.dispatch(tool, args)))
-            except Exception as exc:  # pragma: no cover - surfaced below
-                q.put(("err", exc))
 
-        threading.Thread(target=_worker, name=f"brief-collector:{tool}", daemon=True).start()
-        try:
-            status, payload = q.get(timeout=timeout_s)
-        except queue.Empty:
-            raise TimeoutError(f"{tool} timed out after {timeout_s:g}s")
-        if status == "err":
-            raise payload
-        return payload
+def _source_dispatch(
+    dispatch: Optional[Callable[[str, Dict[str, Any]], Any]], per_call_s: float, budget_s: float,
+) -> Callable[[str, Dict[str, Any]], Any]:
+    """One source's dispatch: every call is bounded by ``per_call_s`` AND by
+    what is left of the source's ``budget_s``, so a source that pages or loops
+    (one call per project used to be 60 × 45 s, AIS-711) fails on its own
+    instead of holding up the brief. The other sources still run; the brief
+    names the failed one in its source notes."""
+    deadline = time.monotonic() + budget_s
+
+    def _call(tool: str, args: Dict[str, Any]) -> Any:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(f"source time budget of {budget_s:g}s used up before {tool}")
+        if dispatch is not None:
+            return dispatch(tool, args)
+        return _call_with_timeout(tool, args, min(per_call_s, remaining))
 
     return _call
 
@@ -327,9 +353,11 @@ def collect(
             logger.warning("brief store unavailable: %s", exc)
             store = None
 
+    per_call_s = float(ccfg.get("source_timeout_seconds") or 45)
+    budget_s = max(per_call_s, float(ccfg.get("source_budget_seconds") or 90))
     ctx = SourceContext(
         tool_names=set(tool_names or []), mcp_status=status_map,
-        dispatch=dispatch or _dispatch_with_timeout(float(ccfg.get("source_timeout_seconds") or 45)),
+        dispatch=dispatch or _dispatch_with_timeout(per_call_s),
         cfg=cfg, vault_root=vault_root, store=store, lang=lang, mcp_config=mcp_config,
     )
 
@@ -346,6 +374,7 @@ def collect(
         if kind in ("mail-check", "teams-check") and adapter.name != "m365":
             continue
         t1 = time.monotonic()
+        ctx.dispatch = _source_dispatch(dispatch, per_call_s, budget_s)
         skip = adapter.availability(ctx)
         if skip is not None:
             statuses.append(skip)
