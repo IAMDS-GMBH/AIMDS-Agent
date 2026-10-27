@@ -1569,7 +1569,8 @@ def _update_journal_hub(journal_dir: Path, lang: str, limit: int = 10) -> None:
         logger.debug("journal hub update skipped: %s", exc)
 
 
-def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None, collected=None, lang: Optional[str] = None) -> str:
+def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None, collected=None, lang: Optional[str] = None,
+                      prescan: Optional[str] = None) -> str:
     """Build the effective prompt for a cron job, optionally loading one or more skills first.
 
     Args:
@@ -1581,6 +1582,8 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None, collecte
             (if any) runs inline as before.
         collected: Optional ``CollectorResult`` for compose-only runs (AIS-305).
         lang: Output language code for the LANGUAGE directive; ``None`` → ``en``.
+        prescan: Optional ``## Collected Data`` block from a deterministic
+            pre-step that keeps the agent's tools (AIS-748, vault curator).
     """
     user_prompt = str(job.get("prompt") or "")
     prompt = user_prompt
@@ -1720,6 +1723,9 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None, collecte
             )
         )
         prompt = cron_hint + str(collected.text or "").rstrip() + "\n\n" + prompt
+        has_injected_data = True
+    elif prescan:
+        prompt = cron_hint + prescan.rstrip() + "\n\n" + prompt
         has_injected_data = True
     else:
         prompt = cron_hint + prompt
@@ -2149,6 +2155,31 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             )
             return True, silent_doc, SILENT_MARKER, None
 
+    # AIS-748: the vault curator's mechanical steps run here; only broken
+    # wikilinks reach the model, and with none the run is silent.
+    curator_block = None
+    try:
+        from cron import vault_curator
+
+        if vault_curator.is_curator_job(job):
+            _curator = vault_curator.run()
+            logger.info("Job '%s': vault curator %s", job_id, _curator.summary())
+            if not _curator.needs_agent:
+                logger.info("[AIS-161] cron cost: job=%s api_calls=0 in=0 out=0 cache_read=0 compose_only=False curator=nothing-left", job_id)
+                _set_run_meta(job_id, session_id="", journal_path=None, api_calls=0, silent=True)
+                return True, (
+                    f"# Cron Job: {job_name}\n\n"
+                    f"**Job ID:** {job_id}\n"
+                    f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"**Status:** silent (vault curator: nothing left for the agent)\n"
+                    f"**Curator:** {_curator.summary()}\n"
+                    f"**Cost:** api_calls=0\n"
+                ), SILENT_MARKER, None
+            curator_block = vault_curator.render(_curator)
+    except Exception as _cur_exc:
+        logger.warning("Job '%s': vault curator pre-step failed, running the job without it: %s", job_id, _cur_exc)
+        curator_block = None
+
     # AIS-305: LLM-free collector for the shipped brief/poll jobs. Runs before
     # the prompt is assembled; a failure here falls back to the legacy path.
     collected = None
@@ -2212,7 +2243,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         return True, silent_doc, SILENT_MARKER, None
 
     try:
-        prompt = _build_job_prompt(job, prerun_script=prerun_script, collected=collected, lang=brief_lang)
+        prompt = _build_job_prompt(
+            job, prerun_script=prerun_script, collected=collected, lang=brief_lang, prescan=curator_block,
+        )
     except CronPromptInjectionBlocked as block_exc:
         # Assembled prompt (user prompt + loaded skill content) tripped the
         # injection scanner. Refuse to run the agent this tick and surface
