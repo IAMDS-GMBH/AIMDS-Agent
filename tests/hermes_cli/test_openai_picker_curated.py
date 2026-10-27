@@ -112,7 +112,8 @@ def test_iamds_litellm_prefers_model_info_endpoint(monkeypatch):
     mock_generic.assert_not_called()
 
 
-def test_iamds_litellm_falls_back_to_curated_when_discovery_fails(monkeypatch):
+def test_iamds_litellm_returns_nothing_when_discovery_fails(monkeypatch):
+    """OpenAI's static catalog is not the Suite key's model list (AIS-747)."""
     monkeypatch.setenv("IAMDS_LITELLM_API_KEY", "iamds-key")
     monkeypatch.setenv("IAMDS_LITELLM_BASE_URL", "https://staging.suite.iamds.com")
 
@@ -123,4 +124,4 @@ def test_iamds_litellm_falls_back_to_curated_when_discovery_fails(monkeypatch):
     ):
         result = M.provider_model_ids("iamds-litellm", force_refresh=True)
 
-    assert result == list(M._PROVIDER_MODELS["openai-api"])
+    assert result == []
