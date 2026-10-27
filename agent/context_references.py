@@ -371,7 +371,7 @@ def _expand_file_reference(
         # so it can read/convert/view the file itself.
         return None, _binary_reference_block(ref, path)
 
-    text = path.read_text(encoding="utf-8")
+    text = _read_reference_text(path)
     if ref.line_start is not None:
         lines = text.splitlines()
         start_idx = max(ref.line_start - 1, 0)
@@ -381,6 +381,20 @@ def _expand_file_reference(
     lang = _code_fence_language(path)
     label = ref.raw
     return None, f"📄 {label} ({estimate_tokens_rough(text)} tokens)\n```{lang}\n{text}\n```"
+
+
+def _read_reference_text(path: Path) -> str:
+    """Text of a referenced file in its own encoding (AIS-600).
+
+    Windows exports (cp1252/latin-1 CSVs and the like) used to fail the strict
+    UTF-8 read and the reference came back as a decode error.
+    """
+    raw = path.read_bytes()
+    try:
+        from tools.table_reader import decode_text
+    except Exception:
+        return raw.decode("utf-8-sig", errors="replace")
+    return decode_text(raw)[0].lstrip("\ufeff")
 
 
 def _expand_folder_reference(

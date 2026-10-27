@@ -2288,4 +2288,6 @@ class TestDocumentGuidance:
         # not m365_attachments/ (only chat/mail attachments use that folder)
         # -- the guidance used to name the wrong one.
         assert "documents/m365_downloads/" in text
-        assert "Never parse a document with terminal commands" in text
+        assert "Never parse a document or table with terminal commands" in text
+        # AIS-600: tables are read directly, not through terminal Python.
+        assert "CSV/TSV" in text and "encoding and delimiter detected" in text
