@@ -1429,6 +1429,57 @@ class TestToolsetInjection:
             assert f"MCP server '{name}': connect was cancelled" in caplog.text
             assert f"Failed to connect to MCP server '{name}'" not in caplog.text
 
+    def test_connect_timeout_is_reported_only_when_it_persists(self, caplog):
+        """AIS-601 (SUP-20261025-033239): wait_for's empty TimeoutError from a
+        CancelledError was filed as "connect — CancelledError" after a wake from sleep."""
+        import tools.mcp_tool as mcp_mod
+
+        async def connect(name, config):
+            await asyncio.sleep(5)
+
+        fake_config = {"GithubMCP": {"command": "slow", "connect_timeout": 0.01}}
+        fake_toolsets = {"hermes-cli": {"tools": [], "description": "CLI", "includes": []}}
+
+        def run():
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._servers", {}), \
+                 patch("tools.mcp_tool._load_mcp_config", return_value=fake_config), \
+                 patch("tools.mcp_tool._connect_server", side_effect=connect), \
+                 patch("toolsets.TOOLSETS", fake_toolsets), \
+                 patch("hermes_cli.auto_incidents.report_bundled_mcp_failure") as report:
+                from tools.mcp_tool import discover_mcp_tools
+                discover_mcp_tools()
+            return report
+
+        mcp_mod._connect_timeout_streaks.clear()
+        with caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
+            first = run()
+        first.assert_not_called()
+        assert "connect timed out" in caplog.text
+        assert "CancelledError" not in caplog.text
+        run().assert_not_called()
+        third = run()
+        assert [c.args[:2] for c in third.call_args_list] == [("GithubMCP", "connect-timeout")]
+        mcp_mod._connect_timeout_streaks.clear()
+
+    def test_connect_timeout_shapes(self):
+        from tools.mcp_tool import _format_connect_error, _is_cancellation, _is_connect_timeout
+
+        async def shaped():
+            async def slow():
+                await asyncio.sleep(5)
+            try:
+                await asyncio.wait_for(slow(), 0.01)
+            except BaseException as exc:  # TimeoutError() from CancelledError
+                return exc
+
+        exc = asyncio.run(shaped())
+        assert _is_connect_timeout(exc) and not _is_cancellation(exc)
+        assert _format_connect_error(exc) == "connect timed out (the server did not answer in time)"
+        assert _is_connect_timeout(BaseExceptionGroup("g", [TimeoutError(), asyncio.CancelledError()]))
+        assert not _is_connect_timeout(BaseExceptionGroup("g", [TimeoutError(), ConnectionError("x")]))
+        assert not _is_connect_timeout(ConnectionError("cannot reach server"))
+
     def test_partial_failure_retry_on_second_call(self):
         """Failed servers are retried on subsequent discover_mcp_tools() calls."""
         from tools.mcp_tool import MCPServerTask

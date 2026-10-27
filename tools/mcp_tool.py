@@ -922,6 +922,10 @@ def _resolve_client_cert(server_name: str, config: dict):
 
 def _format_connect_error(exc: BaseException) -> str:
     """Render nested MCP connection errors into an actionable short message."""
+    if _is_connect_timeout(exc):
+        # asyncio.wait_for raises an empty TimeoutError from a CancelledError,
+        # which used to render as "CancelledError" (AIS-601).
+        return "connect timed out (the server did not answer in time)"
 
     def _find_missing(current: BaseException) -> Optional[str]:
         nested = getattr(current, "exceptions", None)
@@ -2671,6 +2675,28 @@ def _is_cancellation(exc: Any) -> bool:
         return True
     subs = getattr(exc, "exceptions", None)
     return bool(subs) and all(_is_cancellation(e) for e in subs)
+
+
+def _is_connect_timeout(exc: Any) -> bool:
+    """Whether *exc* is the connect deadline running out, also inside a group.
+
+    ``asyncio.wait_for`` raises ``TimeoutError()`` with the cancelled connect
+    as its cause — a server that did not answer in time, not a cancellation
+    (AIS-601: filed as "connect — CancelledError" after a wake from sleep).
+    """
+    if not isinstance(exc, BaseException):
+        return False
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+        return True
+    subs = getattr(exc, "exceptions", None)
+    return bool(subs) and all(_is_connect_timeout(e) or _is_cancellation(e) for e in subs)
+
+
+#: Consecutive discovery runs a bundled server timed out in. One timeout right
+#: after a wake from sleep or a network change is noise; a server that keeps
+#: not answering is reported (AIS-601).
+_CONNECT_TIMEOUT_REPORT_AFTER = 3
+_connect_timeout_streaks: Dict[str, int] = {}
 
 
 def _iamds_provider_for_server(server_name: str, config: Optional[dict] = None) -> Optional[str]:
@@ -6192,6 +6218,8 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
             return_exceptions=True,
         )
         for name, result in zip(server_names, results):
+            if not isinstance(result, BaseException):
+                _connect_timeout_streaks.pop(name, None)
             if _is_cancellation(result):
                 # Cancelled from outside (discovery budget, shutdown, a reload
                 # racing this run), not refused by the server: say so and do
@@ -6212,6 +6240,22 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
                     f" (command={command})" if command else "",
                     _format_connect_error(result),
                 )
+                if _is_connect_timeout(result):
+                    streak = _connect_timeout_streaks.get(name, 0) + 1
+                    _connect_timeout_streaks[name] = streak
+                    if streak < _CONNECT_TIMEOUT_REPORT_AFTER:
+                        continue
+                    try:
+                        from hermes_cli.auto_incidents import report_bundled_mcp_failure
+
+                        report_bundled_mcp_failure(
+                            name,
+                            "connect-timeout",
+                            f"{_format_connect_error(result)} — {streak} discovery runs in a row",
+                        )
+                    except Exception:
+                        pass
+                    continue
                 try:
                     from hermes_cli.auto_incidents import report_bundled_mcp_failure
 
