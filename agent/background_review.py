@@ -236,6 +236,91 @@ _COMBINED_REVIEW_PROMPT = (
 
 
 
+# AIS-740: the review fork replays the conversation as its history. With the
+# full transcript a review after a long turn sent 170k+ prompt tokens (session
+# 20261022_181315_fc3631) — more than the turn itself. The fork never compacts
+# (see ``_run_review_in_thread``), so the snapshot is bounded here instead: a
+# history that fits goes through unchanged (same prefix as the parent's, so
+# the prompt cache still hits); a longer one becomes its most recent part
+# with large tool payloads shortened. What a review needs — the user's
+# corrections, which tools were called with which arguments, and what they
+# answered — survives; a 20k-char tool listing does not have to.
+REVIEW_HISTORY_TOKEN_BUDGET = 24_000
+_REVIEW_TOOL_RESULT_CHARS = 1_500
+_REVIEW_TOOL_ARGS_CHARS = 1_500
+_REVIEW_OMITTED_NOTE = (
+    "[Earlier turns of this conversation are omitted for the review; "
+    "this is its most recent part.]"
+)
+
+
+def _shorten_middle(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    head = int(limit * 0.7)
+    tail = max(0, limit - head)
+    return f"{text[:head]}\n…[{len(text) - head - tail} chars omitted]…\n{text[len(text) - tail:]}"
+
+
+def _shrink_for_review(msg: Dict[str, Any]) -> Dict[str, Any]:
+    """Copy of *msg* with long tool payloads and tool-call arguments cut."""
+    out = dict(msg)
+    content = out.get("content")
+    if out.get("role") == "tool" and isinstance(content, str):
+        out["content"] = _shorten_middle(content, _REVIEW_TOOL_RESULT_CHARS)
+    calls = out.get("tool_calls")
+    if isinstance(calls, list):
+        shrunk_calls = []
+        for tc in calls:
+            fn = tc.get("function") if isinstance(tc, dict) else None
+            args = fn.get("arguments") if isinstance(fn, dict) else None
+            if isinstance(args, str) and len(args) > _REVIEW_TOOL_ARGS_CHARS:
+                tc = {**tc, "function": {**fn, "arguments": _shorten_middle(args, _REVIEW_TOOL_ARGS_CHARS)}}
+            shrunk_calls.append(tc)
+        out["tool_calls"] = shrunk_calls
+    return out
+
+
+def bounded_review_history(
+    messages: List[Dict[str, Any]],
+    budget_tokens: int = REVIEW_HISTORY_TOKEN_BUDGET,
+) -> List[Dict[str, Any]]:
+    """The conversation the review fork replays, bounded to *budget_tokens*.
+
+    Deterministic: the same snapshot yields the same excerpt. The excerpt
+    starts at a user message — or, when one long turn exceeds the budget on
+    its own, keeps that turn's user message in front of its most recent
+    rounds, cut at an assistant message so tool calls and results stay paired.
+    """
+    from agent.model_metadata import estimate_messages_tokens_rough
+
+    history = [m for m in (messages or []) if isinstance(m, dict) and m.get("role") != "system"]
+    if not history or estimate_messages_tokens_rough(history) <= budget_tokens:
+        return history
+    shrunk = [_shrink_for_review(m) for m in history]
+    start = len(shrunk)
+    used = 0
+    for idx in range(len(shrunk) - 1, -1, -1):
+        cost = estimate_messages_tokens_rough([shrunk[idx]])
+        if used + cost > budget_tokens and start < len(shrunk):
+            break
+        used += cost
+        start = idx
+    user_at = next((i for i in range(start, len(shrunk)) if shrunk[i].get("role") == "user"), None)
+    if user_at is not None:
+        excerpt = shrunk[user_at:]
+    else:
+        last_user = next((i for i in range(start - 1, -1, -1) if shrunk[i].get("role") == "user"), None)
+        tail_at = next((i for i in range(start, len(shrunk)) if shrunk[i].get("role") == "assistant"), None)
+        tail = shrunk[tail_at:] if tail_at is not None else []
+        excerpt = ([shrunk[last_user]] if last_user is not None else []) + tail
+    if excerpt and excerpt[0].get("role") == "user" and isinstance(excerpt[0].get("content"), str):
+        excerpt[0] = {**excerpt[0], "content": f"{_REVIEW_OMITTED_NOTE}\n\n{excerpt[0]['content']}"}
+    else:
+        excerpt.insert(0, {"role": "user", "content": _REVIEW_OMITTED_NOTE})
+    return excerpt
+
+
 def background_review_allowed(agent: Any) -> bool:
     """Whether ``agent`` may spawn a background memory/skill/tool review.
 
@@ -472,16 +557,28 @@ def _run_review_in_thread(
             # if a future code path bypasses the cache.
             review_agent.session_start = agent.session_start
             review_agent.session_id = agent.session_id
+            # The inherited prompt carries the parent's build date; without it
+            # the fork's date-rollover guard saw "None" and rebuilt its own
+            # prompt — a different prefix, ~20 % cache hits (AIS-740).
+            review_agent._cached_system_prompt_date = getattr(
+                agent, "_cached_system_prompt_date", None
+            )
+            # The review prompt is not a user turn: the session-start and
+            # personal-query memory_context loads fired on its wording
+            # ("memory vault") and fed the fork 28k chars plus a search the
+            # parent already holds (AIS-740).
+            review_agent._enforce_initial_memory_context = False
+            review_agent._enforce_context_for_personal_queries = False
             # Never let the review fork compress. It shares the parent's
             # session_id, so if it won a compression race it would rotate the
             # parent into a NEW child that the gateway never adopts (the fork
             # is single-lifecycle and dies right after this run_conversation).
             # The foreground turn would then start from the stale parent and
             # compress it again, leaving the same parent with two sibling
-            # children (issue #38727). Review also needs full context to
-            # produce a good memory/skill summary — compressing would strip
-            # detail. Both compression triggers in conversation_loop.py gate on
-            # agent.compression_enabled, so this short-circuits both paths.
+            # children (issue #38727). Both compression triggers in
+            # conversation_loop.py gate on agent.compression_enabled, so this
+            # short-circuits both paths — the history it replays is bounded
+            # up front instead (bounded_review_history, AIS-740).
             review_agent.compression_enabled = False
 
             from model_tools import get_tool_definitions
@@ -519,7 +616,7 @@ def _run_review_in_thread(
                         "management tools. Other tools will be denied "
                         "at runtime — do not attempt them."
                     ),
-                    conversation_history=messages_snapshot,
+                    conversation_history=bounded_review_history(messages_snapshot),
                 )
             finally:
                 clear_thread_tool_whitelist()
@@ -656,6 +753,8 @@ def spawn_background_review_thread(
 
 
 __all__ = [
+    "REVIEW_HISTORY_TOKEN_BUDGET",
+    "bounded_review_history",
     "_MEMORY_REVIEW_PROMPT",
     "_SKILL_REVIEW_PROMPT",
     "_COMBINED_REVIEW_PROMPT",

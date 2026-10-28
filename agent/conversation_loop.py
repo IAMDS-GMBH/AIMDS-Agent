@@ -729,6 +729,8 @@ def _build_onboarding_context_line_from_recent_memory_context(
             logger.debug(f"[ONBOARDING] Failed to parse payload in _build_onboarding_context_line: {e}")
             continue
         payload = _merge_nested_memory_context_result(payload)
+        if isinstance(payload, dict) and payload.get("_unchanged") is True:
+            continue  # a repeat reference (AIS-740) — the earlier result holds the payload
         
         if not isinstance(payload, dict):
             continue
@@ -792,6 +794,8 @@ def _read_recent_memory_context_payload(
         except Exception:
             continue
         payload = _merge_nested_memory_context_result(payload)
+        if isinstance(payload, dict) and payload.get("_unchanged") is True:
+            continue  # a repeat reference (AIS-740) — the earlier result holds the payload
         
         if isinstance(payload, dict):
             return payload
@@ -1303,6 +1307,8 @@ def _read_recent_onboarding_metadata_from_memory_context(
             continue
 
         payload = _merge_nested_memory_context_result(payload)
+        if isinstance(payload, dict) and payload.get("_unchanged") is True:
+            continue  # a repeat reference (AIS-740) — the earlier result holds the payload
 
         if not isinstance(payload, dict):
             continue

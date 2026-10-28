@@ -416,6 +416,7 @@ def load_cli_config() -> Dict[str, Any]:
         "compression": {
             "enabled": True,      # Auto-compress when approaching context limit
             "threshold": 0.75,    # Compress at 75% of model's context limit (raised from 0.50 — AIS-275)
+            "max_prompt_tokens": "auto",  # Absolute trigger cap; auto = 80k on AIMDS Suite (AIS-740)
         },
         "ingest": {
             # mcp_records capacity policy (AIS-275): TTL plus per-tool and

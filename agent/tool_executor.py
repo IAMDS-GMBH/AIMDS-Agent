@@ -44,6 +44,7 @@ from agent.open_questions import (
 from tools.terminal_tool import (
     get_active_env,
 )
+from tools.memory_context_shaper import dedupe_memory_context_message, is_memory_context_tool
 from tools.thread_context import propagate_context_to_thread
 from tools.tool_result_storage import (
     maybe_persist_tool_result,
@@ -874,6 +875,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         function_result = _absorb_bridge_result(agent, name, args, function_result)
         _tool_content = agent._tool_result_content_for_active_model(name, function_result)
         messages.append(make_tool_result_message(name, _tool_content, tc.id))
+        if is_memory_context_tool(name):
+            dedupe_memory_context_message(messages)
 
         # ── Per-tool /steer drain ───────────────────────────────────
         # Same as the sequential path: drain between each collected
@@ -1587,6 +1590,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         function_result = _absorb_bridge_result(agent, function_name, function_args, function_result)
         _tool_content = agent._tool_result_content_for_active_model(function_name, function_result)
         messages.append(make_tool_result_message(function_name, _tool_content, tool_call.id))
+        if is_memory_context_tool(function_name):
+            # A repeat of a briefing already in the history adds nothing (AIS-740).
+            dedupe_memory_context_message(messages)
 
         # ── Per-tool /steer drain ───────────────────────────────────
         # Drain pending steer BETWEEN individual tool calls so the
