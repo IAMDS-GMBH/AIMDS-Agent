@@ -75,9 +75,9 @@ def _assert_compatible(tool, prop, suite, local):
         pytest.fail(f"{tool}.{prop}: local adds an enum the suite does not restrict")
 
 
-def test_snapshot_has_the_26_suite_tools():
+def test_snapshot_has_the_27_suite_tools():
     tools = _snapshot()
-    assert len(tools) == 26
+    assert len(tools) == 27  # go-mcp-openproject 0.6.1 (AIS-711)
     assert all(name.startswith("pm_") for name in tools)
 
 
@@ -126,12 +126,15 @@ def test_shared_descriptions_follow_the_suite(local_tools):
     Suite's text (identity tools and a few local hints differ on purpose)."""
     suite = _snapshot()
     verbatim = {"pm_list_work_packages", "pm_search_work_packages", "pm_comment_work_package", "pm_list_boards",
-                "pm_get_board", "pm_list_meetings", "pm_get_meeting", "pm_create_meeting",
+                "pm_list_meetings", "pm_get_meeting", "pm_create_meeting", "pm_get_project",
                 "pm_add_meeting_agenda_item", "pm_delete_time_entry", "pm_list_reference_data", "pm_list_users",
-                "pm_get_work_package", "pm_list_work_package_activity"}
+                "pm_get_work_package", "pm_list_work_package_activity", "pm_delete_work_package_relation"}
     for name in verbatim:
         assert local_tools[name]["description"] == suite[name]["description"], name
-    for name in set(suite) - verbatim - {"pm_link_account", "pm_link_status", "pm_unlink_account", "pm_list_time_entries"}:
+    # pm_get_board: the local board is the saved query and its matches, not
+    # the Suite's per-column split (go-mcp-openproject 0.6, AIS-597).
+    local_text = {"pm_link_account", "pm_link_status", "pm_unlink_account", "pm_list_time_entries", "pm_get_board"}
+    for name in set(suite) - verbatim - local_text:
         assert local_tools[name]["description"].startswith(suite[name]["description"].split(". ")[0]), name
 
 
@@ -157,7 +160,7 @@ def test_project_and_work_package_parameter_descriptions_follow_the_suite(local_
             if "description" in spec and (prop == "project" or "anyOf" in spec):
                 assert local_props[prop].get("description") == spec["description"], (name, prop)
                 checked += 1
-    assert checked >= 20
+    assert checked >= 18
 
 
 def test_manifest_enables_exactly_the_server_tools(monkeypatch):

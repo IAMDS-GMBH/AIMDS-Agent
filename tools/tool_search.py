@@ -411,6 +411,32 @@ def _tokenize(text: str) -> List[str]:
     return [t.lower() for t in _TOKEN_RE.findall(text)]
 
 
+_DEPRECATED_RE = re.compile(r"^\W*deprecated\b", re.IGNORECASE)
+
+
+_SUCCESSOR_RE = re.compile(r"\buse\s+`?([A-Za-z][\w-]*)")
+
+
+def _is_deprecated(description: str) -> bool:
+    """The server marks the tool deprecated at the start of its description."""
+    return bool(_DEPRECATED_RE.match(str(description or "")))
+
+
+def _successor_entry(catalog: List["CatalogEntry"], entry: "CatalogEntry") -> Optional["CatalogEntry"]:
+    """The tool a deprecated tool's description names ("use pm_list_work_packages"),
+    on the same server; None when it names none or the catalog lacks it."""
+    match = _SUCCESSOR_RE.search(str(entry.description or ""))
+    if not match:
+        return None
+    successor = match.group(1).lower()
+    for other in catalog:
+        name = other.name.lower()
+        if other is not entry and other.source_name == entry.source_name and other.kind == "tool" \
+                and (name == successor or name.endswith(f"_{successor}") or name.endswith(f"-{successor}")):
+            return other
+    return None
+
+
 def _mcp_name_group(name: str) -> str:
     """``mcp_<Server>_<tool>`` → ``mcp_<server>`` (empty for native tools)."""
     parts = str(name or "").split("_")
@@ -1283,6 +1309,7 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
     k1 = 1.5
     b = 0.75
     scored: List[Tuple[float, CatalogEntry]] = []
+    inherited: Dict[str, Tuple[float, CatalogEntry]] = {}  # successor of a deprecated hit -> its score
     for entry in catalog:
         # Precomputed in `build_catalog`; recomputed only for entries a
         # caller constructed by hand (several tests do this).
@@ -1406,6 +1433,12 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
                 boost += 31.0 if _openproject_kind(entry.name) == _OP_SUITE else 30.0
                 break
 
+        # A tool its server marks deprecated ("DEPRECATED — use X …", e.g.
+        # go-mcp-openproject 0.6's pm_search_work_packages, AIS-711) hands its
+        # match to the successor it names and ranks below it, unless the
+        # query names the deprecated tool outright.
+        deprecated = _is_deprecated(entry.description) and not (clean_query and clean_name.endswith(clean_query))
+
         # Utility tool de-prioritization: boilerplate MCP utility tools shouldn't drown domain tools
         if any(entry.name.endswith(f"_{u}") for u in ("get_prompt", "list_prompts", "list_resources", "read_resource")):
             if not any(k in query_lower for k in ("prompt", "prompts", "resource", "resources")):
@@ -1420,7 +1453,19 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
         if non_generic_query_tokens and not matched_specific_tokens and not matched_name_tokens and not any(t in entry._source_tokens for t in non_generic_query_tokens):
             continue
 
+        if deprecated:
+            successor = _successor_entry(catalog, entry)
+            if successor is not None:
+                inherited[successor.name] = (max(total_score, inherited.get(successor.name, (0.0, None))[0]), successor)
+            total_score -= 25.0
+
         scored.append((total_score, entry))
+
+    if inherited:
+        best = {e.name: s for s, e in scored}
+        for name, (score, successor) in inherited.items():
+            if score > best.get(name, float("-inf")):
+                scored = [(s, e) for s, e in scored if e.name != name] + [(score, successor)]
 
     if not scored:
         # Fallback: literal substring match on original tool name if filtered out

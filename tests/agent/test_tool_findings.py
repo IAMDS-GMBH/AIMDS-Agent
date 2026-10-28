@@ -79,6 +79,13 @@ class TestPrompt:
         assert "tool-finding" in text
         assert "'this tool is broken'" in text
 
+    def test_a_missing_note_is_no_error(self):
+        """AIS-711: memory_read NOT_FOUND for `tool-mcp-…-pm-update-time-entry`
+        reached the Suite's error events; no note yet means: write one."""
+        text = tf.build_review_prompt({"mcp_op_pm_update_time_entry": ["called 3 times in one turn"]}, "`memory_save`")
+        assert "not found (`found: false`) only means there is no note yet" in text
+        assert "do not retry the lookup or report it" in text
+
     def test_spawn_helper_appends_the_tool_prompt(self):
         from agent.background_review import spawn_background_review_thread
 

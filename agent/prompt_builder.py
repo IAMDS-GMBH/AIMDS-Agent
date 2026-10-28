@@ -2695,6 +2695,61 @@ def _openproject_tools_of(names: "set[str]", suffixes: "tuple[str, ...]", kind: 
     return [t for s in suffixes for t in openproject_tools(names, s) if openproject_kind(t) == kind]
 
 
+def _tool_param_names(name: str) -> "set[str]":
+    """Parameter names of a registered tool's schema (empty when unknown)."""
+    try:
+        from tools.registry import registry
+
+        entry = registry.get_entry(name)
+        schema = getattr(entry, "schema", None) or {}
+        params = schema.get("parameters") or schema.get("inputSchema") or {}
+        return set((params.get("properties") or {}).keys())
+    except Exception:
+        return set()
+
+
+# AIS-711 (go-mcp-openproject 0.6): what one call can cover. Prod sessions
+# looped instead — one pm_list_time_entries per project (449 requests a day),
+# status changes one by one, a relation call after every create.
+_OPENPROJECT_SET_CAPABILITIES = (
+    ("pm_list_time_entries", "group_by", "hours of a day or week across all projects in one "
+                                         "`pm_list_time_entries` call with the date range and `group_by`"),
+    ("pm_list_work_packages", "query", "free-text search through `pm_list_work_packages` `query`"),
+    ("pm_update_work_package", "ids", "the same change for several work packages through `ids`"),
+    ("pm_create_work_package", "relates_to", "relations of a new work package through `relates_to` when creating it"),
+)
+
+
+def _openproject_whole_sets(names: "set[str]", op_tools: "dict[str, dict[str, list[str]]]") -> str:
+    """AIS-711: OpenProject principles for the server the model will use.
+
+    Capabilities come from the registered schemas, so an older Suite without
+    ``query``/``group_by``/``ids``/``relates_to`` is never told to pass them
+    (its server would ignore an unknown argument silently).
+    """
+    from tools.openproject_names import openproject_kind, openproject_tools
+
+    kind = "suite" if op_tools["suite"]["read"] + op_tools["suite"]["write"] else "local"
+
+    def tool_of(suffix: str) -> "str | None":
+        return next((t for t in openproject_tools(names, suffix) if openproject_kind(t) == kind), None)
+
+    def has(suffix: str, param: str) -> bool:
+        tool = tool_of(suffix)
+        return bool(tool) and param in _tool_param_names(tool)
+
+    can = [text for suffix, param, text in _OPENPROJECT_SET_CAPABILITIES if has(suffix, param)]
+    out = ""
+    if can:
+        out += " OpenProject covers a whole set in one call instead of one call per item: " + "; ".join(can) + "."
+    if has("pm_update_work_package", "status_path"):
+        out += " A refused status change answers with `retry`: pass it unchanged as the next call's arguments."
+    if tool_of("pm_link_status"):
+        out += (" Call `pm_link_status` only after a tool answered `action_required` or when the user asks"
+                " which account is linked — never as a check before other calls.")
+    return out
+
+
 def _ticket_systems_line(names: "set[str]", op_tools: "dict[str, dict[str, list[str]]]") -> str:
     """AIS-483: which ticket systems this session reaches, one entry tool each.
 
@@ -2724,6 +2779,7 @@ def _ticket_systems_line(names: "set[str]", op_tools: "dict[str, dict[str, list[
         # keys itself; users name tickets by key, so answers do too.
         tail += (" OpenProject `project` takes an id, identifier, name or ticket key."
                  " Name work packages by their `key` (e.g. AIS-499), not the numeric id.")
+        tail += _openproject_whole_sets(names, op_tools)
     if len(parts) == 1:
         return text + " Tickets/work items mean this system unless the user names another." + tail
     text += " Tickets/work items without a named system: check every reachable system and label each result with its system."

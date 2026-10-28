@@ -8,9 +8,13 @@ totals and a per-work-package breakdown are kept, never the raw rows.
 AIS-483: the tool comes from the Suite's go-mcp-openproject
 (``mcp_AIMDSSuiteMCP_mcp_openproject_pm_list_time_entries``, preferred) or the
 bundled OpenProjectMCP (``mcp_op_pm_list_time_entries``) — matched by the
-``pm_*`` suffix, never by server name. The Suite requires ``project`` (or
-``work_package_id``), so there the entries are fetched per visible project
-(``pm_list_projects``); the bundled server takes the whole range in one go.
+``pm_*`` suffix, never by server name.
+
+AIS-711: both answer for every readable project when ``project`` is left out
+(the Suite since go-mcp-openproject 0.4.0, AIS-486), so the whole range is one
+filtered listing on either server. The per-project loop over
+``pm_list_projects`` it replaces timed out the morning brief on the listing
+alone and cost one request per project.
 """
 
 from __future__ import annotations
@@ -24,10 +28,8 @@ from tools.openproject_names import SUITE, openproject_kind, openproject_tools, 
 
 SERVER = "OpenProjectMCP"
 LIST = "pm_list_time_entries"
-PROJECTS = "pm_list_projects"
 PAGE_SIZE = 200  # the contract's ceiling
 MAX_PAGES = 25
-MAX_PROJECTS = 60  # Suite: one listing per visible project
 
 _ISO_DURATION = re.compile(r"P(?:(\d+(?:\.\d+)?)D)?(?:T(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?)?")
 
@@ -76,16 +78,13 @@ class OpenProjectAdapter(SourceAdapter):
             return SourceStatus(self.name, "skipped", "disabled")
         if not entry.get("connected"):
             return SourceStatus(self.name, "skipped", "not connected")
-        if openproject_kind(tool) == SUITE and self.resolve(ctx, PROJECTS) is None:
-            return SourceStatus(self.name, "skipped", f"tool not in tools.include: {PROJECTS}")
         return None
 
     def _pages(self, ctx: SourceContext, tool: str, args: Dict[str, Any]) -> List[Any]:
         """Every entry of one filter set. ``offset`` is the 1-based page
-        number (contract doc); the Suite's ``next_offset`` is offset + count,
-        which skips pages, so the next page is always offset + 1. The Suite's
-        ``has_more`` (offset + count < total) stays true past the last page,
-        so there a short page ends the walk."""
+        number (contract doc), so the next page is always offset + 1. Older
+        Suites kept ``has_more`` true past the last page, so there a short
+        page ends the walk too."""
         suite = openproject_kind(tool) == SUITE
         entries: List[Any] = []
         offset = 1
@@ -98,36 +97,17 @@ class OpenProjectAdapter(SourceAdapter):
             offset += 1
         return entries
 
-    def _suite_projects(self, ctx: SourceContext) -> List[str]:
-        data = dispatch_json(ctx, self.resolve(ctx, PROJECTS), {})
-        ids: List[str] = []
-        for project in first_list(data, "projects", "results"):
-            if not isinstance(project, dict) or project.get("active") is False:
-                continue
-            ref = project.get("id") or project.get("identifier")
-            if ref not in (None, "") and str(ref) not in ids:
-                ids.append(str(ref))
-        return ids[:MAX_PROJECTS]
-
     def fetch(self, window: Window, ctx: SourceContext) -> List[BriefItem]:
         tool = self.resolve(ctx, LIST)
         if window.kind == "morning-brief":
             start = end = window.last_working_day
         else:
             start, end = window.week_start, min(window.week_end, window.today)
+        # One listing across every readable project (no ``project``): the
+        # brief needs per-day and per-work-package hours of the user's own
+        # entries, which a single page of a day or week usually holds.
         args = {"spent_on_from": start.isoformat(), "spent_on_to": end.isoformat(), "user": "me", "limit": PAGE_SIZE}
-        entries: List[Any] = []
-        if openproject_kind(tool) == SUITE:
-            seen: set = set()
-            for project in self._suite_projects(ctx):
-                for entry in self._pages(ctx, tool, dict(args, project=project)):
-                    key = entry.get("id") if isinstance(entry, dict) else None
-                    if key is not None and key in seen:
-                        continue
-                    seen.add(key)
-                    entries.append(entry)
-        else:
-            entries = self._pages(ctx, tool, args)
+        entries = self._pages(ctx, tool, args)
         per_day: Dict[str, float] = defaultdict(float)
         per_wp: Dict[str, Dict[str, float]] = defaultdict(lambda: defaultdict(float))
         for entry in entries:

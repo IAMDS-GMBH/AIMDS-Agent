@@ -73,8 +73,8 @@ auth:
       secret: false
 
 tools:
-  # AIS-479: the AIMDS Suite go-mcp-openproject contract (26 pm_* tools,
-  # contract/go-mcp-openproject.tools.json) plus pm_delete_work_package.
+  # AIS-479: the AIMDS Suite go-mcp-openproject contract (27 pm_* tools since
+  # 0.6.1, contract/go-mcp-openproject.tools.json) plus pm_delete_work_package.
   default_enabled:
     - pm_link_status
     - pm_link_account
@@ -92,6 +92,7 @@ tools:
     - pm_list_work_package_activity
     - pm_list_work_package_relations
     - pm_create_work_package_relation
+    - pm_delete_work_package_relation
     - pm_delete_work_package
     - pm_list_boards
     - pm_get_board
@@ -154,7 +155,7 @@ tools:
 
 post_install: |
   OpenProject MCP has been configured. Tools are registered as
-  mcp_op_<tool> (e.g. mcp_op_pm_search_work_packages) and follow the AIMDS
+  mcp_op_<tool> (e.g. mcp_op_pm_list_work_packages) and follow the AIMDS
   Suite's pm_* tool contract.
 
   - Read scope comes from OPENPROJECT_READ_PROJECTS; writes stay disabled until

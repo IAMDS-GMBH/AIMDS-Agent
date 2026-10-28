@@ -91,11 +91,14 @@ def _openproject_lookup(kind: str) -> Callable[[Sequence[str]], List[str]]:
         except Exception:
             return []
         out: List[str] = []
-        for wanted in ("pm_get_work_package", "pm_search_work_packages"):
-            for name in names:
-                if openproject_kind(name) == kind and pm_suffix(name) == wanted and not is_hidden(name):
-                    out.append(name)
-                    break
+        # The getter, then the search: pm_list_work_packages(query) since
+        # go-mcp-openproject 0.6.0 (AIS-711); the deprecated
+        # pm_search_work_packages only where the list tool is missing.
+        for wanted in (("pm_get_work_package",), ("pm_list_work_packages", "pm_search_work_packages")):
+            found = [n for n in names if openproject_kind(n) == kind and pm_suffix(n) in wanted and not is_hidden(n)]
+            found.sort(key=lambda n: wanted.index(pm_suffix(n)))
+            if found:
+                out.append(found[0])
         return out
 
     return lookup

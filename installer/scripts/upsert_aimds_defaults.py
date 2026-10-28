@@ -172,6 +172,8 @@ _AIMDS_TOOL_INCLUDE_RAW = [
     "pm_list_work_package_activity",
     "pm_list_work_package_relations",
     "pm_create_work_package_relation",
+    # go-mcp-openproject 0.6.1 (AIS-720/AIS-711).
+    "pm_delete_work_package_relation",
     "pm_list_boards",
     "pm_get_board",
     "pm_list_meetings",
