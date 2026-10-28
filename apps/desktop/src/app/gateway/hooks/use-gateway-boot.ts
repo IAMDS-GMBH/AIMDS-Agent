@@ -35,6 +35,15 @@ import {
 } from '@/store/session'
 import type { RpcEvent } from '@/types/hermes'
 
+import {
+  isBackendReadyProgress,
+  RECOVERY_CONNECTION_TIMEOUT_MS,
+  RECOVERY_REVALIDATE_TIMEOUT_MS,
+  RECOVERY_WS_URL_TIMEOUT_MS,
+  recoveryAction,
+  withTimeout
+} from '../gateway-recovery'
+
 // AIS-352: the initial boot() had no watchdog — while startHermes() kept
 // retrying (or sat behind a macOS permission dialog) nothing ever set
 // boot.error, so the fullscreen CONNECTING overlay had no way out. Longer than
@@ -135,6 +144,12 @@ export function useGatewayBoot({
     // signals that fire around wake (power resume, network online, the window
     // becoming visible).
     let bootCompleted = false
+    // AIS-749: a failed initial boot is re-run by the wake signals and by the
+    // main process reporting a ready backend — it used to be a dead end.
+    let booting = false
+    let bootStalled = false
+    let bootRun = 0
+    let bootFailureNotified = false
     let reconnecting = false
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let reconnectAttempt = 0
@@ -203,15 +218,28 @@ export function useGatewayBoot({
         // whose 'exit' would clear the main process's cached descriptor — without
         // this the renderer re-dials the same dead endpoint forever and stays on
         // "Starting Hermes…". The probe is a no-op for a healthy or local backend.
-        await desktop.revalidateConnection?.().catch(() => undefined)
+        //
+        // AIS-749: every awaited step is bounded, so a call that never settles
+        // (e.g. across a sleep) cannot keep `reconnecting` set forever and turn
+        // every later wake signal into a no-op.
+        const revalidate = desktop.revalidateConnection?.()
 
-        const conn = await desktop.getConnection($activeGatewayProfile.get())
+        if (revalidate) {
+          await withTimeout(revalidate, RECOVERY_REVALIDATE_TIMEOUT_MS, 'revalidate timed out').catch(() => undefined)
+        }
+
+        const conn = await withTimeout(
+          desktop.getConnection($activeGatewayProfile.get()),
+          RECOVERY_CONNECTION_TIMEOUT_MS,
+          'Hermes backend connection timed out'
+        )
 
         if (cancelled) {
           return
         }
 
         publish(conn)
+
         // Re-mint the WS URL before reconnecting. OAuth tickets are single-use
         // with a short TTL, so the ticket baked into the cached conn.wsUrl is
         // dead on every reconnect after the initial boot — reusing it surfaces
@@ -219,7 +247,12 @@ export function useGatewayBoot({
         // mints a fresh ticket (or throws a reauth error in OAuth mode rather
         // than connecting with a stale one). For local/token gateways the URL
         // carries a long-lived token and the re-mint is a cheap no-op.
-        const wsUrl = await resolveGatewayWsUrl(desktop, conn)
+        const wsUrl = await withTimeout(
+          resolveGatewayWsUrl(desktop, conn),
+          RECOVERY_WS_URL_TIMEOUT_MS,
+          'Hermes gateway address timed out'
+        )
+
         await gateway.connect(wsUrl)
 
         if (cancelled) {
@@ -266,7 +299,25 @@ export function useGatewayBoot({
       }, delay)
     }
 
+    const currentRecoveryAction = () =>
+      recoveryAction({
+        cancelled,
+        bootCompleted,
+        booting,
+        bootStalled,
+        gatewayOpen: gatewayOpen(),
+        refreshPending
+      })
+
     const reconnectNow = () => {
+      const action = currentRecoveryAction()
+
+      if (action === 'boot') {
+        void boot()
+
+        return
+      }
+
       if (cancelled || !bootCompleted) {
         return
       }
@@ -275,14 +326,36 @@ export function useGatewayBoot({
       reconnectAttempt = 0
       reconnectSecondaryGateways()
 
-      if (!gatewayOpen()) {
+      if (action === 'reconnect') {
         void attemptReconnect()
-      } else if (refreshPending) {
+      } else if (action === 'refresh') {
         void retryRefresh()
       }
     }
 
-    const offBootProgress = desktop.onBootProgress(payload => applyDesktopBootProgress(payload))
+    // AIS-749: the main process has a ready backend (e.g. a second boot chain
+    // right after the first one failed). A renderer without an open socket
+    // connects to it instead of waiting for a wake signal.
+    const onBackendReady = () => {
+      const action = currentRecoveryAction()
+
+      if (action === 'boot') {
+        void boot()
+      } else if (action === 'reconnect') {
+        clearReconnectTimer()
+        reconnectAttempt = 0
+        void attemptReconnect()
+      }
+    }
+
+    const offBootProgress = desktop.onBootProgress(payload => {
+      applyDesktopBootProgress(payload)
+
+      if (isBackendReadyProgress(payload)) {
+        onBackendReady()
+      }
+    })
+
     void desktop
       .getBootProgress()
       .then(snapshot => applyDesktopBootProgress(snapshot))
@@ -404,6 +477,12 @@ export function useGatewayBoot({
       .catch(() => undefined)
 
     async function boot() {
+      const run = ++bootRun
+      // A newer run (started by a wake signal) supersedes this one.
+      const stale = () => cancelled || run !== bootRun
+      booting = true
+      bootStalled = false
+
       try {
         const connection = desktop.getConnection()
         let conn: Awaited<typeof connection>
@@ -411,18 +490,20 @@ export function useGatewayBoot({
         try {
           conn = await withBootWatchdog(connection, BOOT_WATCHDOG_MS, () => translateNow('boot.errors.startupTimedOut'))
         } catch (err) {
-          if (!(err instanceof BootWatchdogTimeout) || cancelled) {
+          if (!(err instanceof BootWatchdogTimeout) || stale()) {
             throw err
           }
 
           // AIS-482: say it takes too long, but keep waiting — a backend that
           // comes up late (a permission answered after minutes) still boots
-          // instead of leaving the window on CONNECTING for good.
+          // instead of leaving the window on CONNECTING for good. AIS-749: a
+          // wake signal meanwhile starts a fresh run.
           failDesktopBoot(err.message)
+          bootStalled = true
           conn = await connection
         }
 
-        if (cancelled) {
+        if (stale()) {
           return
         }
 
@@ -440,7 +521,7 @@ export function useGatewayBoot({
         const wsUrl = await resolveGatewayWsUrl(desktop, conn)
         await gateway.connect(wsUrl)
 
-        if (cancelled) {
+        if (stale()) {
           return
         }
 
@@ -471,7 +552,7 @@ export function useGatewayBoot({
           await ensureDefaultWorkspaceCwd()
           await callbacksRef.current.refreshHermesConfig()
 
-          if (cancelled) {
+          if (stale()) {
             return
           }
 
@@ -482,7 +563,7 @@ export function useGatewayBoot({
           })
           await callbacksRef.current.refreshSessions()
         } catch (err) {
-          if (cancelled) {
+          if (stale()) {
             return
           }
 
@@ -491,14 +572,31 @@ export function useGatewayBoot({
           scheduleRefreshRetry()
         }
 
+        if (stale()) {
+          return
+        }
+
         completeDesktopBoot()
         bootCompleted = true
+        bootFailureNotified = false
       } catch (err) {
-        if (!cancelled) {
+        if (!stale()) {
           const message = err instanceof Error ? err.message : String(err)
           failDesktopBoot(message)
-          notifyError(err, translateNow('boot.errors.desktopBootFailed'))
+
+          // One notice per failure episode; a re-run on every wake signal
+          // must not stack toasts.
+          if (!bootFailureNotified) {
+            bootFailureNotified = true
+            notifyError(err, translateNow('boot.errors.desktopBootFailed'))
+          }
+
           setSessionsLoading(false)
+        }
+      } finally {
+        if (run === bootRun) {
+          booting = false
+          bootStalled = false
         }
       }
     }

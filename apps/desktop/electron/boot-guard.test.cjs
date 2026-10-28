@@ -130,6 +130,78 @@ test('waitForBackendReady gives up after the deadline with the last probe error 
   )
 })
 
+// AIS-749: the nightly restart spawned the backend in a dark wake, the Mac
+// slept again for 17 min, and the wall-clock deadline then stopped a backend
+// that was just mounting its routes.
+test('waitForBackendReady does not count time asleep against the deadline', async () => {
+  let t = 1_000_000
+  let sleeps = 0
+  const suspended = []
+  const slow = []
+  const now = () => t
+  const sleep = async ms => {
+    sleeps += 1
+    // The 4th poll sleeps through a 17-minute suspension.
+    t += sleeps === 4 ? 17 * 60_000 : ms
+  }
+  let calls = 0
+  const probe = async () => {
+    calls += 1
+    if (calls < 8) throw new Error('connect ECONNREFUSED 127.0.0.1:9120')
+  }
+  const result = await waitForBackendReady({
+    probe,
+    now,
+    sleep,
+    pollMs: 500,
+    timeoutMs: 180_000,
+    slowIntervalMs: 10_000,
+    onSlow: ms => slow.push(ms),
+    onSuspend: ms => suspended.push(ms)
+  })
+  assert.equal(calls, 8, 'the probe runs again after the wake and succeeds')
+  assert.deepEqual(suspended, [17 * 60_000 - 500])
+  assert.equal(result.suspended_ms, 17 * 60_000 - 500)
+  assert.equal(result.waited_ms, 7 * 500, 'only awake time counts as waiting')
+  assert.deepEqual(slow, [], 'no "still waiting" hint for time asleep')
+})
+
+test('waitForBackendReady still gives up after the awake deadline once suspended', async () => {
+  let t = 0
+  let sleeps = 0
+  const now = () => t
+  const sleep = async ms => {
+    sleeps += 1
+    t += sleeps === 2 ? 60 * 60_000 : ms
+  }
+  const probe = async () => {
+    throw new Error('connect ECONNREFUSED 127.0.0.1:9120')
+  }
+  await assert.rejects(
+    waitForBackendReady({ probe, now, sleep, pollMs: 500, timeoutMs: 3_000 }),
+    err => err.code === 'backend-not-ready' && err.waited_ms >= 3_000 && err.waited_ms < 4_000 && err.suspended_ms === 60 * 60_000 - 500
+  )
+})
+
+test('waitForBackendReady treats a slow probe as awake time, not as a suspension', async () => {
+  let t = 0
+  const now = () => t
+  const sleep = async ms => {
+    t += ms
+  }
+  const suspended = []
+  // Each probe hangs for its full 15 s request timeout.
+  const probe = async () => {
+    t += 15_000
+    throw new Error('timeout')
+  }
+  await assert.rejects(
+    waitForBackendReady({ probe, now, sleep, pollMs: 500, timeoutMs: 60_000, onSuspend: ms => suspended.push(ms) }),
+    err => err.code === 'backend-not-ready'
+  )
+  assert.deepEqual(suspended, [])
+})
+
 test('slowBootMessage names the elapsed seconds', () => {
   assert.match(slowBootMessage(12_400), /\(12 s\)/)
   assert.match(slowBootMessage(100), /\(1 s\)/)

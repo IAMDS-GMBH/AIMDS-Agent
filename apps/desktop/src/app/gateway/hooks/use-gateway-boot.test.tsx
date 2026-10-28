@@ -1,6 +1,7 @@
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { DesktopBootProgress } from '@/global'
 import { $desktopBoot } from '@/store/boot'
 import { $gatewayState } from '@/store/session'
 
@@ -428,5 +429,181 @@ describe('useGatewayBoot after wake from sleep (AIS-519)', () => {
       await vi.advanceTimersByTimeAsync(120_000)
     })
     expect(refreshHermesConfig).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('useGatewayBoot after a boot that failed across sleep (AIS-749)', () => {
+  // 2026-10-28: the nightly restart reloaded the window in a dark wake, the
+  // main process's boot chain failed after the Mac slept 17 min, and a second
+  // chain had a ready backend 2 s later. The renderer never connected: every
+  // wake signal was ignored before a completed boot.
+  const conn = {
+    authMode: 'token' as const,
+    baseUrl: 'http://127.0.0.1:9120',
+    profile: 'default',
+    token: 't',
+    wsUrl: 'ws://127.0.0.1:9120/api/ws?token=t'
+  }
+
+  type ProgressPayload = DesktopBootProgress
+
+  function failingThenReady() {
+    const desktop = fakeDesktop()
+    let progress: (payload: ProgressPayload) => void = () => undefined
+    let powerResume: () => void = () => undefined
+    let fail = true
+
+    desktop.getConnection = vi.fn(async () => {
+      if (fail) {
+        throw new Error('Hermes backend did not become ready: connect ECONNREFUSED 127.0.0.1:9120')
+      }
+
+      return conn
+    }) as unknown as typeof desktop.getConnection
+    desktop.onBootProgress = vi.fn((callback: (payload: ProgressPayload) => void) => {
+      progress = callback
+
+      return () => undefined
+    }) as unknown as typeof desktop.onBootProgress
+    desktop.onPowerResume = vi.fn((callback: () => void) => {
+      powerResume = callback
+
+      return () => undefined
+    }) as unknown as typeof desktop.onPowerResume
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    return {
+      desktop,
+      recover: () => {
+        fail = false
+      },
+      sendProgress: (phase: string) =>
+        progress({ error: null, fakeMode: false, message: phase, phase, progress: 94, running: true, timestamp: Date.now() }),
+      powerResume: () => powerResume()
+    }
+  }
+
+  async function failInitialBoot() {
+    render(<Harness />)
+    await flushAsync()
+    expect($desktopBoot.get().error).toBeTruthy()
+    expect(FakeWebSocket.instances).toHaveLength(0)
+  }
+
+  async function settle() {
+    await flushAsync()
+    await flushAsync()
+    await flushAsync()
+  }
+
+  it('connects when the main process reports a ready backend after the failure', async () => {
+    const h = failingThenReady()
+    await failInitialBoot()
+
+    // The second boot chain's steps clear the error (the CONNECTING overlay)…
+    h.recover()
+    await act(async () => {
+      h.sendProgress('backend.resolve')
+      h.sendProgress('backend.ready')
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    await settle()
+
+    // …and its ready report now leads to a connect instead of a dead end.
+    expect($gatewayState.get()).toBe('open')
+    expect($desktopBoot.get().error).toBeNull()
+    expect($desktopBoot.get().phase).toBe('renderer.ready')
+  })
+
+  it('a power resume after the failure re-runs the boot', async () => {
+    const h = failingThenReady()
+    await failInitialBoot()
+
+    h.recover()
+    await act(async () => {
+      h.powerResume()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    await settle()
+
+    expect($gatewayState.get()).toBe('open')
+    expect($desktopBoot.get().phase).toBe('renderer.ready')
+  })
+
+  it('the window becoming visible after the failure re-runs the boot', async () => {
+    const h = failingThenReady()
+    await failInitialBoot()
+
+    h.recover()
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    await settle()
+
+    expect(h.desktop.getConnection).toHaveBeenCalledTimes(2)
+    expect($gatewayState.get()).toBe('open')
+  })
+
+  it('a re-run that fails again keeps the failure overlay and stays recoverable', async () => {
+    const h = failingThenReady()
+    await failInitialBoot()
+
+    await act(async () => {
+      h.powerResume()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    await settle()
+    expect($desktopBoot.get().error).toBeTruthy()
+
+    h.recover()
+    await act(async () => {
+      h.powerResume()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    await settle()
+
+    expect($gatewayState.get()).toBe('open')
+  })
+
+  it('a reconnect whose getConnection never settles does not block later wake signals', async () => {
+    const desktop = fakeDesktop()
+    let powerResume: () => void = () => undefined
+    let hang = false
+    desktop.getConnection = vi.fn(() =>
+      hang ? new Promise(() => undefined) : Promise.resolve(conn)
+    ) as unknown as typeof desktop.getConnection
+    desktop.onPowerResume = vi.fn((callback: () => void) => {
+      powerResume = callback
+
+      return () => undefined
+    }) as unknown as typeof desktop.onPowerResume
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await settle()
+    expect($gatewayState.get()).toBe('open')
+
+    // Sleep drops the socket; the reconnect's getConnection hangs.
+    hang = true
+    act(() => FakeWebSocket.instances[0].drop())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000)
+    })
+    const callsWhileHanging = vi.mocked(desktop.getConnection).mock.calls.length
+
+    // Without a bound, `reconnecting` stayed set and this resume was a no-op.
+    hang = false
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000)
+    })
+    await act(async () => {
+      powerResume()
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    await settle()
+
+    expect(vi.mocked(desktop.getConnection).mock.calls.length).toBeGreaterThan(callsWhileHanging)
+    expect($gatewayState.get()).toBe('open')
   })
 })

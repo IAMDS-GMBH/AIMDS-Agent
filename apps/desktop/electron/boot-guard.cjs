@@ -81,35 +81,68 @@ function isScheduledRestartRecovery({ now, scheduledRestartAt, quietMs = SCHEDUL
   return Number.isFinite(scheduledRestartAt) && now >= scheduledRestartAt && now - scheduledRestartAt <= quietMs
 }
 
+// AIS-749: a gap between two polls this much longer than the poll interval
+// means the machine slept (the event loop does not run while suspended, the
+// wall clock keeps going). A probe never takes this long: its own request
+// timeout is 15 s.
+const READY_SUSPEND_GAP_MS = 30_000
+
 /**
  * Poll `probe()` until it resolves. Calls `onSlow(elapsedMs)` every
  * `slowIntervalMs` so the boot overlay can say why nothing happens yet.
  * Rejects after `timeoutMs` with the last probe error in the message — the
  * same text shape the incident classifier keys on ("did not become ready").
+ *
+ * AIS-749: the deadline counts awake time. A Mac that went back to sleep a
+ * second after the nightly restart spawned the backend woke 17 min later,
+ * found the wall-clock deadline long gone and stopped a backend that was
+ * just mounting its routes. A suspension (see READY_SUSPEND_GAP_MS) moves the
+ * deadline and the slow-hint clock back by the time asleep; `onSuspend`
+ * reports it.
  */
 async function waitForBackendReady({
   probe,
   timeoutMs = LOCAL_READY_TIMEOUT_MS,
   slowIntervalMs = READY_SLOW_INTERVAL_MS,
   pollMs = READY_POLL_MS,
+  suspendGapMs = READY_SUSPEND_GAP_MS,
   onSlow = () => {},
+  onSuspend = () => {},
   sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
   now = () => Date.now()
 }) {
   const started = now()
-  const deadline = started + timeoutMs
+  let deadline = started + timeoutMs
   let nextSlowAt = started + slowIntervalMs
+  let suspendedMs = 0
   let lastError = null
-  while (now() < deadline) {
+  let lastTick = started
+  const awakeSince = () => now() - started - suspendedMs
+  for (;;) {
+    const tick = now()
+    const gap = tick - lastTick
+    lastTick = tick
+    if (gap > pollMs + suspendGapMs) {
+      const asleep = gap - pollMs
+      suspendedMs += asleep
+      deadline += asleep
+      nextSlowAt += asleep
+      try {
+        onSuspend(asleep)
+      } catch {
+        void 0
+      }
+    }
+    if (tick >= deadline) break
     try {
       await probe()
-      return { waited_ms: now() - started }
+      return { waited_ms: awakeSince(), suspended_ms: suspendedMs }
     } catch (error) {
       lastError = error
     }
     if (now() >= nextSlowAt) {
       try {
-        onSlow(now() - started)
+        onSlow(awakeSince())
       } catch {
         void 0
       }
@@ -119,7 +152,8 @@ async function waitForBackendReady({
   }
   const error = new Error(`Hermes backend did not become ready: ${lastError?.message || 'timeout'}`)
   error.code = 'backend-not-ready'
-  error.waited_ms = now() - started
+  error.waited_ms = awakeSince()
+  error.suspended_ms = suspendedMs
   throw error
 }
 
@@ -133,6 +167,7 @@ module.exports = {
   LOCAL_READY_TIMEOUT_MS,
   READY_POLL_MS,
   READY_SLOW_INTERVAL_MS,
+  READY_SUSPEND_GAP_MS,
   REMOTE_READY_TIMEOUT_MS,
   SCHEDULED_RESTART_QUIET_MS,
   createBackendRegistry,

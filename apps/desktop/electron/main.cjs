@@ -4306,7 +4306,10 @@ async function waitForHermes(baseUrl, token, { timeoutMs = REMOTE_READY_TIMEOUT_
   await waitForBackendReady({
     probe: () => fetchJson(`${baseUrl}/api/status`, token),
     timeoutMs,
-    onSlow
+    onSlow,
+    // AIS-749: time asleep does not count against the deadline.
+    onSuspend: asleepMs =>
+      rememberLog(`[boot] system was asleep for ${Math.round(asleepMs / 1000)} s while waiting for the backend; deadline extended`)
   })
 }
 
@@ -4364,7 +4367,8 @@ function sendPowerResume() {
 let powerResumeRegistered = false
 
 // AIS-428: one backend restart per night (new code, fresh MCP servers),
-// caught up shortly after a wake that slept through it; never mid-turn.
+// caught up shortly after a wake that slept through it; never mid-turn, never
+// in a dark wake (AIS-749).
 const nightlyRestarter = createNightlyRestarter({
   isIdle: async () => {
     // Only the local backend this app started; a remote gateway is not ours.
@@ -4391,6 +4395,9 @@ function registerPowerResumeListeners() {
     powerMonitor.on('resume', sendPowerResume)
     powerMonitor.on('unlock-screen', sendPowerResume)
     powerMonitor.on('resume', () => nightlyRestarter.onResume())
+    // AIS-749: after a suspend only a real wake may run the nightly restart —
+    // timers also fire in the short dark wakes of a Mac on battery.
+    powerMonitor.on('suspend', () => nightlyRestarter.onSuspend())
     // AIS-738: time asleep is no outage of the release feed.
     powerMonitor.on('resume', () => releaseFeedTransientFailures.restart())
   } catch {
