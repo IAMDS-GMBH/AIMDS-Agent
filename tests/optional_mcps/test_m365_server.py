@@ -655,8 +655,10 @@ class TestRegression_ScopeTiering:
         core = {"Mail.ReadWrite", "Mail.Send", "Calendars.ReadWrite", "Chat.ReadWrite", "Contacts.ReadWrite"}
         assert core.issubset(set(server.BASE_SCOPES))
 
-    def test_all_scopes_is_base_plus_groups_plus_admin(self):
-        assert set(server.ALL_SCOPES) == set(server.BASE_SCOPES) | set(server.GROUP_SCOPES) | set(server.ADMIN_SCOPES)
+    def test_all_scopes_is_base_plus_groups_plus_admin_plus_channels(self):
+        assert set(server.ALL_SCOPES) == (
+            set(server.BASE_SCOPES) | set(server.GROUP_SCOPES) | set(server.ADMIN_SCOPES) | set(server.CHANNEL_SCOPES)
+        )
 
     def test_initiate_login_defaults_to_self_consent_scopes(self):
         """AIS-286: the default sign-in requests only tier 0 so non-admins never
@@ -685,7 +687,8 @@ class TestRegression_ScopeTiering:
         with patch.object(server, "_get_msal_app", return_value=mock_app):
             res = server.m365_initiate_login(request_admin_scopes=True)
             assert res["requested_admin_scopes"] is True
-            mock_app.initiate_device_flow.assert_called_once_with(scopes=server.ALL_SCOPES)
+            mock_app.initiate_device_flow.assert_called_once_with(scopes=server.ADMIN_TIER_SCOPES)
+            assert res["flow_data"]["hermes_scope_tier"] == "admin"
 
     def test_check_admin_status_gives_actionable_hint_on_403(self):
         with patch.object(server, "_graph_request", side_effect=RuntimeError("MS Graph API Error [403]: Authorization_RequestDenied")):
@@ -902,7 +905,7 @@ class TestConsentTiers:
 
         assert "Group.Read.All" not in server.ORG_CONSENT_SCOPES
         assert server.GROUPS_SCOPES == server.STANDARD_SCOPES + ["Group.Read.All"]
-        assert server.SCOPE_TIER_ORDER == ("admin", "groups", "standard", "self") == m365_auth.M365_SCOPE_TIER_ORDER
+        assert server.SCOPE_TIER_ORDER == ("channels", "admin", "groups", "standard", "self") == m365_auth.M365_SCOPE_TIER_ORDER
         assert server.SCOPE_TIERS["groups"] == m365_auth.M365_SCOPE_TIERS["groups"] == m365_auth.M365_GROUPS_SCOPES
         assert server.GROUP_SCOPES == m365_auth.M365_GROUP_SCOPES
         assert "Group.Read.All" in server.ALL_SCOPES  # the admin-consent URL grants it
@@ -932,7 +935,9 @@ class TestConsentTiers:
         assert server.SELF_CONSENT_SCOPES == m365_auth.M365_SELF_CONSENT_SCOPES
         assert server.ORG_CONSENT_SCOPES == m365_auth.M365_ORG_CONSENT_SCOPES
         assert server.ADMIN_SCOPES == m365_auth.M365_ADMIN_SCOPES
+        assert server.CHANNEL_SCOPES == m365_auth.M365_CHANNEL_SCOPES
         assert server.ALL_SCOPES == m365_auth.M365_ALL_SCOPES
+        assert server.SCOPE_TIERS == m365_auth.M365_SCOPE_TIERS
         assert set(manifest["tools"]["default_enabled"]) >= {"m365_initiate_login", "m365_complete_login", "m365_generate_admin_consent_url"}
         assert manifest["auth"]["env"][1]["default"] == "organizations"
 
@@ -942,11 +947,15 @@ class TestConsentTiers:
 
         src = server_path.read_text(encoding="utf-8")
         block = src[src.index("except ImportError:\n    SELF_CONSENT_SCOPES"):src.index("# BASE_SCOPES keeps its historical meaning")]
-        found = {name: re.findall(r'"([A-Za-z.]+)"', block[block.index(name):]) for name in ("SELF_CONSENT_SCOPES", "ORG_CONSENT_SCOPES", "ADMIN_SCOPES", "GROUP_SCOPES")}
+        found = {
+            name: re.findall(r'"([A-Za-z.]+)"', block[block.index(f"\n    {name} = "):])
+            for name in ("SELF_CONSENT_SCOPES", "ORG_CONSENT_SCOPES", "ADMIN_SCOPES", "GROUP_SCOPES", "CHANNEL_SCOPES")
+        }
         assert found["SELF_CONSENT_SCOPES"][: len(server.SELF_CONSENT_SCOPES)] == server.SELF_CONSENT_SCOPES
         assert found["ORG_CONSENT_SCOPES"][: len(server.ORG_CONSENT_SCOPES)] == server.ORG_CONSENT_SCOPES
         assert found["ADMIN_SCOPES"][: len(server.ADMIN_SCOPES)] == server.ADMIN_SCOPES
         assert found["GROUP_SCOPES"][: len(server.GROUP_SCOPES)] == server.GROUP_SCOPES
+        assert found["CHANNEL_SCOPES"][: len(server.CHANNEL_SCOPES)] == server.CHANNEL_SCOPES
 
     def test_get_access_token_probes_tiers_in_order_and_caches(self, monkeypatch):
         server._GRANTED_TIER_CACHE.clear()
@@ -962,7 +971,10 @@ class TestConsentTiers:
         app.acquire_token_silent.side_effect = silent
         with patch.object(server, "_get_msal_app", return_value=app), patch.object(server, "_save_cache"):
             assert server._get_access_token() == "tok"
-            assert calls == [tuple(server.ALL_SCOPES), tuple(server.GROUPS_SCOPES), tuple(server.STANDARD_SCOPES), tuple(server.SELF_CONSENT_SCOPES)]
+            assert calls == [
+                tuple(server.ALL_SCOPES), tuple(server.ADMIN_TIER_SCOPES), tuple(server.GROUPS_SCOPES),
+                tuple(server.STANDARD_SCOPES), tuple(server.SELF_CONSENT_SCOPES),
+            ]
             calls.clear()
             assert server._get_access_token() == "tok"
             # Cached tier is probed first — no failing network redemptions.
@@ -975,12 +987,30 @@ class TestConsentTiers:
         app = MagicMock()
         app.get_accounts.return_value = [acc]
         app.acquire_token_silent.side_effect = lambda scopes, account=None: (
-            {"access_token": "wide"} if scopes in (server.ALL_SCOPES, server.STANDARD_SCOPES) else None
+            {"access_token": "wide"} if scopes in (server.ADMIN_TIER_SCOPES, server.STANDARD_SCOPES) else None
         )
         with patch.object(server, "_get_msal_app", return_value=app), patch.object(server, "_save_cache"):
             assert server._get_access_token() == "wide"
             assert server._GRANTED_TIER_CACHE["acc-2"][0] == "admin"
+            assert server._TOKEN_TIERS["wide"] == "admin"
         server._GRANTED_TIER_CACHE.clear()
+        server._TOKEN_TIERS.clear()
+
+    def test_tenant_consented_before_channels_keeps_the_admin_tier(self):
+        """AIS-737: the channel scopes join no existing tier — an admin-tier
+        tenant without the new consent silently stays on admin."""
+        server._GRANTED_TIER_CACHE.clear()
+        acc = {"home_account_id": "acc-4"}
+        app = MagicMock()
+        app.get_accounts.return_value = [acc]
+        app.acquire_token_silent.side_effect = lambda scopes, account=None: (
+            None if set(server.CHANNEL_SCOPES) & set(scopes) else {"access_token": "adm"}
+        )
+        with patch.object(server, "_get_msal_app", return_value=app), patch.object(server, "_save_cache"):
+            assert server._get_access_token() == "adm"
+            assert server._GRANTED_TIER_CACHE["acc-4"][0] == "admin"
+        server._GRANTED_TIER_CACHE.clear()
+        server._TOKEN_TIERS.clear()
 
     def test_login_scopes_from_argv(self):
         with patch.object(server.sys, "argv", ["server.py", "--login"]), patch.dict(server.os.environ, {}, clear=False):
@@ -2761,3 +2791,295 @@ def test_m365_activity_feed_marks_own_messages():
         server._MY_IDENTITY_CACHE.clear()
     msgs = feed["recent_chats"][0]["recent_messages"]
     assert [(m["body_preview"], m.get("from_me")) for m in msgs] == [("mine", True), ("theirs", None)]
+
+
+# --------------------------------------------------------------------------- AIS-737 Teams channels
+
+TEAM_LBBW = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
+TEAM_OPS = "11111111-2222-3333-4444-555555555555"
+CH_LBBW = "19:lbbw0001@thread.tacv2"
+CH_GENERAL = "19:general0001@thread.tacv2"
+CHANNEL_LINK = (
+    f"https://teams.microsoft.com/l/channel/19%3Albbw0001%40thread.tacv2/LBBW?groupId={TEAM_LBBW}"
+    "&tenantId=t-1"
+)
+CHATS_WITH_LBBW_MEETING = CHATS + [
+    _chat("c-lbbw-meeting", "meeting", [("me-1", "Johannes Huchler", "johannes@example.com"), ("u-9", "Kunde", "kunde@lbbw.example")], topic="LBBW"),
+]
+
+
+def _channel_graph(chats=CHATS_WITH_LBBW_MEETING, posted=None, calls=None, post_error=None):
+    posted = posted if posted is not None else []
+    calls = calls if calls is not None else []
+
+    def side_effect(method, endpoint, json_data=None, params=None, extra_headers=None, account=None, **kwargs):
+        calls.append((method, endpoint))
+        if endpoint == "/me":
+            return ME
+        if endpoint == "/me/chats":
+            return {"value": chats}
+        if endpoint == "/me/joinedTeams":
+            return {"value": [{"id": TEAM_LBBW, "displayName": "Kunden"}, {"id": TEAM_OPS, "displayName": "Ops"}]}
+        if endpoint == f"/teams/{TEAM_LBBW}/channels":
+            return {"value": [{"id": CH_LBBW, "displayName": "LBBW"}, {"id": CH_GENERAL, "displayName": "General"}]}
+        if endpoint == f"/teams/{TEAM_OPS}/channels":
+            return {"value": [{"id": "19:ops-general@thread.tacv2", "displayName": "General"}]}
+        if endpoint.endswith("/messages") and method == "POST":
+            if post_error is not None:
+                raise post_error
+            posted.append((endpoint, json_data))
+            return {"id": "post-1", "webUrl": "https://teams.example/post-1"}
+        return {"value": []}
+
+    return side_effect, posted, calls
+
+
+class TestChannelMessaging:
+    def setup_method(self):
+        server._MY_IDENTITY_CACHE.clear()
+        server._CHANNEL_DIRECTORY_CACHE.clear()
+
+    teardown_method = setup_method
+
+    def test_parse_channel_link(self):
+        link = server._parse_channel_link(CHANNEL_LINK)
+        assert link == {"team_id": TEAM_LBBW, "channel_id": CH_LBBW, "channel_name": "LBBW", "message_id": None}
+        msg = server._parse_channel_link(
+            f"https://teams.microsoft.com/l/message/19%3Albbw0001%40thread.tacv2/1700000000001?groupId={TEAM_LBBW}&parentMessageId=1"
+        )
+        assert msg["channel_id"] == CH_LBBW and msg["message_id"] == "1700000000001"
+        # A chat link is no channel link.
+        assert server._parse_channel_link("https://teams.microsoft.com/l/chat/19%3Aabc%40thread.v2/0") is None
+        assert server._parse_channel_link("https://teams.microsoft.com/l/message/19%3Aabc%40thread.v2/17") is None
+
+    def test_send_by_name_previews_then_posts_markdown_as_html(self):
+        side_effect, posted, _ = _channel_graph()
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            preview = server.m365_send_channel_message(channel="#LBBW", content="**Release 0.7.13**\n\n- Fixes")
+            assert preview["sent"] is False and preview["status"] == "confirmation_required"
+            assert preview["target_type"] == "channel"
+            assert (preview["team_id"], preview["channel_id"]) == (TEAM_LBBW, CH_LBBW)
+            assert preview["team_name"] == "Kunden" and preview["channel_name"] == "LBBW"
+            assert "channel LBBW in team Kunden" in preview["question"]
+            assert posted == []
+            res = server.m365_send_channel_message(channel="#LBBW", content="**Release 0.7.13**\n\n- Fixes", confirm=True)
+        assert res["sent"] is True and res["message_id"] == "post-1"
+        assert posted[0][0] == f"/teams/{TEAM_LBBW}/channels/{CH_LBBW}/messages"
+        assert posted[0][1]["body"] == {"contentType": "html", "content": "<p><strong>Release 0.7.13</strong></p><ul><li>Fixes</li></ul>"}
+
+    def test_send_accepts_channel_link_and_ids(self):
+        side_effect, posted, calls = _channel_graph()
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_send_channel_message(channel=CHANNEL_LINK, content="hi", subject="Release", confirm=True)
+            assert res["sent"] is True and res["subject"] == "Release"
+            assert posted[-1][0] == f"/teams/{TEAM_LBBW}/channels/{CH_LBBW}/messages"
+            assert posted[-1][1]["subject"] == "Release"
+            res = server.m365_send_channel_message(team_id=TEAM_LBBW, channel_id=CH_GENERAL, content="hi", dry_run=True)
+        assert res["dry_run"] is True and res["channel_name"] == "General" and res["team_name"] == "Kunden"
+        assert len(posted) == 1
+
+    def test_ambiguous_channel_name_does_not_post(self):
+        side_effect, posted, _ = _channel_graph()
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_send_channel_message(channel="General", content="hi", confirm=True)
+        assert res["sent"] is False and res["resolution"] == "ambiguous"
+        assert {c["team_name"] for c in res["channel_candidates"]} == {"Kunden", "Ops"}
+        assert posted == []
+
+    def test_chat_send_with_name_matching_chat_and_channel_asks(self):
+        """AIS-737 (session 20261027_171248_eaa6be): "LBBW" is a meeting chat AND
+        the channel #LBBW — the chat tool must not pick the chat silently."""
+        side_effect, posted, _ = _channel_graph()
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_send_chat_message(to="LBBW", content="Release notes", confirm=True)
+        assert res["sent"] is False
+        assert res["resolution"] == "ambiguous_target"
+        assert [c["target_type"] for c in res["candidates"]] == ["chat"]
+        assert res["candidates"][0]["chat_id"] == "c-lbbw-meeting" and res["candidates"][0]["chat_kind"] == "meeting chat"
+        assert res["channel_candidates"][0]["channel_id"] == CH_LBBW
+        assert res["channel_candidates"][0]["team_name"] == "Kunden"
+        assert posted == []
+
+    def test_chat_send_hash_name_and_channel_link_go_to_the_channel(self):
+        side_effect, posted, _ = _channel_graph()
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_send_chat_message(to="#LBBW", content="Release notes")
+            assert res["target_type"] == "channel" and res["status"] == "confirmation_required"
+            res = server.m365_send_chat_message(to=CHANNEL_LINK, content="Release notes", confirm=True)
+        assert res["sent"] is True and res["target_type"] == "channel"
+        assert posted[0][0] == f"/teams/{TEAM_LBBW}/channels/{CH_LBBW}/messages"
+
+    def test_chat_preview_names_the_chat_type_and_person_queries_skip_channels(self):
+        side_effect, posted, calls = _channel_graph()
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_send_chat_message(to="Fischi", content="hi")
+        assert res["target_type"] == "chat" and res["chat_type"] == "oneOnOne"
+        assert "1:1 chat" in res["question"]
+        assert ("GET", "/me/joinedTeams") not in calls  # a person match needs no channel lookup
+
+    def test_list_channel_messages_accepts_link(self):
+        with patch.object(server, "_graph_request", return_value={"value": [{"id": "m1"}]}) as mock_req:
+            res = server.m365_list_channel_messages(channel_id=CHANNEL_LINK, top=3)
+        assert res["value"][0]["id"] == "m1"
+        mock_req.assert_called_with("GET", f"/teams/{TEAM_LBBW}/channels/{CH_LBBW}/messages", params={"$top": 3})
+
+
+class TestForbiddenClassification:
+    def setup_method(self):
+        server._TOKEN_TIERS.clear()
+
+    teardown_method = setup_method
+
+    def _raise_403(self, body, endpoint, token="tok-737"):
+        fake_response = MagicMock(status_code=403, is_error=True, text=body)
+        fake_client = MagicMock()
+        fake_client.__enter__.return_value.request.return_value = fake_response
+        with patch.object(server, "_get_access_token", return_value=token), patch.object(server.httpx, "Client", return_value=fake_client):
+            with pytest.raises(server.GraphForbiddenError) as exc:
+                server._graph_request("GET", endpoint)
+        return exc.value
+
+    def test_scope_outside_every_tier_is_not_supported_and_never_suggests_relogin(self):
+        body = (
+            '{"error":{"code":"Forbidden","message":"Missing scope permissions on the request. API requires one of '
+            "'ChannelMember.ReadWrite.All'. Scopes on the request 'Mail.Send'\"}}"
+        )
+        server._remember_token_tier("tok-737", "channels")
+        err = self._raise_403(body, f"/teams/{TEAM_LBBW}/channels/{CH_LBBW}/members")
+        assert err.info["kind"] == "unsupported"
+        text = str(err)
+        assert "NOT SUPPORTED BY THIS CONNECTOR" in text and "ChannelMember.ReadWrite.All" in text
+        assert "initiate_login" not in text and "adminconsent" not in text
+        result = err.to_result()
+        assert result["supported"] is False and result["forbidden"] == "unsupported"
+        assert "Signing in again will not change that" in result["user_message"]
+        assert "m365_" not in result["user_message"] and "IT" in result["next_step"]
+
+    def test_channel_scope_missing_gives_the_channels_consent_hint_for_admins_too(self):
+        body = (
+            '{"error":{"code":"Forbidden","message":"Missing scope permissions on the request. API requires one of '
+            "'ChannelMessage.Read.All, ChannelMessage.ReadWrite'. Scopes on the request 'User.Read.All'\"}}"
+        )
+        server._remember_token_tier("tok-737", "admin")
+        err = self._raise_403(body, f"/teams/{TEAM_LBBW}/channels/{CH_LBBW}/messages")
+        assert err.info["kind"] == "consent" and err.info["needed_tier"] == "channels"
+        assert "ChannelMessage.Read.All" in str(err) and "adminconsent" in str(err)
+        assert "do not send them to IT" in str(err)
+        assert "sign in again" not in str(err)
+        assert "adminconsent" in err.to_result()["admin_consent_url"]
+
+    def test_scopes_on_the_request_decide_over_the_tier_guess(self):
+        body = ("Missing scope permissions on the request. API requires one of 'ChannelMessage.Read.All, Group.Read.All'. "
+                "Scopes on the request 'User.Read, User.Read.All'")
+        info = server._classify_forbidden("/teams/t/channels/c/messages", body, "admin")
+        assert info["kind"] == "consent" and info["needed_tier"] == "channels"
+        body_ok = body.replace("'User.Read, User.Read.All'", "'ChannelMessage.Read.All'")
+        assert server._classify_forbidden("/teams/t/channels/c/messages", body_ok, "channels")["kind"] == "item"
+
+    def test_403_with_the_needed_tier_already_granted_is_about_the_item(self):
+        server._remember_token_tier("tok-737", "channels")
+        err = self._raise_403('{"error":{"code":"Forbidden","message":"Forbidden"}}', f"/teams/{TEAM_LBBW}/channels/{CH_LBBW}/messages")
+        assert err.info["kind"] == "item"
+        assert "not a member" in str(err) and "will not help" in str(err)
+
+    def test_channel_tools_return_the_classification_instead_of_raising(self):
+        info = {"kind": "unsupported", "required_scopes": ["X.Y"], "status": 403, "endpoint": "/teams/x"}
+        err = server.GraphForbiddenError("MS Graph API Error [403]: … NOT SUPPORTED", info)
+        side_effect, _, _ = _channel_graph(post_error=err)
+        server._CHANNEL_DIRECTORY_CACHE.clear()
+        with patch.object(server, "_graph_request", side_effect=side_effect):
+            res = server.m365_send_channel_message(channel=CHANNEL_LINK, content="hi", confirm=True)
+        assert res["sent"] is False and res["supported"] is False and res["target_type"] == "channel"
+        with patch.object(server, "_graph_request", side_effect=err):
+            res = server.m365_list_channel_messages(TEAM_LBBW, CH_LBBW)
+        assert res["forbidden"] == "unsupported" and "user_message" in res
+        server._CHANNEL_DIRECTORY_CACHE.clear()
+
+
+class TestBoundedCompleteLogin:
+    def setup_method(self):
+        server._GRANTED_TIER_CACHE.clear()
+
+    teardown_method = setup_method
+
+    def _flow(self, expires_in=600, tier="self"):
+        return {"device_code": "dc", "user_code": "ABCD", "verification_uri": "https://microsoft.com/devicelogin",
+                "interval": 1, "expires_at": server.time.time() + expires_in, "hermes_scope_tier": tier}
+
+    def test_pending_returns_quickly_with_remaining_lifetime(self):
+        app = MagicMock()
+        app.acquire_token_by_device_flow.return_value = {"error": "authorization_pending"}
+        app.get_accounts.return_value = []
+        with patch.object(server, "_get_msal_app", return_value=app), \
+                patch.object(server, "_COMPLETE_LOGIN_MAX_WAIT_SECONDS", 0.0):
+            res = server.m365_complete_login(self._flow())
+        assert res["status"] == "pending" and res["success"] is False
+        assert 500 < res["expires_in_seconds"] <= 600
+        assert res["user_code"] == "ABCD"
+        assert "same flow_data" in res["next_step"]
+        # Every MSAL call is a single, non-blocking attempt.
+        exit_condition = app.acquire_token_by_device_flow.call_args.kwargs["exit_condition"]
+        assert exit_condition({}) is True
+
+    def test_polling_is_bounded_well_below_the_mcp_timeout(self):
+        assert server._COMPLETE_LOGIN_MAX_WAIT_SECONDS <= 30
+        app = MagicMock()
+        app.acquire_token_by_device_flow.return_value = {"error": "authorization_pending"}
+        app.get_accounts.return_value = []
+        clock = {"now": 1000.0}
+
+        def fake_sleep(seconds):
+            clock["now"] += seconds
+
+        with patch.object(server, "_get_msal_app", return_value=app), \
+                patch.object(server.time, "monotonic", side_effect=lambda: clock["now"]), \
+                patch.object(server.time, "sleep", side_effect=fake_sleep):
+            res = server.m365_complete_login(self._flow())
+        assert res["status"] == "pending"
+        # interval 1 s, bound 25 s: one attempt per second, never past the bound.
+        assert clock["now"] - 1000.0 <= server._COMPLETE_LOGIN_MAX_WAIT_SECONDS
+        assert 20 <= app.acquire_token_by_device_flow.call_count <= 27
+
+    def test_sign_in_finished_elsewhere_supersedes_the_flow(self):
+        """AIS-737: the user signed in on the desktop accounts page; the chat's
+        device code was never entered — report the existing sign-in."""
+        app = MagicMock()
+        app.acquire_token_by_device_flow.return_value = {"error": "authorization_pending"}
+        app.get_accounts.return_value = [{"home_account_id": "acc-9", "username": "j@example.com"}]
+        app.acquire_token_silent.side_effect = lambda scopes, account=None: (
+            {"access_token": "adm"} if not set(server.CHANNEL_SCOPES) & set(scopes) else None
+        )
+        with patch.object(server, "_get_msal_app", return_value=app), patch.object(server, "_save_cache"):
+            res = server.m365_complete_login(self._flow())
+        assert res["success"] is True and res["superseded"] is True
+        assert res["granted_tier"] == "admin" and res["account"] == "j@example.com"
+        assert app.acquire_token_by_device_flow.call_count == 1
+
+    def test_sign_in_elsewhere_below_the_requested_tier_keeps_waiting(self):
+        app = MagicMock()
+        app.acquire_token_by_device_flow.return_value = {"error": "authorization_pending"}
+        app.get_accounts.return_value = [{"home_account_id": "acc-10"}]
+        app.acquire_token_silent.side_effect = lambda scopes, account=None: (
+            {"access_token": "s"} if scopes == server.SELF_CONSENT_SCOPES else None
+        )
+        with patch.object(server, "_get_msal_app", return_value=app), patch.object(server, "_save_cache"), \
+                patch.object(server, "_COMPLETE_LOGIN_MAX_WAIT_SECONDS", 0.0):
+            res = server.m365_complete_login(self._flow(tier="admin"))
+        assert res["status"] == "pending" and res["requested_tier"] == "admin"
+
+    def test_expired_flow_does_not_poll(self):
+        app = MagicMock()
+        app.get_accounts.return_value = []
+        with patch.object(server, "_get_msal_app", return_value=app):
+            res = server.m365_complete_login(self._flow(expires_in=-5))
+        assert res["status"] == "expired" and res["success"] is False
+        app.acquire_token_by_device_flow.assert_not_called()
+
+    def test_expired_flow_with_existing_sign_in_reports_success(self):
+        app = MagicMock()
+        app.get_accounts.return_value = [{"home_account_id": "acc-11", "username": "j@example.com"}]
+        app.acquire_token_silent.side_effect = lambda scopes, account=None: {"access_token": "x"}
+        with patch.object(server, "_get_msal_app", return_value=app), patch.object(server, "_save_cache"):
+            res = server.m365_complete_login(self._flow(expires_in=-5))
+        assert res["success"] is True and res["superseded"] is True and res["granted_tier"] == "channels"
+        app.acquire_token_by_device_flow.assert_not_called()

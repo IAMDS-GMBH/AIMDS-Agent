@@ -1804,6 +1804,13 @@ class TestBuildTeamsSendGuidance:
         with_drive = build_teams_send_guidance(base | {"mcp_MSOffice365MCP_m365_download_drive_file"})
         assert "pass it as `file_id` to `mcp_MSOffice365MCP_m365_download_drive_file`" in with_drive
 
+    def test_channel_line_only_with_the_channel_tool(self):
+        # AIS-737: a name shared by a meeting chat and a channel got the chat.
+        assert "Team channels are not chats" not in build_teams_send_guidance(self.NAMES)
+        text = build_teams_send_guidance(self.NAMES | {"mcp_MSOffice365MCP_m365_send_channel_message"})
+        assert "Team channels are not chats" in text
+        assert "`mcp_MSOffice365MCP_m365_send_channel_message`" in text and "ambiguous_target" in text
+
     def test_signature_and_attribution_treat_teams_as_chat(self):
         names = {"mcp_MSOffice365MCP_m365_send_email", "mcp_MSOffice365MCP_m365_send_chat_message", "memory_save"}
         sig = build_outlook_signature_guidance(names)

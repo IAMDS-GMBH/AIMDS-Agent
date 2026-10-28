@@ -92,8 +92,12 @@ def test_save_msal_cache_is_atomic(tmp_path):
 # --------------------------------------------------------------------------- AIS-286
 
 from hermes_cli.m365_auth import (  # noqa: E402
+    M365_ADMIN_TIER_SCOPES,
     M365_ALL_SCOPES,
+    M365_CHANNEL_SCOPES,
     M365_LOGIN_SCOPES,
+    M365_SCOPE_TIER_ORDER,
+    M365_SCOPE_TIERS,
     M365_SELF_CONSENT_SCOPES,
     M365_STANDARD_SCOPES,
     build_admin_consent_url,
@@ -106,11 +110,27 @@ from hermes_cli.m365_auth import (  # noqa: E402
 
 def test_scope_tiers_nest_and_login_default_is_self():
     assert M365_LOGIN_SCOPES == M365_SELF_CONSENT_SCOPES
-    assert set(M365_SELF_CONSENT_SCOPES) < set(M365_STANDARD_SCOPES) < set(M365_ALL_SCOPES)
-    assert m365_scopes_for_tier("admin") == M365_ALL_SCOPES
+    assert set(M365_SELF_CONSENT_SCOPES) < set(M365_STANDARD_SCOPES) < set(M365_ADMIN_TIER_SCOPES) < set(M365_ALL_SCOPES)
+    assert m365_scopes_for_tier("admin") == M365_ADMIN_TIER_SCOPES
+    assert m365_scopes_for_tier("channels") == M365_ALL_SCOPES
     assert m365_scopes_for_tier("STANDARD") == M365_STANDARD_SCOPES
     assert m365_scopes_for_tier(None) == M365_LOGIN_SCOPES
     assert m365_scopes_for_tier("typo") == M365_LOGIN_SCOPES  # never escalates
+
+
+def test_channel_scopes_are_their_own_widest_tier():
+    """AIS-737: channel messages were in no tier, so every tier got a 403.
+    Like groups (AIS-340), they get their own tier — a tenant that consented
+    the admin tier before these scopes existed keeps it."""
+    assert {"ChannelMessage.Read.All", "ChannelMessage.Send"} <= set(M365_CHANNEL_SCOPES)
+    assert M365_SCOPE_TIER_ORDER[0] == "channels"
+    assert set(M365_CHANNEL_SCOPES) <= set(M365_SCOPE_TIERS["channels"])
+    assert not set(M365_CHANNEL_SCOPES) & set(M365_SCOPE_TIERS["admin"])
+    assert set(M365_CHANNEL_SCOPES) <= set(M365_ALL_SCOPES)  # the admin-consent URL grants them
+    assert "ChannelMessage.Send" in build_admin_consent_url(client_id="c", tenant_id="t")
+    assert m365_tier_for_endpoint("/teams/t1/channels/19:x@thread.tacv2/messages") == "channels"
+    assert m365_tier_for_endpoint("/teams/t1/channels") == "groups"
+    assert m365_tier_for_endpoint("/me/joinedTeams") == "admin"
 
 
 def test_tier_for_endpoint():

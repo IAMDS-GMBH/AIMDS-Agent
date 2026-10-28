@@ -2301,7 +2301,18 @@ def build_teams_send_guidance(valid_tool_names: "set[str] | None" = None) -> str
     drive_tool = _resolve_m365_tool_name(names, "m365_download_drive_file")
     index_tool = _resolve_m365_tool_name(names, "m365_index_search")
     contact_tool = _resolve_m365_tool_name(names, "m365_find_contact")
+    channel_tool = _resolve_m365_tool_name(names, "m365_send_channel_message")
     memory_tool = _resolve_memory_save_tool_name(names)
+    # AIS-737: "LBBW" was a meeting chat and the channel #LBBW; the release
+    # notes landed in the chat. Chats and team channels are different targets.
+    channel_line = (
+        f"\nTeam channels are not chats: a post into a team's channel (\"#name\", \"the channel …\", a "
+        f"teams.microsoft.com/l/channel/… link) goes through `{channel_tool}`, which resolves the channel among "
+        f"the user's teams and previews team and channel before it posts. If `{send_tool}` answers "
+        "`ambiguous_target` (a chat and a channel share the name), show both and ask which one is meant."
+        if channel_tool
+        else ""
+    )
     index_line = (
         f"\nVague references: when the user points at a chat, message, mail or person without an id or exact "
         f"name (\"the chat about the move plan\", \"the mail from Martin about the offer\", \"Fischi\"), call "
@@ -2365,6 +2376,7 @@ def build_teams_send_guidance(valid_tool_names: "set[str] | None" = None) -> str
         "arrives. Do not hand-write HTML unless the user asked for specific markup.\n"
         "Confirm from the tool result (`recipient`, `plain_text`), not from assumption. If `sent` is "
         "false, say why (ambiguous / not found) and resolve again."
+        + channel_line
         + (
             f"\nLinks and files: a pasted Teams link (https://teams.microsoft.com/l/chat/… or /l/message/…) "
             f"is a valid `chat_id` for every chat tool — never ask the user to extract the id. For \"the "

@@ -408,6 +408,14 @@ _MESSAGE_AUTOLOAD_RULES: Tuple[Tuple["re.Pattern[str]", Tuple[str, ...]], ...] =
         ),
     ),
     (
+        # A Teams channel link (AIS-737): read and post in that channel.
+        re.compile(r"teams\.microsoft\.com/l/channel/", re.IGNORECASE),
+        (
+            "m365_list_channel_messages",
+            "m365_send_channel_message",
+        ),
+    ),
+    (
         re.compile(r"(?:\.sharepoint\.com/|1drv\.ms/|onedrive\.live\.com/)", re.IGNORECASE),
         ("m365_download_drive_file",),
     ),

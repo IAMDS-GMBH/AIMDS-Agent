@@ -24,6 +24,8 @@ metadata:
    skill: resolve the chat with `m365_find_chat`, load or derive the per-person register with
    `m365_get_chat_style` (memory first), draft short Markdown in that register, and only send
    after the user approved the exact text — via `m365_send_chat_message(to=..., content=...)`.
+   A reply into a team channel is a channel post, not a chat message:
+   `m365_send_channel_message(channel=<name or link>, content=...)`.
 
 ## Context window & token discipline
 - Preview first: 3–5 messages per chat (`top`), never whole histories.

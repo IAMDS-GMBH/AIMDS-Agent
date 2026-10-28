@@ -73,9 +73,25 @@ M365_ADMIN_SCOPES: list[str] = [
     "Sites.ReadWrite.All",
 ]
 
+# Teams channels (AIS-737): find the user's teams and channels, read and post
+# channel messages. ChannelMessage.Read.All needs admin consent; Team.ReadBasic.All,
+# Channel.ReadBasic.All and ChannelMessage.Send do not. Same reasoning as the
+# groups tier: a tenant that consented the admin tier before these scopes
+# existed must keep it, so "channels" is its own, widest tier. The admin-consent
+# URL (M365_ALL_SCOPES) grants it; re-running that URL once upgrades older tenants.
+M365_CHANNEL_SCOPES: list[str] = [
+    "Team.ReadBasic.All",
+    "Channel.ReadBasic.All",
+    "ChannelMessage.Read.All",
+    "ChannelMessage.Send",
+]
+
 M365_STANDARD_SCOPES: list[str] = M365_SELF_CONSENT_SCOPES + M365_ORG_CONSENT_SCOPES
 M365_GROUPS_SCOPES: list[str] = M365_STANDARD_SCOPES + M365_GROUP_SCOPES
-M365_ALL_SCOPES: list[str] = M365_GROUPS_SCOPES + M365_ADMIN_SCOPES
+M365_ADMIN_TIER_SCOPES: list[str] = M365_GROUPS_SCOPES + M365_ADMIN_SCOPES
+M365_CHANNELS_SCOPES: list[str] = M365_ADMIN_TIER_SCOPES + M365_CHANNEL_SCOPES
+# Superset of every tier: what the admin-consent URL grants.
+M365_ALL_SCOPES: list[str] = M365_CHANNELS_SCOPES
 
 # What every login entry point requests by default.
 M365_LOGIN_SCOPES: list[str] = M365_SELF_CONSENT_SCOPES
@@ -84,16 +100,20 @@ M365_SCOPE_TIERS: dict[str, list[str]] = {
     "self": M365_SELF_CONSENT_SCOPES,
     "standard": M365_STANDARD_SCOPES,
     "groups": M365_GROUPS_SCOPES,
-    "admin": M365_ALL_SCOPES,
+    "admin": M365_ADMIN_TIER_SCOPES,
+    "channels": M365_CHANNELS_SCOPES,
 }
 
 # Silent token acquisition probes the widest tier first: once a tenant admin
 # has consented org-wide, every user silently gets the superset.
-M365_SCOPE_TIER_ORDER: tuple[str, ...] = ("admin", "groups", "standard", "self")
+M365_SCOPE_TIER_ORDER: tuple[str, ...] = ("channels", "admin", "groups", "standard", "self")
 
 # Graph endpoints (path fragments) that need at least the given tier. Used to
 # turn a bare 403 into "which consent step is missing".
 M365_ENDPOINT_TIER_MARKERS: tuple[tuple[str, str], ...] = (
+    ("/channels/", "channels"),  # channel messages (ChannelMessage.*); a bare channel list is "groups"
+    ("/joinedTeams", "admin"),  # Team.ReadBasic.All (channels tier) or User.Read.All / Directory.Read.All
+    ("/teams/", "groups"),  # /teams/{id}/channels: Channel.ReadBasic.All or Group.Read.All
     ("/users", "admin"),
     ("/sites", "admin"),
     ("/chats", "standard"),
@@ -107,7 +127,7 @@ M365_ENDPOINT_TIER_MARKERS: tuple[tuple[str, str], ...] = (
 
 
 def m365_scopes_for_tier(tier: Optional[str]) -> list[str]:
-    """Return the scope list for ``tier`` (``self`` | ``standard`` | ``groups`` | ``admin``).
+    """Return the scope list for ``tier`` (``self`` | ``standard`` | ``groups`` | ``admin`` | ``channels``).
 
     Unknown or empty values fall back to the login default (``self``) so a
     typo can never silently escalate to an admin-consent prompt.

@@ -10,6 +10,7 @@ import base64
 import json
 import mimetypes
 import os
+import re as _re
 import sys
 import time
 import uuid
@@ -41,9 +42,13 @@ GRAPH_API_BASE = "https://graph.microsoft.com/v1.0"
 #                        (Group.Read.All); its own consent step so tenants
 #                        consented before it keep their standard tier.
 #   ADMIN_SCOPES         tier 2 — directory-wide / org-wide write, admins only.
+#   CHANNEL_SCOPES       tier 3 — Teams channels: find teams/channels, read and
+#                        post channel messages (AIS-737); its own consent step so
+#                        tenants consented before it keep their admin tier.
 try:
     from hermes_cli.m365_auth import (
         M365_ADMIN_SCOPES as ADMIN_SCOPES,
+        M365_CHANNEL_SCOPES as CHANNEL_SCOPES,
         M365_GROUP_SCOPES as GROUP_SCOPES,
         M365_ORG_CONSENT_SCOPES as ORG_CONSENT_SCOPES,
         M365_SELF_CONSENT_SCOPES as SELF_CONSENT_SCOPES,
@@ -74,27 +79,57 @@ except ImportError:
     GROUP_SCOPES = [
         "Group.Read.All",
     ]
+    CHANNEL_SCOPES = [
+        "Team.ReadBasic.All",
+        "Channel.ReadBasic.All",
+        "ChannelMessage.Read.All",
+        "ChannelMessage.Send",
+    ]
 
 # BASE_SCOPES keeps its historical meaning "everything a regular user needs"
-# (tiers 0+1); ALL_SCOPES adds the admin tier. LOGIN_SCOPES is what a fresh
-# sign-in requests: tier 0 only, so non-admin users never hit the
-# "Need admin approval" wall. Tier 1 arrives silently after org consent.
+# (tiers 0+1); ALL_SCOPES is the superset of every tier (what the admin-consent
+# URL grants). LOGIN_SCOPES is what a fresh sign-in requests: tier 0 only, so
+# non-admin users never hit the "Need admin approval" wall. Wider tiers arrive
+# silently after org consent.
 BASE_SCOPES = SELF_CONSENT_SCOPES + ORG_CONSENT_SCOPES
 STANDARD_SCOPES = BASE_SCOPES
 GROUPS_SCOPES = STANDARD_SCOPES + GROUP_SCOPES
-ALL_SCOPES = GROUPS_SCOPES + ADMIN_SCOPES
+ADMIN_TIER_SCOPES = GROUPS_SCOPES + ADMIN_SCOPES
+CHANNELS_SCOPES = ADMIN_TIER_SCOPES + CHANNEL_SCOPES
+ALL_SCOPES = CHANNELS_SCOPES
 LOGIN_SCOPES = SELF_CONSENT_SCOPES
 
 # Backwards-compatible alias: callers importing SCOPES directly get the full
 # superset (the admin-consent URL grants everything at once).
 SCOPES = ALL_SCOPES
 
-SCOPE_TIERS = {"self": SELF_CONSENT_SCOPES, "standard": STANDARD_SCOPES, "groups": GROUPS_SCOPES, "admin": ALL_SCOPES}
-SCOPE_TIER_ORDER = ("admin", "groups", "standard", "self")
+SCOPE_TIERS = {
+    "self": SELF_CONSENT_SCOPES,
+    "standard": STANDARD_SCOPES,
+    "groups": GROUPS_SCOPES,
+    "admin": ADMIN_TIER_SCOPES,
+    "channels": CHANNELS_SCOPES,
+}
+SCOPE_TIER_ORDER = ("channels", "admin", "groups", "standard", "self")
+# Narrowest first: "is the granted tier at least the needed one?"
+_TIER_RANK = {tier: rank for rank, tier in enumerate(reversed(SCOPE_TIER_ORDER))}
 _GRANTED_TIER_TTL_SECONDS = 600.0
 # home_account_id -> (tier, monotonic timestamp). Without this cache every
 # Graph call would pay two failing network redemptions before the working tier.
 _GRANTED_TIER_CACHE: Dict[str, Tuple[str, float]] = {}
+# access token -> tier it was redeemed for (bounded). A 403 on a call whose
+# token already carries the needed tier is about the item, not about consent.
+_TOKEN_TIERS: Dict[str, str] = {}
+_TOKEN_TIERS_MAX = 16
+
+
+def _remember_token_tier(token: str, tier: Optional[str]) -> None:
+    if not token or not tier:
+        return
+    _TOKEN_TIERS.pop(token, None)
+    _TOKEN_TIERS[token] = tier
+    while len(_TOKEN_TIERS) > _TOKEN_TIERS_MAX:
+        _TOKEN_TIERS.pop(next(iter(_TOKEN_TIERS)))
 
 DEFAULT_CLIENT_ID = "41c29967-8ee6-4fac-b484-e87460272bda"  # IAMDS-owned multi-tenant app
 
@@ -367,7 +402,7 @@ except ImportError:
         ep = endpoint or ""
         if ep.startswith("/users/") and ep.count("/") >= 3:
             return "standard"
-        for marker, tier in (("/users", "admin"), ("/sites", "admin"), ("/chats", "standard"), ("/presence", "standard"), ("/onlineMeetings", "standard"), ("/todo", "standard"), ("/communications", "standard"), ("/groups", "groups")):
+        for marker, tier in (("/channels/", "channels"), ("/joinedTeams", "admin"), ("/teams/", "groups"), ("/users", "admin"), ("/sites", "admin"), ("/chats", "standard"), ("/presence", "standard"), ("/onlineMeetings", "standard"), ("/todo", "standard"), ("/communications", "standard"), ("/groups", "groups")):
             if marker in ep:
                 return tier
         return "self"
@@ -501,9 +536,10 @@ def _get_access_token(account: Optional[str] = None) -> str:
                 target_accounts = matched
 
         for acc in target_accounts:
-            result, _tier = _acquire_silent_by_tier(app, acc)
+            result, tier = _acquire_silent_by_tier(app, acc)
             if result and "access_token" in result:
                 _save_cache(app)
+                _remember_token_tier(result["access_token"], tier)
                 return result["access_token"]
 
     # 2. Legacy fallback: explicit M365_ACCESS_TOKEN env var if set and no cached MSAL account exists
@@ -550,9 +586,22 @@ def _get_access_token(account: Optional[str] = None) -> str:
     )
 
 
-def _consent_hint_for(endpoint: str) -> str:
-    """Explain a Graph 403 in terms of the consent tier the endpoint needs."""
-    tier = _tier_for_endpoint(endpoint)
+_ADMIN_SELF_SERVICE = (
+    " If the signed-in user is a tenant administrator (m365_check_admin_status), they open it "
+    "themselves — do not send them to IT."
+)
+
+
+def _consent_hint_for_tier(tier: str) -> str:
+    """Explain a Graph 403 in terms of the consent tier that is missing."""
+    if tier == "channels":
+        return (
+            " (Teams channels — finding teams and channels, reading and posting channel messages — need a "
+            "one-time organization-wide approval of the channel permissions (" + ", ".join(CHANNEL_SCOPES) + "). "
+            "They are part of the admin-consent URL; a tenant that approved the app before these permissions "
+            "existed opens it once more. Afterwards every user gets them silently, no re-login needed: "
+            + _build_admin_consent_url() + "." + _ADMIN_SELF_SERVICE + ")"
+        )
     if tier == "admin":
         return (
             " (needs the admin tier: directory-wide read / SharePoint. Only a tenant "
@@ -564,16 +613,151 @@ def _consent_hint_for(endpoint: str) -> str:
             " (Microsoft 365 group calendars and membership need Group.Read.All — org-wide admin consent. "
             "Ask a tenant administrator to open this URL once (also re-consents tenants that approved the app "
             "before this permission existed); afterwards every user gets it silently, no re-login needed: "
-            + _build_admin_consent_url() + ")"
+            + _build_admin_consent_url() + "." + _ADMIN_SELF_SERVICE + ")"
         )
     if tier == "standard":
         return (
             " (needs org-wide admin consent for Teams chat / presence / online meetings / "
             "shared mailboxes / To Do. Ask a tenant administrator to open this URL once; "
             "afterwards every user gets these permissions silently, no re-login needed: "
-            + _build_admin_consent_url() + ")"
+            + _build_admin_consent_url() + "." + _ADMIN_SELF_SERVICE + ")"
         )
     return " (the signed-in account lacks a permission for this call; sign in again via m365_initiate_login)"
+
+
+def _consent_hint_for(endpoint: str) -> str:
+    """Explain a Graph 403 in terms of the consent tier the endpoint needs."""
+    return _consent_hint_for_tier(_tier_for_endpoint(endpoint))
+
+
+# Graph names the scopes a call accepts in its 403 body, e.g. "Missing scope
+# permissions on the request. API requires one of 'ChannelMessage.Read.All,
+# Group.Read.All'. Scopes on the request 'Mail.Send, …'".
+_REQUIRED_SCOPES_RE = _re.compile(r"requires one of '([^']+)'", _re.IGNORECASE)
+_REQUEST_SCOPES_RE = _re.compile(r"scopes on the request '([^']*)'", _re.IGNORECASE)
+
+
+def _scope_names(text: str) -> List[str]:
+    return [s for s in _re.split(r"[,\s]+", text or "") if s]
+
+
+def _classify_forbidden(endpoint: str, body: str, granted_tier: Optional[str] = None) -> Dict[str, Any]:
+    """Classify a Graph 403 (AIS-737) deterministically.
+
+    - ``unsupported``: none of the scopes Graph names is in any tier — no
+      sign-in and no consent can fix it, also not for an administrator.
+    - ``item``: the token already carries the needed tier (or one of the
+      named scopes) — Microsoft refuses this particular team/channel/chat.
+    - ``consent``: a wider tier is missing; ``needed_tier`` says which.
+    """
+    text = str(body or "")
+    m = _REQUIRED_SCOPES_RE.search(text)
+    required = _scope_names(m.group(1)) if m else []
+    m_req = _REQUEST_SCOPES_RE.search(text)
+    on_request = set(_scope_names(m_req.group(1))) if m_req else set()
+    info: Dict[str, Any] = {"status": 403, "endpoint": endpoint, "granted_tier": granted_tier}
+    granted_rank = _TIER_RANK.get(str(granted_tier), -1)
+    if required:
+        info["required_scopes"] = required
+        if not set(required) & set(ALL_SCOPES):
+            info["kind"] = "unsupported"
+            return info
+        tiers_with = [t for t in reversed(SCOPE_TIER_ORDER) if set(required) & set(SCOPE_TIERS[t])]
+        # Narrowest tier above the granted one that adds a named scope.
+        wider = [t for t in tiers_with if _TIER_RANK[t] > granted_rank]
+        needed = (wider or tiers_with)[0]
+    else:
+        needed = _tier_for_endpoint(endpoint)
+    info["needed_tier"] = needed
+    if required and on_request:
+        # Graph listed the token's scopes: the answer is exact.
+        has_permission = bool(set(required) & on_request)
+    else:
+        has_permission = granted_rank >= _TIER_RANK.get(needed, 0)
+    info["kind"] = "item" if has_permission else "consent"
+    return info
+
+
+def _forbidden_hint(info: Dict[str, Any]) -> str:
+    kind = info.get("kind")
+    if kind == "unsupported":
+        return (
+            " — NOT SUPPORTED BY THIS CONNECTOR: Microsoft requires one of "
+            + ", ".join(info.get("required_scopes") or [])
+            + " for this call, and the Microsoft 365 connector requests none of them in any permission tier. "
+            "Neither signing in again nor an administrator approval can change that, also not for an "
+            "administrator — suggest neither. Tell the user plainly that this action is not available "
+            "through the Microsoft 365 connection."
+        )
+    if kind == "item":
+        return (
+            f" (the signed-in account already has the permission tier this call needs (granted: "
+            f"{info.get('granted_tier') or 'scope present'}); Microsoft refuses this particular item — e.g. the "
+            "user is not a member of that team, channel or chat, or a tenant policy blocks it. Signing in "
+            "again or another approval will not help.)"
+        )
+    return _consent_hint_for_tier(str(info.get("needed_tier") or "self"))
+
+
+# End-user wording per 403 kind (no tool names, no codes); the model answers
+# in the user's language.
+_FORBIDDEN_USER_MESSAGES = {
+    "unsupported": (
+        "This is not possible through the Microsoft 365 connection yet. Signing in again will not change that."
+    ),
+    "item": (
+        "Microsoft does not allow this account to access that item — for example, it is not a member of "
+        "that team, channel or chat."
+    ),
+    "consent": (
+        "This needs a one-time approval for your organization in Microsoft 365. An administrator of your "
+        "organization confirms it once; nobody has to sign in again afterwards."
+    ),
+}
+
+
+class GraphForbiddenError(RuntimeError):
+    """A Graph 403 with its classification (AIS-737); str() keeps the hint."""
+
+    def __init__(self, message: str, info: Dict[str, Any]):
+        super().__init__(message)
+        self.info = info
+
+    def to_result(self) -> Dict[str, Any]:
+        kind = self.info.get("kind") or "consent"
+        out: Dict[str, Any] = {
+            "error": str(self),
+            "forbidden": kind,
+            "user_message": _FORBIDDEN_USER_MESSAGES.get(kind, _FORBIDDEN_USER_MESSAGES["consent"]),
+            **{k: v for k, v in self.info.items() if k not in ("status",)},
+        }
+        if kind == "unsupported":
+            out["supported"] = False
+            out["next_step"] = (
+                "Tell the user in plain words that this is not available through the Microsoft 365 "
+                "connection. Do not suggest signing in again or asking IT."
+            )
+        elif kind == "consent":
+            out["admin_consent_url"] = _build_admin_consent_url()
+            out["next_step"] = (
+                "Share the approval link. If the user is a tenant administrator they open it themselves; "
+                "no new sign-in is needed afterwards."
+            )
+        else:
+            out["next_step"] = "Do not retry with a new sign-in; check that the user can open this item in Teams."
+        return out
+
+
+def _raise_graph_error(response: Any, endpoint: str, token: str, *, translate: bool = True) -> None:
+    text = response.text
+    if response.status_code == 403 or "Authorization_RequestDenied" in text:
+        info = _classify_forbidden(endpoint, text, _TOKEN_TIERS.get(token))
+        aadsts_hint = _translate_aadsts_error(text) if translate else ""
+        raise GraphForbiddenError(
+            f"MS Graph API Error [{response.status_code}]: {text}{_forbidden_hint(info)}{aadsts_hint}", info
+        )
+    aadsts_hint = _translate_aadsts_error(text) if translate else ""
+    raise RuntimeError(f"MS Graph API Error [{response.status_code}]: {text}{aadsts_hint}")
 
 
 def _graph_request(
@@ -612,11 +796,7 @@ def _graph_request(
         if response.status_code in (202, 204) or (not response.is_error and not response.content):
             return {"success": True, "status": response.status_code}
         if response.is_error:
-            hint = ""
-            if response.status_code == 403 or "Authorization_RequestDenied" in response.text:
-                hint = _consent_hint_for(effective_endpoint)
-            aadsts_hint = _translate_aadsts_error(response.text)
-            raise RuntimeError(f"MS Graph API Error [{response.status_code}]: {response.text}{hint}{aadsts_hint}")
+            _raise_graph_error(response, effective_endpoint, token)
         return response.json()
 
 
@@ -1069,15 +1249,19 @@ def m365_initiate_login(request_admin_scopes: bool = False, scope_tier: Optional
             shows "Need admin approval" to non-admins. "groups" adds Microsoft 365
             group calendars (Group.Read.All). "admin" adds directory-wide user
             search and SharePoint; only tenant administrators can complete it.
+            "channels" adds Teams channels (find, read and post channel messages).
         request_admin_scopes: Legacy alias for scope_tier="admin".
     """
     tier = (scope_tier or "").strip().lower() or ("admin" if request_admin_scopes else "self")
     if tier not in SCOPE_TIERS:
-        return {"error": f"Unknown scope_tier '{scope_tier}'. Use one of: self, standard, groups, admin."}
+        return {"error": f"Unknown scope_tier '{scope_tier}'. Use one of: {', '.join(reversed(SCOPE_TIER_ORDER))}."}
     app = _get_msal_app()
     scopes = SCOPE_TIERS[tier]
     flow = app.initiate_device_flow(scopes=scopes)
     if "user_code" in flow:
+        # m365_complete_login compares a sign-in made elsewhere (accounts page)
+        # against the tier this flow asked for.
+        flow[_FLOW_TIER_KEY] = tier
         return {
             "status": "pending",
             "user_code": flow["user_code"],
@@ -1093,7 +1277,8 @@ def m365_initiate_login(request_admin_scopes: bool = False, scope_tier: Optional
                 f"**{flow['user_code']}**\n"
                 "Once completed, call `m365_complete_login` with the `flow_data` object from "
                 "this response passed back unchanged (not the code above), or call any M365 "
-                "tool to verify login."
+                "tool to verify login. It waits briefly and answers `status: pending` while the "
+                "code is not entered yet — then ask the user and call it again with the same flow_data."
             ),
             "flow_data": flow,
         }
@@ -1101,22 +1286,154 @@ def m365_initiate_login(request_admin_scopes: bool = False, scope_tier: Optional
     return {"error": f"Failed to initiate device flow: {classified.message}", **classified.to_dict(), "details": flow}
 
 
+_FLOW_TIER_KEY = "hermes_scope_tier"
+# MCP calls time out after 120 s. The device code lives 15 minutes, so polling
+# until it expires hung the turn (AIS-737); poll briefly and answer "pending".
+_COMPLETE_LOGIN_MAX_WAIT_SECONDS = 25.0
+_DEVICE_FLOW_PENDING = ("authorization_pending", "slow_down")
+
+
+def _login_success_payload(username: Optional[str], granted_tier: Optional[str]) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "success": True,
+        "message": f"Sign-in successful! Token cached in {_get_token_cache_path()}",
+        "account": username,
+        "granted_tier": granted_tier,
+    }
+    if granted_tier in (None, "self"):
+        payload["admin_consent_hint"] = {
+            "message": (
+                "Mail, calendar, contacts and files work now. Teams chat, presence, online "
+                "meetings, shared mailboxes and To Do need a one-time tenant-admin consent; "
+                "share this URL with an administrator. No re-login is needed afterwards."
+            ),
+            "admin_consent_url": _build_admin_consent_url(),
+        }
+    return payload
+
+
+def _signed_in_account(min_tier: str) -> Optional[Tuple[Optional[str], str]]:
+    """A cached account that already reaches ``min_tier`` silently, e.g. after a
+    sign-in on the desktop accounts page. Reads the cache file fresh."""
+    try:
+        app = _get_msal_app()
+        accounts = list(app.get_accounts() or [])
+    except Exception:
+        return None
+    for acc in accounts:
+        try:
+            tier = _granted_tier_for_account(app, acc)
+        except Exception:
+            tier = None
+        if tier and _TIER_RANK.get(tier, -1) >= _TIER_RANK.get(min_tier, 0):
+            try:
+                _save_cache(app)
+            except Exception:
+                pass
+            return acc.get("username"), tier
+    return None
+
+
+def _cache_mtime() -> float:
+    try:
+        return _get_token_cache_path().stat().st_mtime
+    except Exception:
+        return 0.0
+
+
 @mcp.tool()
 def m365_complete_login(flow_data: Dict[str, Any]) -> Dict[str, Any]:
     """Complete the Microsoft 365 sign-in after the user entered the code in the browser.
+
+    Waits at most about 25 seconds. While the code is not entered yet it returns
+    `status: "pending"` with `expires_in_seconds` — ask the user to finish, then
+    call again with the same flow_data (start no new sign-in while it is valid).
+    If the account is already signed in at the requested level (for example via
+    the app's accounts page), it reports success with `superseded: true`.
 
     Args:
         flow_data: The `flow_data` object returned by `m365_initiate_login`,
             passed back unchanged. This is the whole MSAL device-flow dict, not
             the short code shown to the user.
 
-    On success the result reports `granted_tier` (self | standard | admin). If it
-    is "self", Teams chat / presence / shared mailboxes / To Do still need a
-    one-time tenant-admin consent — `admin_consent_hint` carries the URL to hand
+    On success the result reports `granted_tier` (self | standard | groups | admin |
+    channels). If it is "self", Teams chat / presence / shared mailboxes / To Do still
+    need a one-time tenant-admin consent — `admin_consent_hint` carries the URL to hand
     to an administrator. Users never have to sign in again after that consent.
     """
+    flow = dict(flow_data or {})
+    requested_tier = str(flow.get(_FLOW_TIER_KEY) or "self")
+    if requested_tier not in SCOPE_TIERS:
+        requested_tier = "self"
+    try:
+        expires_at = float(flow.get("expires_at") or 0)
+    except (TypeError, ValueError):
+        expires_at = 0.0
+
+    def _superseded(found: Tuple[Optional[str], str]) -> Dict[str, Any]:
+        payload = _login_success_payload(found[0], found[1])
+        payload["superseded"] = True
+        payload["message"] = (
+            "Already signed in — the sign-in finished elsewhere (for example on the app's accounts page). "
+            "The code from this chat is no longer needed."
+        )
+        return payload
+
+    if expires_at and expires_at <= time.time():
+        found = _signed_in_account(requested_tier)
+        if found:
+            return _superseded(found)
+        return {
+            "success": False,
+            "status": "expired",
+            "error": "The sign-in code has expired.",
+            "next_step": "Start a new sign-in only if the user still wants to connect; the old code no longer works.",
+        }
+
     app = _get_msal_app()
-    result = app.acquire_token_by_device_flow(flow_data)
+    deadline = time.monotonic() + _COMPLETE_LOGIN_MAX_WAIT_SECONDS
+    cache_mtime = _cache_mtime()
+    checked_cache = False
+    while True:
+        # One non-blocking attempt per round: MSAL's own loop would block
+        # until the device code expires.
+        result = app.acquire_token_by_device_flow(flow, exit_condition=lambda _flow: True)
+        if not isinstance(result, dict) or result.get("error") not in _DEVICE_FLOW_PENDING:
+            break
+        if not checked_cache:
+            checked_cache = True
+            found = _signed_in_account(requested_tier)
+            if found:
+                return _superseded(found)
+        interval = max(1, int(flow.get("interval") or 5))
+        if time.monotonic() + interval > deadline or (expires_at and time.time() + interval >= expires_at):
+            break
+        for _ in range(interval):
+            time.sleep(1)
+            mtime = _cache_mtime()
+            if mtime != cache_mtime:
+                # Another sign-in wrote the shared cache meanwhile.
+                cache_mtime = mtime
+                found = _signed_in_account(requested_tier)
+                if found:
+                    return _superseded(found)
+
+    if isinstance(result, dict) and result.get("error") in _DEVICE_FLOW_PENDING:
+        remaining = int(max(0.0, expires_at - time.time())) if expires_at else None
+        return {
+            "success": False,
+            "status": "pending",
+            "user_code": flow.get("user_code"),
+            "verification_url": flow.get("verification_uri"),
+            "requested_tier": requested_tier,
+            "expires_in_seconds": remaining,
+            "message": "The sign-in is not finished yet: the code has not been entered.",
+            "next_step": (
+                "Ask the user to enter the code at the verification URL (or to finish the sign-in on the app's "
+                "accounts page), then call m365_complete_login again with the same flow_data. Do not start a "
+                "new sign-in while this code is valid."
+            ),
+        }
     if "access_token" in result:
         _save_cache(app)
         username = result.get("id_token_claims", {}).get("preferred_username")
@@ -1127,22 +1444,7 @@ def m365_complete_login(flow_data: Dict[str, Any]) -> Dict[str, Any]:
                 granted_tier = _granted_tier_for_account(app, accounts[0])
         except Exception:
             granted_tier = None
-        payload: Dict[str, Any] = {
-            "success": True,
-            "message": f"Sign-in successful! Token cached in {_get_token_cache_path()}",
-            "account": username,
-            "granted_tier": granted_tier,
-        }
-        if granted_tier in (None, "self"):
-            payload["admin_consent_hint"] = {
-                "message": (
-                    "Mail, calendar, contacts and files work now. Teams chat, presence, online "
-                    "meetings, shared mailboxes and To Do need a one-time tenant-admin consent; "
-                    "share this URL with an administrator. No re-login is needed afterwards."
-                ),
-                "admin_consent_url": _build_admin_consent_url(),
-            }
-        return payload
+        return _login_success_payload(username, granted_tier)
     classified = _classify_auth_error(result)
     payload = {
         "error": f"Sign-in incomplete or failed: {classified.message}",
@@ -3075,6 +3377,222 @@ def _coerce_chat_ref(value: Optional[str]) -> Optional[str]:
     return parsed["chat_id"] if parsed else text
 
 
+# ─── Teams channels (AIS-737) ────────────────────────────────────────────────
+
+_TEAMS_CHANNEL_LINK_RE = _re.compile(
+    r"https?://teams\.(?:microsoft\.com|cloud\.microsoft(?:\.com)?)/l/(channel|message)/([^/?#\s]+)"
+    r"(?:/([^?#\s]*))?(?:\?([^#\s]*))?",
+    _re.IGNORECASE,
+)
+_CHANNEL_THREAD_MARKERS = ("@thread.tacv2", "@thread.skype")
+_CHANNEL_DIRECTORY_TTL_SECONDS = 600.0
+_CHANNEL_DIRECTORY_MAX_TEAMS = 25
+# account key -> (monotonic timestamp, channel rows of the user's joined teams)
+_CHANNEL_DIRECTORY_CACHE: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
+
+
+def _parse_channel_link(text: Optional[str]) -> Optional[Dict[str, Optional[str]]]:
+    """Extract team_id / channel_id (and channel name or message id) from a
+    Teams channel link.
+
+    Handles ``https://teams.microsoft.com/l/channel/<channelId>/<name>?groupId=<teamId>&…``
+    and a channel *message* link (``/l/message/<channelId>/<messageId>?groupId=…``).
+    A chat message link (no groupId, ``@thread.v2``) is not a channel link.
+    """
+    if not text:
+        return None
+    m = _TEAMS_CHANNEL_LINK_RE.search(str(text))
+    if not m:
+        return None
+    from urllib.parse import parse_qs, unquote
+
+    kind, channel_id, tail, query = m.group(1).lower(), unquote(m.group(2)), m.group(3), m.group(4)
+    params = parse_qs(query or "")
+    team_id = (params.get("groupId") or [None])[0]
+    if kind == "message":
+        if not team_id or not any(marker in channel_id.lower() for marker in _CHANNEL_THREAD_MARKERS):
+            return None
+        return {"team_id": team_id, "channel_id": channel_id, "channel_name": None, "message_id": unquote(tail) if tail else None}
+    name = unquote(tail).strip() if tail else ""
+    return {"team_id": team_id, "channel_id": channel_id, "channel_name": name or None, "message_id": None}
+
+
+def _looks_like_channel_id(value: str) -> bool:
+    text = (value or "").strip().lower()
+    return text.startswith("19:") and any(marker in text for marker in _CHANNEL_THREAD_MARKERS)
+
+
+def _squash_name(value: Any) -> str:
+    return " ".join(_norm_name(value).split())
+
+
+def _list_my_channels(account: Optional[str] = None) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """The channels of the user's joined teams (bounded, cached for 10 minutes).
+
+    Returns ``(rows, error)``; ``error`` is set when the team list itself could
+    not be read (e.g. the channels tier is not granted yet). An empty listing is
+    not cached, so new consent or a new team shows up on the next call.
+    """
+    key = str(account or "").strip().lower()
+    cached = _CHANNEL_DIRECTORY_CACHE.get(key)
+    if cached and time.monotonic() - cached[0] < _CHANNEL_DIRECTORY_TTL_SECONDS:
+        return cached[1], None
+    try:
+        teams = _graph_request("GET", "/me/joinedTeams", params={"$select": "id,displayName"}, account=account)
+    except Exception as exc:
+        return [], _short_error(exc)
+    rows: List[Dict[str, Any]] = []
+    team_list = teams.get("value") if isinstance(teams, dict) else None
+    for team in (team_list or [])[:_CHANNEL_DIRECTORY_MAX_TEAMS]:
+        if not isinstance(team, dict) or not team.get("id"):
+            continue
+        try:
+            chans = _graph_request(
+                "GET", f"/teams/{team['id']}/channels",
+                params={"$select": "id,displayName,membershipType"}, account=account,
+            )
+        except Exception:
+            continue
+        for ch in (chans.get("value") if isinstance(chans, dict) else None) or []:
+            if not isinstance(ch, dict) or not ch.get("id"):
+                continue
+            rows.append({
+                "target_type": "channel",
+                "team_id": team["id"],
+                "team_name": team.get("displayName") or "",
+                "channel_id": ch["id"],
+                "channel_name": ch.get("displayName") or "",
+                "membership_type": ch.get("membershipType") or "",
+            })
+    if rows:
+        _CHANNEL_DIRECTORY_CACHE[key] = (time.monotonic(), rows)
+    return rows, None
+
+
+def _match_channels(query: str, rows: List[Dict[str, Any]], team: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Exact matches only: channel name, "team channel" or team name.
+
+    A person query rarely equals a channel name, so only exact names count —
+    "LBBW" matches the channel "LBBW" (or the team "LBBW"), "Martin" does not
+    match "Martin's projects".
+    """
+    q = _squash_name(str(query or "").strip().lstrip("#"))
+    team_q = _squash_name(team) if team else ""
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        if team_q and team_q not in (_squash_name(row.get("team_name")), str(row.get("team_id") or "").lower()):
+            continue
+        cname, tname = _squash_name(row.get("channel_name")), _squash_name(row.get("team_name"))
+        if q and str(row.get("channel_id") or "").lower() == str(query or "").strip().lower():
+            score, why = 100, "channel id"
+        elif q and q == cname:
+            score, why = 90, f"channel name {row.get('channel_name')}"
+        elif q and q == f"{tname} {cname}".strip():
+            score, why = 85, f"team and channel name {row.get('team_name')} / {row.get('channel_name')}"
+        elif q and q == tname:
+            score, why = 70, f"team name {row.get('team_name')}"
+        elif not q and team_q:
+            score, why = 50, f"channel of team {row.get('team_name')}"
+        else:
+            continue
+        out.append({**row, "score": score, "match_reason": why})
+    out.sort(key=lambda r: -r["score"])
+    return out
+
+
+def _channel_label(target: Dict[str, Any]) -> str:
+    channel = target.get("channel_name") or target.get("channel_id") or "?"
+    team = target.get("team_name")
+    return f"channel {channel} in team {team}" if team else f"channel {channel}"
+
+
+def _resolve_channel_target(
+    team_id: Optional[str],
+    channel_id: Optional[str],
+    channel: Optional[str],
+    account: Optional[str] = None,
+    *,
+    want_names: bool = False,
+) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    """Resolve a channel from ids, a pasted link or a name.
+
+    Returns ``(target, problem)``; exactly one is set. ``problem`` is a
+    ready-to-return result (ambiguous / not found / missing input).
+    """
+    team_ref = _clean_query_text(team_id)
+    channel_ref = _clean_query_text(channel_id)
+    name_ref = _clean_query_text(channel)
+    team_is_id = bool(team_ref and _re.match(_GUID_RE_TEXT, team_ref))
+    link = next((p for p in (_parse_channel_link(v) for v in (name_ref, channel_ref, team_ref)) if p), None)
+    target: Optional[Dict[str, Any]] = None
+    if link:
+        target = {
+            "team_id": link["team_id"] or (team_ref if team_is_id else None),
+            "channel_id": link["channel_id"],
+            "channel_name": link.get("channel_name"),
+        }
+    elif channel_ref and team_ref:
+        # Explicit ids (the contract of team_id + channel_id); names go in `channel`.
+        target = {"team_id": team_ref, "channel_id": channel_ref, "channel_name": None}
+    elif channel_ref and _looks_like_channel_id(channel_ref):
+        target = {"team_id": None, "channel_id": channel_ref, "channel_name": None}
+
+    if target and target.get("team_id"):
+        if want_names:
+            # Best effort, for the preview: names from the (cached) directory.
+            rows, _err = _list_my_channels(account=account)
+            row = next((r for r in rows if r["channel_id"] == target["channel_id"]), None)
+            if row:
+                target.update({"team_name": row["team_name"], "channel_name": row["channel_name"] or target.get("channel_name")})
+        target["target_type"] = "channel"
+        return target, None
+
+    # A channel id without its team, or a name: look it up among the user's teams.
+    rows, list_error = _list_my_channels(account=account)
+    if target and target.get("channel_id"):
+        matches = [dict(r, score=100, match_reason="channel id") for r in rows if r["channel_id"] == target["channel_id"]]
+    else:
+        query = name_ref or channel_ref
+        team_filter = team_ref if team_ref and not team_is_id else None
+        if team_is_id:
+            rows = [r for r in rows if r["team_id"] == team_ref]
+        if not query and not team_filter:
+            return None, {
+                "sent": False,
+                "error": "name the channel: a channel link, team_id + channel_id, or the channel name",
+            }
+        matches = _match_channels(query, rows, team=team_filter)
+    if not matches:
+        problem: Dict[str, Any] = {
+            "sent": False,
+            "resolution": "none",
+            "error": "no team channel of yours matches",
+            "channels_scanned": len(rows),
+        }
+        if list_error:
+            problem["error"] = f"your teams and channels could not be read: {list_error}"
+        return None, problem
+    top_score = matches[0]["score"]
+    best = [m for m in matches if m["score"] == top_score]
+    if len(best) > 1:
+        return None, {
+            "sent": False,
+            "resolution": "ambiguous",
+            "error": "several team channels match — ask the user which one is meant",
+            "channel_candidates": matches[:10],
+            "next_step": "Show the candidates (team and channel name) and ask; then call again with team_id and channel_id.",
+        }
+    row = matches[0]
+    return {
+        "target_type": "channel",
+        "team_id": row["team_id"],
+        "team_name": row["team_name"],
+        "channel_id": row["channel_id"],
+        "channel_name": row["channel_name"],
+        "match_reason": row["match_reason"],
+    }, None
+
+
 def _slugify_path_component(value: str, fallback: str = "chat") -> str:
     text = _html.unescape(str(value or "")).strip()
     text = _re.sub(r"[^\w\-. ]+", "_", text, flags=_re.UNICODE)
@@ -3244,6 +3762,10 @@ def m365_send_chat_message(
     resolves the chat via `m365_find_chat`; it sends only when the match is
     unique and otherwise returns the candidates without sending. Never reuse a
     chat_id from memory or an earlier session — resolve it fresh with `to`.
+    Chats only: a team channel ("#name", a channel link) goes through
+    m365_send_channel_message (a channel link or "#name" in `to` is handed over
+    there). When a name matches a chat and a team channel, nothing is sent and
+    both are returned (`resolution: "ambiguous_target"`) — ask which one.
 
     Formatting: write `content` as the same Markdown you showed the user
     (bold, lists, links, paragraphs). It is rendered to the HTML Teams
@@ -3274,14 +3796,25 @@ def m365_send_chat_message(
     recipient: Optional[Dict[str, Any]] = None
     chat_type = ""
     resolution: Optional[Dict[str, Any]] = None
-    target_chat_id = _coerce_chat_ref(chat_id) or ""
     to_clean = _clean_query_text(to)
+    # AIS-737: a channel link or "#name" means a team channel, never a chat.
+    # Same preview → confirm flow; the preview names the channel and its team.
+    channel_ref = next((v for v in (_clean_query_text(chat_id), to_clean) if v and _parse_channel_link(v)), None)
+    if channel_ref or to_clean.startswith("#"):
+        return m365_send_channel_message(
+            channel=channel_ref or to_clean, content=resolved_content, content_type=content_type,
+            attachments=attachments, dry_run=dry_run, account=account, confirm=confirm,
+        )
+    target_chat_id = _coerce_chat_ref(chat_id) or ""
     if not target_chat_id and to_clean and _parse_teams_link(to_clean):
         target_chat_id = _coerce_chat_ref(to_clean) or ""
     if not target_chat_id:
         if not to_clean:
             raise ValueError("m365_send_chat_message needs either 'to' (name / email / topic) or 'chat_id'.")
         resolution = _resolve_teams_recipient(to_clean, prefer="any", top=5, account=account)
+        channel_conflict = _chat_name_also_channel(to_clean, resolution, account=account)
+        if channel_conflict:
+            return channel_conflict
         if resolution["resolution"] != "unique":
             return {
                 "sent": False,
@@ -3328,6 +3861,7 @@ def m365_send_chat_message(
         }
     }
     result: Dict[str, Any] = {
+        "target_type": "chat",
         "chat_id": target_chat_id,
         "content_type": payload["body"]["contentType"],
         "rendered_html": final_content if ct == "html" else None,
@@ -3356,9 +3890,10 @@ def m365_send_chat_message(
     if not confirm:
         # AIS-423: two-step send with a clickable confirmation.
         who = (recipient or {}).get("topic") or to_clean or target_chat_id
+        kind = _CHAT_TYPE_LABELS.get(str(chat_type).lower(), "chat")
         result.update({
             "sent": False, "status": "confirmation_required", "attachments": norm_attachments,
-            "question": f"Send this Teams message to {who}?",
+            "question": f"Send this Teams message to the {kind} {who}?",
             "choices": ["Send", "Cancel"],
             "next": "Show the preview, ask with `clarify` (question and choices in the user's language); on yes call "
                     "m365_send_chat_message again with the same arguments and confirm=true.",
@@ -3372,6 +3907,172 @@ def m365_send_chat_message(
     if isinstance(graph_res, dict):
         result.update({k: v for k, v in graph_res.items() if k not in result})
         result["message_id"] = graph_res.get("id")
+    result["sent"] = True
+    return result
+
+
+_CHAT_TYPE_LABELS = {"oneonone": "1:1 chat", "group": "group chat", "meeting": "meeting chat"}
+
+
+def _chat_name_also_channel(query: str, resolution: Dict[str, Any], account: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """AIS-737: "LBBW" was both a meeting chat and the channel #LBBW; the chat
+    got the release notes. When a name that did not resolve to a *person*
+    also names one of the user's team channels, never pick the chat silently.
+
+    Returns a no-send result listing both kinds, or None when no channel
+    matches. Person matches (email, name, nickname) skip the channel lookup.
+    """
+    if "@" in query:
+        return None
+    candidates = resolution.get("candidates") or []
+    top_reason = str((candidates[0] if candidates else {}).get("match_reason") or "")
+    if resolution.get("resolution") == "unique" and not top_reason.startswith("topic"):
+        return None
+    rows, _err = _list_my_channels(account=account)
+    channels = _match_channels(query, rows)
+    if not channels:
+        return None
+    chat_candidates = [
+        dict(c, target_type="chat", chat_kind=_CHAT_TYPE_LABELS.get(str(c.get("chat_type") or "").lower(), "chat"))
+        for c in candidates
+        if resolution.get("resolution") != "none"
+    ]
+    if chat_candidates:
+        error = "the name matches a chat and a team channel — ask the user which one is meant"
+        next_step = (
+            "Show both (chat with its type and members, channel with its team) and ask with `clarify`. "
+            "For the chat call m365_send_chat_message(chat_id=...), for the channel "
+            "m365_send_channel_message(team_id=..., channel_id=...) with the same content."
+        )
+    else:
+        error = "no chat has this name, but a team channel does — this tool posts to chats only"
+        next_step = "Post with m365_send_channel_message(team_id=..., channel_id=...) and the same content; it previews first."
+    return {
+        "sent": False,
+        "to": query,
+        "resolution": "ambiguous_target",
+        "error": error,
+        "candidates": chat_candidates,
+        "channel_candidates": channels[:10],
+        "next_step": next_step,
+    }
+
+
+@mcp.tool()
+def m365_send_channel_message(
+    team_id: Optional[str] = None,
+    channel_id: Optional[str] = None,
+    content: Optional[str] = None,
+    channel: Optional[str] = None,
+    subject: Optional[str] = None,
+    content_type: str = "html",
+    message: Optional[str] = None,
+    body: Optional[str] = None,
+    text: Optional[str] = None,
+    attachments: Optional[List[str]] = None,
+    dry_run: bool = False,
+    account: Optional[str] = None,
+    confirm: bool = False,
+) -> Dict[str, Any]:
+    """Post a message into a Microsoft Teams channel (a team's channel, not a chat).
+
+    Sending is two-step: without confirm=true the tool resolves the channel,
+    renders the message and returns status "confirmation_required" with the
+    target (team and channel name) — ask the user with `clarify`, then call
+    again with the same arguments and confirm=true.
+
+    Target: `team_id` + `channel_id`, a pasted channel link
+    (https://teams.microsoft.com/l/channel/…?groupId=…) in `channel` or
+    `channel_id`, or the channel name in `channel` ("Releases", "#LBBW" or
+    "Team / Channel"), resolved among the user's teams. An ambiguous name
+    returns the candidates without posting.
+
+    Formatting: write `content` as the Markdown you showed the user; it is
+    rendered to the HTML Teams displays (same as chat messages). A message with
+    placeholders like "[Name]" is never sent.
+
+    Args:
+        team_id: The team (group) id. Optional with a channel link or name.
+        channel_id: The channel id (19:…@thread.tacv2) or a channel link.
+        content: Message text (Markdown or HTML).
+        channel: Channel link or channel name, resolved to team_id + channel_id.
+        subject: Optional subject line of the channel post.
+        content_type: 'html' (default, Markdown is rendered) or 'text' (sent verbatim).
+        message: Alias for content.
+        body: Alias for content.
+        text: Alias for content.
+        attachments: Local file paths, uploaded to OneDrive and linked as file cards (forces HTML).
+        dry_run: Resolve the channel and render the message but do not post.
+        account: Optional M365 account username, email, or ID.
+        confirm: Post for real — only after the user approved the preview.
+    """
+    resolved_content = content if content is not None else (message if message is not None else (body if body is not None else text))
+    if resolved_content is None:
+        raise ValueError("m365_send_channel_message requires the message text via 'content' (or its aliases: message/body/text).")
+    target, problem = _resolve_channel_target(team_id, channel_id, channel, account=account, want_names=True)
+    if problem is not None:
+        return problem
+    assert target is not None
+
+    norm_attachments = _normalize_attachment_list(attachments)
+    ct = "html" if norm_attachments else (content_type or "html").lower()
+    if ct == "html":
+        final_content = _markdown_to_teams_html(resolved_content) or resolved_content
+    else:
+        final_content = resolved_content
+    plain_text = _html_to_text(final_content) if ct == "html" else resolved_content
+    payload: Dict[str, Any] = {"body": {"contentType": "html" if ct == "html" else "text", "content": final_content}}
+    if subject and str(subject).strip():
+        payload["subject"] = str(subject).strip()
+    result: Dict[str, Any] = {
+        "target_type": "channel",
+        "team_id": target["team_id"],
+        "team_name": target.get("team_name"),
+        "channel_id": target["channel_id"],
+        "channel_name": target.get("channel_name"),
+        "target": _channel_label(target),
+        "content_type": payload["body"]["contentType"],
+        "rendered_html": final_content if ct == "html" else None,
+        "plain_text": plain_text,
+    }
+    if payload.get("subject"):
+        result["subject"] = payload["subject"]
+    warnings = _register_warnings(plain_text, "teams", None)
+    if warnings:
+        result["register_warnings"] = warnings
+    placeholders = _placeholders(plain_text)
+    if placeholders:
+        result.update({"sent": False, "error": f"the message still contains placeholders {placeholders} — fill them in or remove them"})
+        return result
+    if dry_run:
+        result.update({"sent": False, "dry_run": True, "attachments": norm_attachments,
+                       "note": "Preview only — nothing was posted. Report it to the user as a preview."})
+        return result
+    if not confirm:
+        result.update({
+            "sent": False, "status": "confirmation_required", "attachments": norm_attachments,
+            "question": f"Post this message to the Teams {_channel_label(target)}?",
+            "choices": ["Post", "Cancel"],
+            "next": "Show the preview including the channel and team, ask with `clarify` (question and choices in the "
+                    "user's language); on yes call m365_send_channel_message again with the same arguments and confirm=true.",
+        })
+        return result
+    if norm_attachments:
+        attachment_payload, attachment_tags = _build_teams_attachments(norm_attachments)
+        payload["attachments"] = attachment_payload
+        payload["body"]["content"] = final_content + attachment_tags
+    try:
+        graph_res = _graph_request(
+            "POST", f"/teams/{target['team_id']}/channels/{target['channel_id']}/messages",
+            json_data=payload, account=account,
+        )
+    except GraphForbiddenError as exc:
+        result.update({"sent": False, **exc.to_result()})
+        return result
+    if isinstance(graph_res, dict):
+        result["message_id"] = graph_res.get("id")
+        if graph_res.get("webUrl"):
+            result["web_url"] = graph_res["webUrl"]
     result["sent"] = True
     return result
 
@@ -4020,12 +4721,33 @@ def m365_list_team_channels(team_id: str) -> Dict[str, Any]:
 
 
 @mcp.tool()
-def m365_list_channel_messages(team_id: str, channel_id: str, top: int = 10) -> Dict[str, Any]:
-    """List recent messages in a specific Microsoft Teams channel."""
+def m365_list_channel_messages(
+    team_id: Optional[str] = None,
+    channel_id: Optional[str] = None,
+    top: int = 10,
+    channel: Optional[str] = None,
+) -> Dict[str, Any]:
+    """List recent messages in a specific Microsoft Teams channel.
+
+    Args:
+        team_id: The team (group) id. Optional with a channel link or name.
+        channel_id: The channel id or a pasted channel link.
+        top: Max messages (capped at 50).
+        channel: Channel link or channel name ("Releases", "#LBBW", "Team / Channel").
+    """
+    target, problem = _resolve_channel_target(team_id, channel_id, channel)
+    if problem is not None:
+        problem.pop("sent", None)
+        return problem
+    assert target is not None
+    tid, cid = target["team_id"], target["channel_id"]
     params = {"$top": min(top, 50)}
-    res = _graph_request("GET", f"/teams/{team_id}/channels/{channel_id}/messages", params=params)
+    try:
+        res = _graph_request("GET", f"/teams/{tid}/channels/{cid}/messages", params=params)
+    except GraphForbiddenError as exc:
+        return exc.to_result()
     if isinstance(res, dict) and "value" in res and isinstance(res["value"], list):
-        res["value"] = [_enrich_teams_message(msg, team_id=team_id, channel_id=channel_id) for msg in res["value"]]
+        res["value"] = [_enrich_teams_message(msg, team_id=tid, channel_id=cid) for msg in res["value"]]
     return res
 
 

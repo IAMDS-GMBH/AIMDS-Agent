@@ -874,6 +874,10 @@ _GERMAN_SYNONYMS: Dict[str, List[str]] = {
     "mail": ["m365", "msoffice365", "msoffice365mcp", "outlook", "email", "mail"],
     "chat": ["m365", "msoffice365", "msoffice365mcp", "teams", "chat", "message"],
     "chats": ["m365", "msoffice365", "msoffice365mcp", "teams", "chat", "message"],
+    # Team channels (AIS-737): "poste das in den Kanal #LBBW".
+    "kanal": ["m365", "msoffice365", "msoffice365mcp", "teams", "channel", "message", "post"],
+    "kanäle": ["m365", "msoffice365", "msoffice365mcp", "teams", "channel", "message", "post"],
+    "channel": ["m365", "msoffice365", "msoffice365mcp", "teams", "channel", "message", "post"],
     # Send verbs (AIS-286): "schick das an Martin via Teams" must surface the
     # Teams send/find tools, not only the mail tools. German keys on purpose —
     # they match user input, not tool text.

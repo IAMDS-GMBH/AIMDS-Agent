@@ -894,6 +894,37 @@ def test_microsoft_admin_consent_url_endpoint(monkeypatch, tmp_path):
     assert data["org_consented"] is True
     assert "Chat.ReadWrite" in data["org_consent_scopes"]
     assert "Chat.ReadWrite" not in data["self_consent_scopes"]
+    assert "ChannelMessage.Send" in data["scopes"]  # AIS-737: the URL grants the channels tier
+
+
+def test_microsoft_admin_consent_url_counts_groups_and_channels_as_org_consented(monkeypatch, tmp_path):
+    """Every tier above "self" needs the org-wide consent — "groups" (AIS-340)
+    and "channels" (AIS-737) were reported as not approved."""
+    from fastapi.testclient import TestClient
+
+    from hermes_cli import m365_auth
+    from hermes_cli import web_server as ws
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    for var in ("M365_CLIENT_ID", "M365_TENANT_ID"):
+        monkeypatch.delenv(var, raising=False)
+
+    for tier in ("groups", "channels"):
+        class _App:
+            def get_accounts(self):
+                return [{"home_account_id": "a"}]
+
+            def acquire_token_silent(self, scopes, account=None, _tier=tier):
+                return {"access_token": "t"} if scopes == m365_auth.M365_SCOPE_TIERS[_tier] else None
+
+        monkeypatch.setattr("hermes_cli.m365_auth.get_msal_app", lambda *a, **kw: _App())
+        resp = TestClient(ws.app).get(
+            "/api/providers/oauth/microsoft/admin-consent-url",
+            headers={"X-Hermes-Session-Token": ws._SESSION_TOKEN},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["granted_tier"] == tier
+        assert resp.json()["org_consented"] is True
 
 
 # ---------------------------------------------------------------------------

@@ -369,6 +369,7 @@ class TestAutoloadForMessage:
     def _setup(self):
         for suffix in ("m365_find_chat", "m365_download_chat_files", "m365_list_chat_messages",
                        "m365_send_chat_message", "m365_download_drive_file",
+                       "m365_list_channel_messages", "m365_send_channel_message",
                        "m365_list_sharepoint_sites", "m365_list_sharepoint_drives",
                        "m365_list_sharepoint_files", "m365_search_sharepoint_files"):
             _register(f"mcp_al_{suffix}", "mcp-al")
@@ -385,6 +386,14 @@ class TestAutoloadForMessage:
         assert "mcp_al_m365_download_drive_file" not in agent.valid_tool_names
         # second call: nothing new
         assert dt.autoload_for_message(agent, self.LINK) == []
+
+    def test_teams_channel_link_loads_channel_tools(self):
+        # AIS-737: a channel link is not a chat link.
+        agent = self._setup()
+        loaded = dt.autoload_for_message(
+            agent, "poste das in https://teams.microsoft.com/l/channel/19%3Ax%40thread.tacv2/LBBW?groupId=g-1"
+        )
+        assert set(loaded) == {"mcp_al_m365_list_channel_messages", "mcp_al_m365_send_channel_message"}
 
     def test_sharepoint_url_loads_drive_download(self):
         agent = self._setup()

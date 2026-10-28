@@ -1852,7 +1852,7 @@ export interface MicrosoftAdminConsentResponse {
   scopes: string[];
   self_consent_scopes: string[];
   org_consent_scopes: string[];
-  granted_tier: "self" | "standard" | "admin" | null;
+  granted_tier: "self" | "standard" | "groups" | "admin" | "channels" | null;
   org_consented: boolean;
 }
 
