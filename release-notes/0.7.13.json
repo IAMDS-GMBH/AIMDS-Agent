@@ -1,0 +1,70 @@
+{
+  "version": "0.7.13",
+  "notes": [
+    {
+      "group": "new",
+      "de": "Kanäle in Microsoft Teams lesen und dorthin posten",
+      "en": "Read Microsoft Teams channels and post to them"
+    },
+    {
+      "group": "new",
+      "de": "Du siehst jetzt laufend, woran der Assistent gerade arbeitet – in einem übersichtlichen Block pro Antwort",
+      "en": "You can now follow what the assistant is working on, in one clear block per answer"
+    },
+    {
+      "group": "improved",
+      "de": "Tickets in OpenProject werden schneller und mit weniger Zwischenschritten abgefragt",
+      "en": "OpenProject tickets are looked up faster and with fewer steps"
+    },
+    {
+      "group": "improved",
+      "de": "CSV- und TSV-Tabellen werden direkt gelesen, auch mit Umlauten und Semikolon als Trennzeichen",
+      "en": "CSV and TSV tables are read directly, including umlauts and semicolon separators"
+    },
+    {
+      "group": "improved",
+      "de": "Lange Unterhaltungen bleiben flüssig, weil ältere Teile früher zusammengefasst werden",
+      "en": "Long conversations stay responsive because older parts are summarised earlier"
+    },
+    {
+      "group": "improved",
+      "de": "Lange Chats werden vollständig gesichert, auch wenn ein einzelner Chat langsam ist",
+      "en": "Long chats are saved completely, even when a single chat is slow"
+    },
+    {
+      "group": "improved",
+      "de": "Die automatische Pflege deiner Notizen läuft selbstständig und zuverlässiger",
+      "en": "The automatic upkeep of your notes runs on its own and more reliably"
+    },
+    {
+      "group": "fixed",
+      "de": "Wartende Freigaben stehen jetzt sichtbar am Ende der Antwort",
+      "en": "Pending approvals now show at the end of the answer"
+    },
+    {
+      "group": "fixed",
+      "de": "Der Chatverlauf bleibt erhalten, auch wenn die App während einer laufenden Antwort neu startet",
+      "en": "Chat history is kept even if the app restarts while an answer is running"
+    },
+    {
+      "group": "fixed",
+      "de": "Nach einem Neustart über Nacht verbindet sich die App wieder von selbst",
+      "en": "After a restart overnight the app reconnects on its own"
+    },
+    {
+      "group": "fixed",
+      "de": "Ist ein Modell für deinen Zugang nicht freigegeben, wird ein anderes verwendet, statt eine neue Anmeldung zu verlangen",
+      "en": "If a model is not enabled for your account, another one is used instead of asking you to sign in again"
+    },
+    {
+      "group": "fixed",
+      "de": "Eine Anmeldung, die noch aussteht, hält die Antwort nicht mehr an",
+      "en": "A sign-in that is still pending no longer stalls the answer"
+    },
+    {
+      "group": "fixed",
+      "de": "Weitere Verbesserungen an Stabilität und Zuverlässigkeit",
+      "en": "More stability and reliability improvements"
+    }
+  ]
+}

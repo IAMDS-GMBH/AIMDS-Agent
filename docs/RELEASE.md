@@ -22,6 +22,46 @@ Rules enforced by the script: `main` only, local `main` identical to
 push. A candidate line stays open until it is promoted — `./createTag.sh minor`
 while `v0.7.5-rc.1` exists creates `v0.7.5-rc.2`, not `v0.8.0-rc.1`.
 
+Release checklist:
+
+1. **Write the end-user notes** before the first candidate: `release-notes/<X.Y.Z>.json`
+   (see below), merged to `main` like any other change. Add to it when later
+   candidates bring more user-visible changes.
+2. `./createTag.sh patch` (or `minor` / `major`), test the candidate.
+3. `./createTag.sh promote stable`.
+
+## End-user release notes (AIS-750)
+
+The desktop update dialog shows `release-notes/<X.Y.Z>.json` — never commit
+subjects on the `stable` / `preview` channels. One file per version; every
+candidate `X.Y.Z-rc.N` uses the notes of `X.Y.Z`.
+
+```json
+{
+  "version": "0.7.13",
+  "notes": [
+    { "group": "new", "de": "Kanäle in Microsoft Teams lesen und dorthin posten", "en": "Read Microsoft Teams channels and post to them" },
+    { "group": "fixed", "de": "…", "en": "…", "channels": ["preview"] }
+  ]
+}
+```
+
+- `group`: `new`, `improved` or `fixed`. `de` + `en`: short sentences for end
+  users — what they notice, no tool or protocol names, no ticket or PR numbers,
+  no paths. Purely internal changes (tests, telemetry, incident noise) are left
+  out or folded into one generic reliability line.
+- `channels` (optional) limits an entry to some update channels.
+- Git installs read the files from the target commit, every version after the
+  installed one up to the target, newest first. Release installs get the same
+  notes through the `notes` field of `hermes-release.json`
+  (`scripts/release_notes.py`, called by `scripts/build_source_package.sh`; the
+  current and the seven previous versions). A malformed file fails the build;
+  a missing one only warns, and the dialog then shows "Fixes and
+  improvements". `tests/test_release_notes.py` validates every shipped file.
+- The `main` channel (developer installs) shows "development build", the commit
+  count and the commit subjects, with ticket/PR numbers and test-only commits
+  removed.
+
 ## What the workflow does
 
 - **Candidate tag push**: verifies the tag points at the current `main` HEAD
@@ -67,7 +107,7 @@ release repository (AIS-313, see below) unless `--branch <git-branch>` /
 `--commit` / `--tag` say otherwise.
 
 The check compares the checkout with the channel's tag and lists the commits
-in between (that is the changelog in the updates overlay); the update checks
+in between (the overlay shows the release notes of those versions, see above); the update checks
 the tag out **and then runs the same post-update pipeline as a branch pull**
 (dependencies, bytecode cache, skills sync, config migration, desktop rebuild
 check). A checkout sitting exactly on a release tag reports that version

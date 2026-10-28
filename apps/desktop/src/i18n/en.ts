@@ -1489,7 +1489,7 @@ export const en: Translations = {
     latestBodyBackend: 'The backend is running the latest version.',
     allSetTitle: 'You’re all set',
     availableTitle: 'New update available',
-    availableBody: 'A new version of Hermes is ready to install.',
+    availableBody: 'A new version is ready to install.',
     availableTitleBackend: 'Backend update available',
     availableBodyBackend: 'A newer version of the connected Hermes backend is ready to install.',
     availableBodyNoChangelog: 'A newer version is ready. Release notes aren’t available for this install type.',
@@ -1502,9 +1502,11 @@ export const en: Translations = {
     switchToRelease: tag => `Switch to ${tag}`,
     newerReleaseBody: (headTag, targetTag, channel) =>
       `This installation is on ${headTag}, which is newer than the current "${channel}" release ${targetTag}. The channel catches up as soon as a newer release is published — there is nothing to install.`,
-    releaseAvailable: version => `Version ${version} available`,
-    releaseAvailableBody: version =>
-      `Hermes ${version} is ready to install. The updater downloads the release archive and restarts Hermes.`,
+    versionLabel: version => `Version ${version}`,
+    previewVersionLabel: version => `Version ${version} – preview`,
+    installedVersion: label => `Installed: ${label}`,
+    devBuild: 'development build',
+    changeCount: count => `+${count} ${count === 1 ? 'commit' : 'commits'}`,
     manualTitle: 'Update from your terminal',
     manualBody: 'You installed Hermes from the command line, so updates run there too. Paste this into your terminal:',
     manualPickedUp: 'Hermes will pick up the new version next time you launch it.',

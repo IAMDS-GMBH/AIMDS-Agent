@@ -1268,8 +1268,11 @@ export interface Translations {
     offChannelBody: (count: number, tag: string, channel: string) => string
     switchToRelease: (tag: string) => string
     newerReleaseBody: (headTag: string, targetTag: string, channel: string) => string
-    releaseAvailable: (version: string) => string
-    releaseAvailableBody: (version: string) => string
+    versionLabel: (version: string) => string
+    previewVersionLabel: (version: string) => string
+    installedVersion: (label: string) => string
+    devBuild: string
+    changeCount: (count: number) => string
     manualTitle: string
     manualBody: string
     manualPickedUp: string

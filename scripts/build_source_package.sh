@@ -11,7 +11,8 @@
 #                                       export-ignore rules in .gitattributes
 #                                       apply; root folder hermes-agent-<version>/
 #   hermes-source-<version>.zip.sha256  checksum in `sha256sum -c` format
-#   hermes-release.json                 release manifest, format hermes-release-v1
+#   hermes-release.json                 release manifest, format hermes-release-v1,
+#                                       with the curated notes (scripts/release_notes.py)
 #   install.sh, install.ps1             the install scripts of this release
 #
 # The working tree is left as it was: the version stamp is captured into a
@@ -133,6 +134,12 @@ with open(sys.argv[1], "w", encoding="utf-8") as fh:
     json.dump(manifest, fh, indent=2)
     fh.write("\n")
 PY
+
+# AIS-750: the curated end-user notes (release-notes/<X.Y.Z>.json) of this
+# release and the ones before it, so a release install's update dialog shows
+# them instead of developer commit subjects. A malformed notes file fails the
+# build; a missing one only warns.
+"$python_bin" scripts/release_notes.py manifest "$out_dir/hermes-release.json" "$repo_root/release-notes"
 
 echo "Source package ready in $out_dir:"
 ls -l "$out_dir"
