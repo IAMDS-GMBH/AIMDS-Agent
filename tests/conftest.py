@@ -9,7 +9,9 @@ Hermetic-test invariants enforced here (see AGENTS.md for rationale):
    code reading ``~/.hermes/*`` via ``get_hermes_home()`` can't see the
    real one. (We do NOT also redirect HOME — that broke subprocesses in
    CI. Code using ``Path.home() / ".hermes"`` instead of the canonical
-   ``get_hermes_home()`` is a bug to fix at the callsite.)
+   ``get_hermes_home()`` is a bug to fix at the callsite.) A session temp
+   home is set before the first hermes import, and log files outside the
+   temp dir are refused (AIS-728).
 3. **Deterministic runtime.** TZ=UTC, LANG=C.UTF-8, PYTHONHASHSEED=0.
 4. **No HERMES_SESSION_* inheritance** — the agent's current gateway
    session must not leak into tests.
@@ -36,6 +38,28 @@ import pytest
 PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+
+# ── Session HERMES_HOME before the first hermes import (AIS-728) ───────────
+# ``_hermetic_environment`` redirects HERMES_HOME per test, but test modules
+# are imported at collection time, before any fixture runs. Importing
+# ``hermes_cli.main`` calls ``setup_logging()``, which binds agent.log /
+# errors.log to the home it resolves *then* — the developer's real
+# ``~/.hermes/logs`` — and the handlers stay for the whole process: every
+# "offline in tests" incident a test logs landed in the real errors.log and
+# from there in support bundles. Module-level ``get_hermes_home()`` captures
+# (``run_agent._hermes_home``) and ``load_hermes_dotenv`` had the same reach.
+# From here on, the first resolution already sees a temp dir. See also the
+# log-file guard in ``pytest_configure``.
+import shutil as _shutil
+import tempfile as _tempfile
+
+_SESSION_TMP_ROOT = Path(_tempfile.mkdtemp(prefix="hermes-test-session-"))
+_SESSION_HERMES_HOME = _SESSION_TMP_ROOT / "hermes_home"
+_SESSION_HERMES_HOME.mkdir()
+os.environ["HERMES_HOME"] = str(_SESSION_HERMES_HOME)
+(_SESSION_TMP_ROOT / "documents").mkdir()
+os.environ["HERMES_DOCUMENTS_DIR"] = str(_SESSION_TMP_ROOT / "documents")
 
 
 # ── Per-file process isolation ──────────────────────────────────────────────
@@ -721,6 +745,83 @@ def _ensure_current_event_loop(request):
 _LIVE_SYSTEM_GUARD_BYPASS_MARK = "live_system_guard_bypass"
 
 
+# ── Log-file guard (AIS-728) ────────────────────────────────────────────────
+# Tests write log files only below the temp dir (the session HERMES_HOME and
+# every ``tmp_path`` live there). A logging FileHandler aimed anywhere else —
+# the real ``~/.hermes/logs`` above all — is refused when it opens its file,
+# and one that already exists when pytest starts is detached.
+
+_log_guard: dict = {"roots": (), "real_open": None}
+
+
+def _test_log_roots(config=None) -> tuple:
+    roots = {os.path.realpath(_tempfile.gettempdir()), os.path.realpath(str(_SESSION_TMP_ROOT))}
+    option = getattr(config, "option", None)
+    # ``--basetemp`` moves tmp_path; ``--log-file`` is the developer's own choice.
+    for explicit in (getattr(option, "basetemp", None), getattr(option, "log_file", None)):
+        if explicit:
+            roots.add(os.path.realpath(str(explicit)))
+    return tuple(sorted(roots))
+
+
+def _log_path_is_hermetic(path) -> bool:
+    """True when a log file at *path* stays inside the test temp roots."""
+    resolved = os.path.realpath(str(path))
+    if resolved == os.path.realpath(os.devnull):
+        return True
+    roots = _log_guard["roots"] or _test_log_roots()
+    return any(resolved == root or resolved.startswith(root + os.sep) for root in roots)
+
+
+def _all_loggers():
+    import logging
+
+    yield logging.getLogger()
+    for candidate in list(logging.Logger.manager.loggerDict.values()):
+        if isinstance(candidate, logging.Logger):
+            yield candidate
+
+
+def _install_log_file_guard(config) -> None:
+    import logging
+
+    _log_guard["roots"] = _test_log_roots(config)
+    if _log_guard["real_open"] is None:
+        real_open = logging.FileHandler._open
+        _log_guard["real_open"] = real_open
+
+        def _guarded_open(self):
+            if not _log_path_is_hermetic(self.baseFilename):
+                raise PermissionError(
+                    f"tests/conftest.py: log file outside the test temp dir refused: {self.baseFilename} "
+                    "(a test resolved a real Hermes home — AIS-728)"
+                )
+            return real_open(self)
+
+        logging.FileHandler._open = _guarded_open
+    for logger in _all_loggers():
+        for handler in list(logger.handlers):
+            if isinstance(handler, logging.FileHandler) and not _log_path_is_hermetic(handler.baseFilename):
+                logger.removeHandler(handler)
+                handler.close()
+
+
+def _uninstall_log_file_guard() -> None:
+    import logging
+
+    real_open, _log_guard["real_open"] = _log_guard["real_open"], None
+    if real_open is not None:
+        logging.FileHandler._open = real_open
+    # The session home is removed next: detach the handlers bound to it so a
+    # late record at interpreter exit does not reopen a file there.
+    session_root = os.path.realpath(str(_SESSION_TMP_ROOT)) + os.sep
+    for logger in _all_loggers():
+        for handler in list(logger.handlers):
+            if isinstance(handler, logging.FileHandler) and os.path.realpath(handler.baseFilename).startswith(session_root):
+                logger.removeHandler(handler)
+                handler.close()
+
+
 def pytest_configure(config):  # noqa: D401 — pytest hook
     """Register markers used by hermetic conftest."""
     config.addinivalue_line(
@@ -729,6 +830,7 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
         "(only for tests that genuinely need real os.kill / subprocess "
         "behaviour — e.g. PTY tests that signal their own child).",
     )
+    _install_log_file_guard(config)  # see "Log-file guard (AIS-728)" above
     _install_network_guard()  # see "Network guard (AIS-487)" below
     _install_browser_guard()  # never opens the developer's browser
     # No fire-and-forget session-title threads: they call the auxiliary model
@@ -1463,6 +1565,8 @@ def pytest_unconfigure(config):  # noqa: D401 — pytest hook
         import shutil
 
         shutil.rmtree(cred_dir, ignore_errors=True)
+    _uninstall_log_file_guard()
+    _shutil.rmtree(_SESSION_TMP_ROOT, ignore_errors=True)
 
 
 def pytest_collection_modifyitems(config, items):  # noqa: D401 — pytest hook
