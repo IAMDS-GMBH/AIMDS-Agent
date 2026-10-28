@@ -393,6 +393,7 @@ turn_end:
   report_yes: "Igen, jelentem"
   report_no: "Nem"
   report_sent: "Köszönöm — a jelentés elment a támogatásnak."
+  cut_off_note: "Az előző válaszom félbeszakadt, mielőtt elkészült volna. A fenti lépéseket addig elvégeztem."
 
 suite_auth:
   # AIS-525: the Suite rejected the key (e.g. after a staging refresh).

@@ -26,7 +26,7 @@ import {
   type SessionInfo,
   triggerCronJob
 } from '../hermes'
-import { preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
+import { mergeStoredIntoBusyTranscript, preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
 import {
   isMessagingSource,
   LOCAL_SESSION_SOURCE_IDS,
@@ -607,10 +607,18 @@ export function DesktopController() {
           const latest = await getSessionMessages(storedSessionId, storedProfile)
           updateSessionState(
             runtimeSessionId,
-            state => ({
-              ...state,
-              messages: preserveLocalAssistantErrors(toChatMessages(latest.messages), state.messages)
-            }),
+            state => {
+              const stored = toChatMessages(latest.messages)
+
+              return {
+                ...state,
+                // A running turn reaches the store round by round, so the
+                // stored copy lags the view: merge, never replace (AIS-735).
+                messages: state.busy
+                  ? mergeStoredIntoBusyTranscript(stored, state.messages)
+                  : preserveLocalAssistantErrors(stored, state.messages)
+              }
+            },
             storedSessionId
           )
 

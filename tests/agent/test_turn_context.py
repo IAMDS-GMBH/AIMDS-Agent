@@ -176,6 +176,27 @@ def test_persist_user_message_becomes_original():
     assert ctx.messages[-1]["content"] == "api-prefixed"
 
 
+def test_unfinished_previous_turn_gets_a_cut_off_note(monkeypatch):
+    """AIS-736: a history that ends in tool results (the app restarted mid
+    turn) is closed with a short assistant note before the new request."""
+    monkeypatch.setenv("HERMES_LANGUAGE", "en")
+    history = [
+        {"role": "user", "content": "do it"},
+        {"role": "assistant", "content": None, "tool_calls": [{"id": "c1", "type": "function"}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+    ]
+    ctx = _build(_FakeAgent(), conversation_history=history)
+    assert [m["role"] for m in ctx.messages] == ["user", "assistant", "tool", "assistant", "user"]
+    assert "cut off" in ctx.messages[-2]["content"]
+    assert ctx.current_turn_user_idx == len(ctx.messages) - 1
+
+
+def test_finished_previous_turn_gets_no_note():
+    history = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]
+    ctx = _build(_FakeAgent(), conversation_history=history)
+    assert [m["role"] for m in ctx.messages] == ["user", "assistant", "user"]
+
+
 def test_memory_nudge_fires_at_interval():
     agent = _FakeAgent()
     agent._memory_nudge_interval = 1

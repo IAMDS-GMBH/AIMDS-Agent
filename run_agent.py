@@ -234,6 +234,28 @@ _openrouter_prewarm_done = threading.Event()
 _QWEN_CODE_VERSION = "0.14.1"
 
 
+def _tail_is_complete_tool_round(messages: List[Dict]) -> bool:
+    """True when *messages* ends with an assistant ``tool_calls`` message
+    followed by a tool result for every one of its calls (AIS-736)."""
+    idx = len(messages) - 1
+    result_ids = set()
+    results = 0
+    while idx >= 0 and isinstance(messages[idx], dict) and messages[idx].get("role") == "tool":
+        result_ids.add(messages[idx].get("tool_call_id"))
+        results += 1
+        idx -= 1
+    if not results or idx < 0 or not isinstance(messages[idx], dict):
+        return False
+    call_msg = messages[idx]
+    calls = call_msg.get("tool_calls") if call_msg.get("role") == "assistant" else None
+    if not isinstance(calls, list) or not calls:
+        return False
+    call_ids = {tc.get("id") for tc in calls if isinstance(tc, dict)}
+    if call_ids and None not in call_ids:
+        return call_ids <= result_ids
+    return results >= len(calls)
+
+
 def _routermint_headers() -> dict:
     """Return the User-Agent RouterMint needs to avoid Cloudflare 1010 blocks."""
     from hermes_cli import __version__ as _HERMES_VERSION
@@ -1583,6 +1605,8 @@ class AIAgent:
         Uses _last_flushed_db_idx to track which messages have already been
         written, so repeated calls (from multiple exit paths) only write
         truly new messages — preventing the duplicate-write bug (#860).
+        All new messages go into ONE transaction (AIS-736), so a tool round
+        is either stored complete or not at all.
         """
         if not self._session_db:
             return
@@ -1591,8 +1615,14 @@ class AIAgent:
             # Retry row creation if the earlier attempt failed transiently.
             if not self._session_db_created:
                 self._ensure_db_session()
+            # A transcript rewind (scaffolding strip) can shorten the list
+            # below the cursor; never let the cursor point past its end, or
+            # the next turn's first messages would be skipped.
+            if self._last_flushed_db_idx > len(messages):
+                self._last_flushed_db_idx = len(messages)
             start_idx = len(conversation_history) if conversation_history else 0
             flush_from = max(start_idx, self._last_flushed_db_idx)
+            rows = []
             for msg in messages[flush_from:]:
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
@@ -1618,8 +1648,7 @@ class AIAgent:
                     ]
                 elif isinstance(msg.get("tool_calls"), list):
                     tool_calls_data = msg["tool_calls"]
-                self._append_message_with_row_repair(
-                    session_id=self.session_id,
+                rows.append(dict(
                     role=role,
                     content=content,
                     tool_name=msg.get("tool_name"),
@@ -1631,10 +1660,63 @@ class AIAgent:
                     reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
-                )
+                ))
+            if rows:
+                self._append_messages_with_row_repair(rows)
             self._last_flushed_db_idx = len(messages)
         except Exception as e:
             logger.warning("Session DB append_message failed: %s", e)
+
+    def _persist_tool_round(self, messages: List[Dict], conversation_history: List[Dict] = None) -> None:
+        """Store a finished tool round right away, not only at turn exit (AIS-736).
+
+        Called after every tool round. Writes only when the tail is a
+        complete round — the assistant message with ``tool_calls`` followed
+        by a result for each call — so a restart, crash or killed backend
+        leaves the round either complete in state.db or not there at all;
+        never tool results without the call that produced them. One
+        transaction per round; the turn-exit persist continues from the
+        same cursor and writes nothing twice.
+        """
+        if not self._session_db or not _tail_is_complete_tool_round(messages):
+            return
+        self._flush_messages_to_session_db(messages, conversation_history)
+
+    def _persist_compaction_rotation(self, messages: List[Dict]) -> None:
+        """Write the compacted transcript into the continuation session now (AIS-736).
+
+        ``_compress_context`` rotates to a new session row and resets the
+        flush cursor. Without this write the continuation stays empty until
+        the turn ends — a reload in between showed no history at all.
+        """
+        if not self._session_db:
+            return
+        self._flush_messages_to_session_db(messages, None)
+
+    def _append_messages_with_row_repair(self, rows: List[Dict]) -> None:
+        """Write *rows* in one transaction; recreate a missing session row once (AIS-427)."""
+        import sqlite3 as _sqlite3
+
+        append_many = getattr(type(self._session_db), "append_messages", None)
+        if append_many is None:
+            # Minimal session stores (tests, plugins) only know append_message.
+            for row in rows:
+                self._append_message_with_row_repair(session_id=self.session_id, **row)
+            return
+        try:
+            self._session_db.append_messages(self.session_id, rows)
+        except _sqlite3.IntegrityError as exc:
+            if "foreign key" not in str(exc).lower():
+                raise
+            logger.warning(
+                "Session %s had no row in state.db — recreating it so the conversation is stored again",
+                self.session_id,
+            )
+            self._session_db.ensure_session(
+                self.session_id, source=str(getattr(self, "platform", "") or "unknown"),
+                model=getattr(self, "model", None),
+            )
+            self._session_db.append_messages(self.session_id, rows)
 
     def _append_message_with_row_repair(self, **kwargs) -> None:
         """append_message that recreates a missing session row once (AIS-427).

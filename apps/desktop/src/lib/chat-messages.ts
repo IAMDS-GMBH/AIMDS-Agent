@@ -1081,6 +1081,91 @@ export function preserveLocalAssistantErrors(
   return [...mergedNextMessages, ...preserved]
 }
 
+const visibleCount = (messages: ChatMessage[]) => messages.filter(message => !message.hidden).length
+
+// How much a turn's tail shows: tool steps plus text. Used to pick the more
+// complete of two copies of the same running turn.
+const tailWeight = (messages: ChatMessage[]) =>
+  messages.reduce(
+    (sum, message) =>
+      sum +
+      message.parts.filter(part => part.type === 'tool-call').length * 1000 +
+      chatMessageText(message).length,
+    0
+  )
+
+/**
+ * Merge a stored transcript into the live view of a session whose turn is
+ * still running (AIS-735). The store lags behind the running turn, so a
+ * plain replace showed an older — or empty — chat while the agent kept
+ * working. The stored copy is anchored at the newest user turn both copies
+ * share; everything before it comes from the store, the running turn from
+ * whichever copy shows more of it (live while streaming, the store after a
+ * reconnect lost events), and live messages the store does not know yet
+ * are kept. The result never shows fewer messages than the live view.
+ */
+export function mergeStoredIntoBusyTranscript(stored: ChatMessage[], live: ChatMessage[]): ChatMessage[] {
+  if (!live.length) {
+    return stored
+  }
+
+  if (!stored.length) {
+    return live
+  }
+
+  const storedUserIndex = new Map<string, number>()
+
+  stored.forEach((message, index) => {
+    if (message.role === 'user' && !message.hidden) {
+      storedUserIndex.set(userTurnKey(message), index)
+    }
+  })
+
+  let liveAnchor = -1
+  let storedAnchor = -1
+
+  for (let index = live.length - 1; index >= 0; index -= 1) {
+    const message = live[index]
+
+    if (message.role !== 'user' || message.hidden) {
+      continue
+    }
+
+    const match = storedUserIndex.get(userTurnKey(message))
+
+    if (match !== undefined) {
+      liveAnchor = index
+      storedAnchor = match
+
+      break
+    }
+  }
+
+  // The store knows none of the turns on screen yet: keep the live view.
+  if (liveAnchor < 0) {
+    return live
+  }
+
+  const storedTail = stored.slice(storedAnchor)
+
+  // The shared turn on screen, and any newer turns only the view has.
+  const nextLiveUser = live.findIndex(
+    (message, index) => index > liveAnchor && message.role === 'user' && !message.hidden
+  )
+
+  const liveTurn = live.slice(liveAnchor, nextLiveUser < 0 ? undefined : nextLiveUser)
+  const liveAfter = nextLiveUser < 0 ? [] : live.slice(nextLiveUser)
+
+  const tail =
+    tailWeight(storedTail) > tailWeight(liveTurn)
+      ? [...storedTail, ...liveTurn.filter(message => message.pending), ...liveAfter]
+      : [...liveTurn, ...liveAfter]
+
+  const merged = [...stored.slice(0, storedAnchor), ...tail]
+
+  return visibleCount(merged) < visibleCount(live) ? live : merged
+}
+
 export function branchGroupForUser(userMessage: ChatMessage): string {
   return `branch:${userMessage.id}`
 }

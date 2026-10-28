@@ -1836,6 +1836,121 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
     assert server._sessions[runtime_sid]["model_override"] == captured["model_override"]
 
 
+class _LineageDB:
+    """root → parent → child compression chain, plus a branch of the child."""
+
+    rows = {
+        "root": {"id": "root", "parent_session_id": None, "end_reason": "compression"},
+        "parent": {"id": "parent", "parent_session_id": "root", "end_reason": "compression"},
+        "child": {"id": "child", "parent_session_id": "parent", "end_reason": None},
+        "branch": {"id": "branch", "parent_session_id": "child", "end_reason": None},
+    }
+
+    def get_session(self, target):
+        return self.rows.get(target)
+
+    def get_compression_tip(self, target):
+        return "child" if target in {"root", "parent", "child"} else target
+
+    def reopen_session(self, target):
+        pass
+
+    def get_messages_as_conversation(self, target, include_ancestors=False):
+        return [{"role": "user", "content": "stored"}]
+
+
+def _resume_harness(monkeypatch):
+    built = []
+    monkeypatch.setattr(server, "_get_db", lambda: _LineageDB())
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_set_session_context", lambda target: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
+    monkeypatch.setattr(server, "_session_info", lambda agent, *a: {"model": "test"})
+
+    def fake_make_agent(sid, key, **_kwargs):
+        built.append(key)
+        return types.SimpleNamespace(model="test", session_id=key)
+
+    monkeypatch.setattr(server, "_make_agent", fake_make_agent)
+    monkeypatch.setattr(
+        server,
+        "_init_session",
+        lambda sid, key, agent, history, cols=80: server._sessions.__setitem__(
+            sid, _session(agent=agent, session_key=key)
+        ),
+    )
+    return built
+
+
+@pytest.mark.parametrize("requested", ["child", "parent", "root"])
+def test_session_resume_during_running_turn_reuses_the_live_session(monkeypatch, requested):
+    """AIS-735: a compression inside the running turn rotated the agent to
+    ``child`` while the gateway key still says ``parent`` (it syncs at turn
+    end). A resume by the tip, the rotated-away id or an older ancestor must
+    re-bind to the running session, never build a second agent."""
+    built = _resume_harness(monkeypatch)
+    live = _session(
+        agent=types.SimpleNamespace(session_id="child"),
+        session_key="parent",
+        session_key_aliases={"root"} if requested != "root" else set(),
+        running=True,
+        history=[{"role": "user", "content": "live"}],
+    )
+    server._sessions["live-sid"] = live
+    before = set(server._sessions)
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.resume", "params": {"session_id": requested}}
+        )
+        result = resp["result"]
+        assert result["session_id"] == "live-sid"
+        assert result["running"] is True
+        assert result["status"] == "working"
+        assert built == []
+        assert set(server._sessions) == before
+    finally:
+        server._sessions.pop("live-sid", None)
+
+
+def test_session_resume_of_a_branch_never_binds_to_the_parents_live_session(monkeypatch):
+    built = _resume_harness(monkeypatch)
+    server._sessions["live-sid"] = _session(
+        agent=types.SimpleNamespace(session_id="child"), session_key="child", running=True
+    )
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.resume", "params": {"session_id": "branch"}}
+        )
+        assert resp["result"]["session_id"] != "live-sid"
+        assert built == ["branch"]
+    finally:
+        for sid in list(server._sessions):
+            server._sessions.pop(sid, None)
+
+
+def test_session_resume_logs_target_and_live_match(monkeypatch, caplog):
+    _resume_harness(monkeypatch)
+    server._sessions["live-sid"] = _session(
+        agent=types.SimpleNamespace(session_id="child"), session_key="parent", running=True
+    )
+    try:
+        with caplog.at_level("INFO", logger="tui_gateway.server"):
+            server.handle_request(
+                {"id": "1", "method": "session.resume", "params": {"session_id": "parent"}}
+            )
+            server._sessions.pop("live-sid", None)
+            server.handle_request(
+                {"id": "2", "method": "session.resume", "params": {"session_id": "parent"}}
+            )
+        text = caplog.text
+        assert "requested=parent tip=child live=live-sid running=True" in text
+        assert "requested=parent tip=child live=none" in text
+        assert "building a new agent for child (requested=parent): no live session holds this chat" in text
+    finally:
+        for sid in list(server._sessions):
+            server._sessions.pop(sid, None)
+
+
 def test_session_resume_retries_without_stored_runtime_when_provider_missing(monkeypatch):
     calls = []
     server._sessions.clear()

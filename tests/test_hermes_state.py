@@ -347,6 +347,35 @@ class TestMessageStorage:
         assert messages[0]["content"] == "Hello"
         assert messages[1]["role"] == "assistant"
 
+    def test_append_messages_writes_a_round_in_one_transaction(self, db):
+        """AIS-736: a tool round lands as one write, counters included."""
+        db.create_session(session_id="s1", source="cli")
+        calls = [{"id": "c1", "type": "function"}, {"id": "c2", "type": "function"}]
+        ids = db.append_messages("s1", [
+            dict(role="assistant", content=None, tool_calls=calls),
+            dict(role="tool", content="r1", tool_call_id="c1", tool_name="t"),
+            dict(role="tool", content="r2", tool_call_id="c2", tool_name="t"),
+        ])
+
+        assert len(ids) == 3 and ids == sorted(ids)
+        rows = db.get_messages_as_conversation("s1")
+        assert [r["role"] for r in rows] == ["assistant", "tool", "tool"]
+        assert rows[0]["tool_calls"] == calls
+        session = db.get_session("s1")
+        assert session["message_count"] == 3
+        assert session["tool_call_count"] == 2
+        assert db.append_messages("s1", []) == []
+
+    def test_append_messages_is_all_or_nothing(self, db):
+        db.create_session(session_id="s1", source="cli")
+        with pytest.raises(Exception):
+            db.append_messages("s1", [
+                dict(role="assistant", content="ok"),
+                dict(role="tool", content="r", token_count=object()),  # cannot be bound
+            ])
+        assert db.get_messages("s1") == []
+        assert db.get_session("s1")["message_count"] == 0
+
     def test_message_increments_session_count(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="user", content="Hello")

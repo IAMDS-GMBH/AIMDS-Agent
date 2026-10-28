@@ -6,6 +6,7 @@ import {
   appendInterimTextPart,
   chatMessageText,
   interimRemainder,
+  mergeStoredIntoBusyTranscript,
   preserveLocalAssistantErrors,
   renderMediaTags,
   toChatMessages,
@@ -1014,5 +1015,93 @@ describe('interimRemainder', () => {
     expect(appendInterimTextPart(parts, 'Schon da.')).toBe(parts)
     const text = chatMessageText({ id: 'a', role: 'assistant', parts: appendInterimTextPart(parts, 'Schon da. Und mehr.') })
     expect(text).toBe('Schon da. Und mehr.')
+  })
+})
+
+describe('mergeStoredIntoBusyTranscript', () => {
+  // AIS-735: a rehydrate while a turn runs used to replace the view with the
+  // stored copy, which lags a whole turn behind — the chat looked wiped.
+  const live = (messages: ChatMessage[]) => messages.map((message, index) => ({ ...message, id: `live-${index}` }))
+
+  const toolCall = (n: number) => ({
+    function: { arguments: '{}', name: 'read_file' },
+    id: `call_${n}`,
+    type: 'function'
+  })
+
+  const storedEarlier = toChatMessages([
+    { role: 'user', content: 'first', timestamp: 1 },
+    { role: 'assistant', content: 'first answer', timestamp: 2 }
+  ])
+
+  it('keeps the running turn when the store does not have it yet', () => {
+    const view = live([
+      ...storedEarlier,
+      { id: 'u2', parts: [{ text: 'second', type: 'text' }], role: 'user' },
+      { id: 'a2', parts: [{ text: 'working on it', type: 'text' }], pending: true, role: 'assistant' }
+    ])
+
+    const merged = mergeStoredIntoBusyTranscript(storedEarlier, view)
+
+    expect(merged.map(chatMessageText)).toEqual(['first', 'first answer', 'second', 'working on it'])
+    expect(merged.at(-1)?.pending).toBe(true)
+  })
+
+  it('never shrinks the view to an empty or unrelated store', () => {
+    const view = live(storedEarlier)
+
+    expect(mergeStoredIntoBusyTranscript([], view)).toBe(view)
+    expect(
+      mergeStoredIntoBusyTranscript(toChatMessages([{ role: 'user', content: 'other', timestamp: 9 }]), view)
+    ).toBe(view)
+  })
+
+  it('takes the stored rounds after a reconnect lost live events, keeping the streaming reply', () => {
+    const stored = toChatMessages([
+      { role: 'user', content: 'first', timestamp: 1 },
+      { role: 'assistant', content: 'first answer', timestamp: 2 },
+      { role: 'user', content: 'second', timestamp: 3 },
+      { role: 'assistant', content: '', tool_calls: [toolCall(1)], timestamp: 4 },
+      { role: 'tool', content: 'r1', tool_call_id: 'call_1', timestamp: 5 },
+      { role: 'assistant', content: '', tool_calls: [toolCall(2)], timestamp: 6 },
+      { role: 'tool', content: 'r2', tool_call_id: 'call_2', timestamp: 7 }
+    ])
+
+    const view = live([
+      ...storedEarlier,
+      { id: 'u2', parts: [{ text: 'second', type: 'text' }], role: 'user' },
+      { id: 'stream', parts: [{ text: 'almost', type: 'text' }], pending: true, role: 'assistant' }
+    ])
+
+    const merged = mergeStoredIntoBusyTranscript(stored, view)
+    const toolCalls = merged.flatMap(message => message.parts).filter(part => part.type === 'tool-call')
+
+    expect(toolCalls).toHaveLength(2)
+    expect(merged.at(-1)?.id).toBe('live-3')
+    expect(merged.at(-1)?.pending).toBe(true)
+  })
+
+  it('keeps a newer turn only the view knows', () => {
+    const view = live([
+      ...storedEarlier,
+      { id: 'u2', parts: [{ text: 'second', type: 'text' }], role: 'user' },
+      { id: 'a2', parts: [{ text: 'second answer', type: 'text' }], role: 'assistant' },
+      { id: 'u3', parts: [{ text: 'third', type: 'text' }], role: 'user' }
+    ])
+
+    const stored = toChatMessages([
+      { role: 'user', content: 'first', timestamp: 1 },
+      { role: 'assistant', content: 'first answer', timestamp: 2 },
+      { role: 'user', content: 'second', timestamp: 3 },
+      { role: 'assistant', content: 'second answer, stored in full with more detail', timestamp: 4 }
+    ])
+
+    expect(mergeStoredIntoBusyTranscript(stored, view).map(chatMessageText)).toEqual([
+      'first',
+      'first answer',
+      'second',
+      'second answer, stored in full with more detail',
+      'third'
+    ])
   })
 })

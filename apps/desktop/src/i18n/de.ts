@@ -1889,6 +1889,8 @@ export const de
     thread: {
       loadingSession: 'Sitzung wird geladen',
       loadingResponse: 'Hermes lädt eine Antwort',
+      reconnectingTitle: 'Verbindung unterbrochen – ich arbeite weiter',
+      reconnectingBody: 'Die App verbindet sich neu. Der Chat zeigt den Stand, sobald die Verbindung wieder steht.',
       thinking: 'Denkt nach',
       today: time => `Heute, ${time}`,
       yesterday: time => `Gestern, ${time}`,

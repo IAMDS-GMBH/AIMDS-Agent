@@ -393,6 +393,7 @@ turn_end:
   report_yes: "Ja, meld dit"
   report_no: "Nee"
   report_sent: "Dankie — die verslag is na ondersteuning gestuur."
+  cut_off_note: "My vorige antwoord is afgesny voordat dit klaar was. Die stappe hierbo is wat ek voltooi het."
 
 suite_auth:
   # AIS-525: the Suite rejected the key (e.g. after a staging refresh).

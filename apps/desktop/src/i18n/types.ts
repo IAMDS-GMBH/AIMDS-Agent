@@ -1620,6 +1620,8 @@ export interface Translations {
     thread: {
       loadingSession: string
       loadingResponse: string
+      reconnectingTitle: string
+      reconnectingBody: string
       thinking: string
       today: (time: string) => string
       yesterday: (time: string) => string

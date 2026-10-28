@@ -1887,6 +1887,8 @@ export const en: Translations = {
     thread: {
       loadingSession: 'Loading session',
       loadingResponse: 'Hermes is loading a response',
+      reconnectingTitle: 'Connection lost — I am still working on it',
+      reconnectingBody: 'The app is reconnecting. The chat catches up as soon as the connection is back.',
       thinking: 'Thinking',
       today: time => `Today, ${time}`,
       yesterday: time => `Yesterday, ${time}`,

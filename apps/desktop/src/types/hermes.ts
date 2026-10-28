@@ -315,7 +315,10 @@ export interface SessionResumeResponse {
   message_count: number
   messages: SessionMessage[]
   resumed: string
+  /** True when the resume re-bound to a live session whose turn is still running. */
+  running?: boolean
   session_id: string
+  status?: 'idle' | 'starting' | 'waiting' | 'working'
 }
 
 export interface SessionRuntimeInfo {

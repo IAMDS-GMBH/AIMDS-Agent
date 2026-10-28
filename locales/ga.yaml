@@ -397,6 +397,7 @@ turn_end:
   report_yes: "Sea, tuairiscigh é"
   report_no: "Ní hea"
   report_sent: "Go raibh maith agat — seoladh an tuairisc chuig an tacaíocht."
+  cut_off_note: "Gearradh mo fhreagra roimhe sin sular críochnaíodh é. Is iad na céimeanna thuas a bhí curtha i gcrích agam."
 
 suite_auth:
   # AIS-525: the Suite rejected the key (e.g. after a staging refresh).
