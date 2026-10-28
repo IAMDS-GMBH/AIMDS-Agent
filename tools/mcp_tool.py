@@ -384,6 +384,22 @@ def mcp_call_timeout(seconds: float):
         _call_timeout_ceiling.reset(token)
 
 
+# Background callers (the session sync, AIS-726) mark their calls: a slow or
+# failing background call must not open the circuit breaker that the user's
+# own tool calls to the same server go through, nor fill errors.log.
+_background_call: contextvars.ContextVar[bool] = contextvars.ContextVar("mcp_background_call", default=False)
+
+
+@contextlib.contextmanager
+def mcp_background_call():
+    """MCP tool calls made in this context are background work (see above)."""
+    token = _background_call.set(True)
+    try:
+        yield
+    finally:
+        _background_call.reset(token)
+
+
 def _effective_tool_timeout(tool_timeout: float) -> float:
     ceiling = _call_timeout_ceiling.get()
     if ceiling is None or ceiling <= 0:
@@ -4312,7 +4328,8 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, pr
                 logger.debug("Auto-healing reconnect for '%s' failed: %s", server_name, rec_exc)
 
         if not server or not server.session:
-            _bump_server_error(server_name)
+            if not _background_call.get():
+                _bump_server_error(server_name)
             return json.dumps(
                 {"error": f"MCP server '{server_name}' is not connected"},
                 ensure_ascii=False,
@@ -4445,13 +4462,16 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, pr
             if recovered is not None:
                 return recovered
 
-            _bump_server_error(server_name)
-            logger.error(
-                "MCP tool %s/%s call failed: %s",
-                server_name,
-                tool_name,
-                exc,
-            )
+            if _background_call.get():
+                logger.info("MCP tool %s/%s background call failed: %s", server_name, tool_name, exc)
+            else:
+                _bump_server_error(server_name)
+                logger.error(
+                    "MCP tool %s/%s call failed: %s",
+                    server_name,
+                    tool_name,
+                    exc,
+                )
             return json.dumps(
                 {
                     "error": _sanitize_error(

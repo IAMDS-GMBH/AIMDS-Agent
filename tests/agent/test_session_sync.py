@@ -17,7 +17,7 @@ class FakeRemote:
         self.fail = fail
         self.sessions = {}  # remote id -> {message_id: content}, ordered by first append
 
-    def call(self, args):
+    def call(self, args, **kw):
         self.calls.append(json.loads(json.dumps(args)))
         if self.fail:
             raise RuntimeError("offline")
@@ -304,24 +304,242 @@ def test_hydrate_offline_keeps_the_hint(db):
 class HangingRemote(FakeRemote):
     """memory_session that times out like the facade does (AIS-524)."""
 
-    def call(self, args):
+    def call(self, args, **kw):
         self.calls.append(json.loads(json.dumps(args)))
         raise TimeoutError("mcp_AIMDSSuiteMCP_mcp_memory_memory_session timed out after 60s")
 
 
-def test_a_timeout_stops_the_run_and_leaves_the_rest_due(db):
-    for sid in ("t1", "t2", "t3"):
+def test_timeouts_in_a_row_stop_the_run_and_leave_the_rest_due(db):
+    for sid in ("t1", "t2", "t3", "t4"):
         chat(db, sid, [("user", f"hallo {sid}")])
     hanging = HangingRemote()
     stats = run(db, hanging)
 
-    assert len(hanging.calls) == 1, "one timeout per run, not one per session"
-    assert stats["errors"] == 1 and stats["stopped"] == 1
+    assert len(hanging.calls) == session_sync.RUN_MAX_TIMEOUTS == 2, "a slow server ends the run"
+    assert stats["errors"] == 2 and stats["stopped"] == 1
     assert len(db.sync_due_sessions()) == 2  # untouched sessions go out next tick
 
     up = FakeRemote()
     run(db, up)
-    assert sorted(up.appended_ids()) == ["t2:0", "t3:0"]
+    assert sorted(up.appended_ids()) == ["t3:0", "t4:0"]
+
+
+class SlowSessionRemote(FakeRemote):
+    """Times out for one remote session only (AIS-726: one stuck old chat)."""
+
+    def __init__(self, slow, fail_after_appends=None):
+        super().__init__()
+        self.slow = slow
+        self.fail_after_appends = fail_after_appends
+
+    def call(self, args, **kw):
+        appends = sum(1 for c in self.calls if c["action"] == "append" and c["session_id"] == self.slow)
+        if args["session_id"] == self.slow and (self.fail_after_appends is None or appends >= self.fail_after_appends):
+            self.calls.append(json.loads(json.dumps(args)))
+            raise TimeoutError("memory_session timed out after 30s")
+        return super().call(args, **kw)
+
+
+def test_one_session_timing_out_does_not_stop_the_run(db):
+    chat(db, "stuck", [("user", "alt und groß")])
+    time.sleep(0.01)
+    chat(db, "n1", [("user", "neu 1")])
+    chat(db, "n2", [("user", "neu 2")])
+    r = SlowSessionRemote("stuck")
+    stats = run(db, r)
+    assert stats["errors"] == 1 and "stopped" not in stats
+    assert sorted(r.appended_ids()) == ["n1:0", "n2:0", "stuck:0"]  # stuck tried once, the others synced
+    assert set(r.sessions) == {"n1", "n2"}
+    assert db.sync_due_sessions() == []  # stuck backs off on its own
+
+
+def _big_chat(db, sid, n=50, size=5000):
+    db.create_session(sid, "tui")
+    for i in range(n):
+        db.append_message(sid, "user" if i % 2 == 0 else "assistant", f"{i:03d} " + "Inhalt " * (size // 7))
+
+
+def _row(db, sid):
+    return db._conn.execute("SELECT * FROM sessions WHERE id = ?", (sid,)).fetchone()
+
+
+def test_an_oversized_session_is_uploaded_in_parts(db):
+    _big_chat(db, "big")
+    # The third call of this session times out: the first two batches stay done.
+    r = SlowSessionRemote("big", fail_after_appends=2)
+    stats = run(db, r)
+    assert stats["errors"] == 1
+    sent_first = r.appended_ids()[:-len(r.calls[-1]["messages"])]
+    assert all(len(c["messages"]) <= session_sync.BATCH_MAX_MESSAGES for c in r.calls)
+    assert all(sum(len(m["content"]) for m in c["messages"]) <= session_sync.BATCH_MAX_BYTES for c in r.calls)
+    row = _row(db, "big")
+    assert row["synced_upto"] == len(sent_first) > 0 and row["sync_attempts"] == 1 and row["sync_dirty"] == 1
+
+    # The retry continues where the remote is, with smaller batches.
+    db._execute_write(lambda c: c.execute("UPDATE sessions SET sync_next_at = 0"))
+    up = FakeRemote()
+    run(db, up)
+    ids = up.appended_ids()
+    assert ids[0] == f"big:{len(sent_first)}" and ids[-1] == "big:49"
+    retry_limit = session_sync._batch_limits(1)
+    assert retry_limit[1] == session_sync.BATCH_MAX_BYTES // 2
+    assert all(sum(len(m["content"]) + 200 for m in c["messages"]) <= retry_limit[1] for c in up.calls)
+    row = _row(db, "big")
+    assert row["synced_upto"] == 50 and row["sync_attempts"] == 0 and row["sync_dirty"] == 0
+
+
+def test_backoff_grows_per_session_and_resets_on_success(db):
+    chat(db, "b1", [("user", "hallo")])
+    down = FakeRemote(fail=True)
+    delays = []
+    for _ in range(4):
+        db._execute_write(lambda c: c.execute("UPDATE sessions SET sync_next_at = 0"))
+        before = time.time()
+        run(db, down)
+        delays.append(round(_row(db, "b1")["sync_next_at"] - before))
+    assert delays == [30, 60, 120, 240]
+
+    db._execute_write(lambda c: c.execute("UPDATE sessions SET sync_next_at = 0"))
+    run(db, FakeRemote())
+    row = _row(db, "b1")
+    assert row["sync_attempts"] == 0 and row["sync_next_at"] is None and row["sync_error"] is None
+
+    db.sync_fail("b1", "x", attempts=30)
+    assert _row(db, "b1")["sync_next_at"] - time.time() <= db.SYNC_BACKOFF_MAX_SECONDS + 1
+
+
+def test_a_persistent_failure_files_one_case_and_logs_once_per_streak(db, monkeypatch, caplog):
+    import logging
+
+    from hermes_cli import auto_incidents
+
+    reports = []
+    monkeypatch.setattr(auto_incidents, "report_session_sync_stuck",
+                        lambda sid, attempts, detail="": reports.append((sid, attempts, detail)))
+    chat(db, "p1", [("user", "hallo")])
+    hanging = HangingRemote()
+    caplog.set_level(logging.INFO, logger="agent.session_sync")
+    for _ in range(session_sync.REPORT_AFTER_ATTEMPTS + 3):
+        db._execute_write(lambda c: c.execute("UPDATE sessions SET sync_next_at = 0"))
+        run(db, hanging)
+    assert [(s, a) for s, a, _ in reports] == [("p1", session_sync.REPORT_AFTER_ATTEMPTS)]
+    assert "1 of 1 messages pending" in reports[0][2]
+    failure_lines = [r for r in caplog.records if "p1 failed" in r.getMessage() and r.levelno >= logging.INFO]
+    assert len(failure_lines) == 2  # streak start + persistence, not one per run
+
+
+def test_unreachable_server_ends_the_run_without_blaming_a_session(db):
+    class Down(FakeRemote):
+        def call(self, args, **kw):
+            self.calls.append(args)
+            raise session_sync.BackendUnavailable("MCP server is unreachable")
+
+    chat(db, "u1", [("user", "a")])
+    chat(db, "u2", [("user", "b")])
+    r = Down()
+    stats = run(db, r)
+    assert stats["stopped"] == 1 and len(r.calls) == 1
+    assert _row(db, "u1")["sync_attempts"] == 0 and len(db.sync_due_sessions()) == 2
+
+
+def test_a_newer_segment_waits_for_the_older_one(db):
+    chat(db, "root", [("user", "Teil 1")], title="Projekt")
+    db.end_session("root", "compression")
+    time.sleep(0.01)
+    chat(db, "tip", [("user", "Teil 2")], title="Projekt #2", parent_session_id="root")
+    r = SlowSessionRemote("root")
+    stats = run(db, r)
+    assert stats["waiting"] == 1 and r.appended_ids() == ["root:0"]
+    run(db, FakeRemote())  # root still backs off: tip keeps waiting
+    assert _row(db, "tip")["sync_dirty"] == 1
+
+    db._execute_write(lambda c: c.execute("UPDATE sessions SET sync_next_at = 0"))
+    up = FakeRemote()
+    run(db, up)
+    assert up.appended_ids() == ["root:0", "tip:0"]
+
+
+def test_long_messages_are_capped_and_not_slimmed_away(db):
+    long_text = "Anfang " * 4000 + "MITTE " + "Ende " * 8000
+    chat(db, "cap", [("user", "Dokument?"), ("assistant", long_text)] + [("user", "x"), ("assistant", "y")] * 12)
+    r = FakeRemote()
+    run(db, r)
+    sent = r.sessions["cap"]["cap:1"]
+    assert len(sent) < session_sync.MESSAGE_MAX_CHARS + 100 and "chars omitted" in sent
+    assert sent.startswith("Anfang") and sent.rstrip().endswith("Ende") and "MITTE" not in sent
+
+    _age(db, "cap", 40)
+    session_sync.slim_once(db, after_days=30)
+    assert db.sync_messages("cap")[1]["content"] == long_text  # the full text stays local
+
+
+def test_session_remote_maps_mcp_errors_and_runs_in_the_background():
+    seen = {}
+
+    class Facade:
+        def __init__(self, result):
+            self.result = result
+
+        def _call_read(self, tool, args, timeout=20.0, background=False):
+            seen.update(tool=tool, timeout=timeout, background=background)
+            return json.dumps(self.result)
+
+    remote = session_sync.SessionRemote(Facade({"result": {"added": 1}}), "mcp_x_memory_session")
+    assert remote.call({"action": "append"}) == {"added": 1}
+    assert seen == {"tool": "mcp_x_memory_session", "timeout": session_sync.CALL_TIMEOUT_SECONDS, "background": True}
+
+    with pytest.raises(TimeoutError):
+        session_sync.SessionRemote(Facade({"error": "MCP call failed: TimeoutError: timed out"}), "t").call({})
+    with pytest.raises(session_sync.BackendUnavailable):
+        session_sync.SessionRemote(
+            Facade({"error": "MCP server 'AIMDSSuiteMCP' is unreachable after 3 consecutive failures."}), "t"
+        ).call({})
+
+
+def test_the_ticker_never_waits_on_a_run(monkeypatch):
+    import threading
+
+    release = threading.Event()
+    monkeypatch.setattr(session_sync, "_last_run", 0.0)
+    monkeypatch.setattr(session_sync, "_bg_thread", None)
+    monkeypatch.setattr(session_sync, "enabled", lambda: True)
+    monkeypatch.setattr(session_sync, "maybe_run", lambda db=None: release.wait(5))
+    started = time.monotonic()
+    thread = session_sync.maybe_run_in_background()
+    assert thread is not None and time.monotonic() - started < 0.5
+    assert session_sync.maybe_run_in_background() is None  # one run at a time
+    release.set()
+    thread.join(2)
+
+
+def test_memory_reads_do_not_wait_on_a_hanging_sync_call(monkeypatch):
+    """A turn's memory read answers while a background memory_session call hangs."""
+    import threading
+
+    from agent.memory_facade import MemoryFacade
+
+    release = threading.Event()
+
+    def _call(self, tool, args):
+        if tool == "memory_session":
+            release.wait(5)
+            return "late"
+        return {"ok": tool}
+
+    monkeypatch.setattr(MemoryFacade, "_call", _call)
+    facade = object.__new__(MemoryFacade)
+    sync = threading.Thread(target=lambda: facade._call_read("memory_session", {}, timeout=5, background=True))
+    sync.start()
+    try:
+        started = time.monotonic()
+        assert facade._call_read("memory_context", {}, timeout=2) == {"ok": "memory_context"}
+        # The read came back while the sync call is still hanging (it holds
+        # for 5 s); a wall-clock bound well below that stays stable on slow CI.
+        assert sync.is_alive()
+        assert time.monotonic() - started < 2.5
+    finally:
+        release.set()
+        sync.join(2)
 
 
 def test_a_plain_failure_does_not_stop_the_run(db):

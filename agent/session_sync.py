@@ -9,9 +9,11 @@ How it works:
 
 * SQLite triggers (``hermes_state.SYNC_TRIGGER_SQL``) mark a session dirty on
   every message change, whichever code path wrote it.
-* The desktop backend ticker calls :func:`maybe_run` once a minute. Each run
-  sends the new messages of a few dirty sessions in batches, oldest session
-  first, and records how far the remote is.
+* The desktop backend ticker calls :func:`maybe_run_in_background` once a
+  minute; the run has its own thread. Each run sends the new messages of a
+  few dirty sessions in small batches, oldest session first, and records how
+  far the remote is after every batch, so a long transcript arrives in parts
+  over several runs instead of timing out as a whole (AIS-726).
 * Message ids are ``<local session id>:<ordinal among active messages>``, so a
   ``replace_messages`` that rewrites rows with the same content stays a no-op
   on the server; an edit replaces that message in place; a rewind becomes a
@@ -21,10 +23,15 @@ How it works:
 * User deletes are queued as tombstones and sent as ``delete``/``truncate``;
   local retention pruning keeps the remote copy on purpose.
 * Offline, an MCP error or no ``memory_session`` tool: nothing is lost, the
-  session stays dirty and is retried with backoff.
+  session stays dirty and is retried with a per-session backoff (30 s … 6 h);
+  every failed attempt halves that session's batch size. One session that
+  times out does not stop the run — two in a row do (the server itself is
+  slow). A session failing persistently files one support case per streak.
 
 Tool output is redacted (secrets), stripped of inline binary data and capped —
-the transcript is for recall, not for replaying raw tool results.
+the transcript is for recall, not for replaying raw tool results. Other
+messages are capped far higher (head and tail kept) so one pasted document
+cannot make a single call unbounded.
 """
 
 from __future__ import annotations
@@ -38,15 +45,32 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-#: Per message sent: tool output is capped, other text is kept whole.
+#: Per message sent: tool output is capped hard, other text generously (head +
+#: tail) — about 20 server parts, so one message never makes a call unbounded.
 TOOL_OUTPUT_MAX_CHARS = 2000
-#: One memory_session(append) call: at most this many messages / bytes.
-BATCH_MAX_MESSAGES = 60
-BATCH_MAX_BYTES = 512 * 1024
-#: One run: at most this many sessions, so a backfill never blocks the ticker.
+MESSAGE_MAX_CHARS = 32_000
+#: One memory_session(append) call: at most this many messages / bytes
+#: (AIS-726: up to 60 messages / 512 KB per call, all-or-nothing, never got a
+#: stuck old chat through within the call timeout). Each failed attempt of a session
+#: halves both, down to the floor, until the session syncs again.
+BATCH_MAX_MESSAGES = 20
+BATCH_MAX_BYTES = 64 * 1024
+BATCH_MIN_MESSAGES = 4
+BATCH_MIN_BYTES = 8 * 1024
+#: One memory_session call; a small batch answers in seconds.
+CALL_TIMEOUT_SECONDS = 30.0
+#: One run: at most this many sessions, this much time, and this many timeouts
+#: in a row (one slow session is skipped; two mean the server is slow).
 RUN_MAX_SESSIONS = 8
+RUN_BUDGET_SECONDS = 150.0
+RUN_MAX_TIMEOUTS = 2
+#: A session failing this many attempts in a row files one support case.
+REPORT_AFTER_ATTEMPTS = 6
 #: Minimum seconds between runs (the ticker fires every 60 s).
 RUN_INTERVAL_SECONDS = 55.0
+#: Resume hydration waits on the server while the user waits: bounded.
+HYDRATE_CALL_TIMEOUT = 15.0
+HYDRATE_BUDGET_SECONDS = 20.0
 
 #: Slimming: messages of fully synced chats idle this long are replaced locally
 #: by a marker + short hint; the full text stays in the Suite memory.
@@ -66,6 +90,12 @@ _run_lock = threading.Lock()
 _hydrate_cache: Dict[str, Tuple[float, Dict[str, str]]] = {}
 _HYDRATE_TTL = 120.0
 _last_run = 0.0
+_bg_thread: Optional[threading.Thread] = None
+
+
+class BackendUnavailable(RuntimeError):
+    """The memory server is not reachable at all (breaker open, not connected):
+    no session is to blame, the run just ends."""
 
 
 # ── message → transcript text ────────────────────────────────────────────
@@ -138,7 +168,16 @@ def transcript_text(msg: Dict[str, Any]) -> Optional[Tuple[str, str]]:
             pass
     if not text:
         return None
-    return role, _redact(text)
+    return role, _redact(_cap(text, MESSAGE_MAX_CHARS))
+
+
+def _cap(text: str, limit: int) -> str:
+    """Head and tail of an over-long message, the middle named, not sent."""
+    if len(text) <= limit:
+        return text
+    head = limit * 2 // 3
+    tail = limit - head
+    return f"{text[:head]} … ({len(text) - head - tail} chars omitted) … {text[-tail:]}"
 
 
 def _iso(ts: Any) -> Optional[str]:
@@ -164,13 +203,24 @@ def build_messages(session_id: str, rows: List[Dict[str, Any]], start: int) -> L
     return out
 
 
-def _batches(messages: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+def _message_bytes(m: Dict[str, Any]) -> int:
+    return len(m["content"].encode("utf-8")) + 200
+
+
+def _batch_limits(attempts: int) -> Tuple[int, int]:
+    """(messages, bytes) per call for a session that failed *attempts* times in a row."""
+    shrink = min(max(0, attempts), 3)
+    return (max(BATCH_MIN_MESSAGES, BATCH_MAX_MESSAGES >> shrink), max(BATCH_MIN_BYTES, BATCH_MAX_BYTES >> shrink))
+
+
+def _batches(messages: List[Dict[str, Any]], max_messages: int = BATCH_MAX_MESSAGES,
+             max_bytes: int = BATCH_MAX_BYTES) -> List[List[Dict[str, Any]]]:
     batches: List[List[Dict[str, Any]]] = []
     cur: List[Dict[str, Any]] = []
     size = 0
     for m in messages:
-        n = len(m["content"].encode("utf-8")) + 200
-        if cur and (len(cur) >= BATCH_MAX_MESSAGES or size + n > BATCH_MAX_BYTES):
+        n = _message_bytes(m)
+        if cur and (len(cur) >= max_messages or size + n > max_bytes):
             batches.append(cur)
             cur, size = [], 0
         cur.append(m)
@@ -204,10 +254,17 @@ class SessionRemote:
         tool = facade._tool("memory_session")
         return cls(facade, tool) if tool else None
 
-    def call(self, args: Dict[str, Any]) -> Dict[str, Any]:
+    def call(self, args: Dict[str, Any], *, timeout: float = CALL_TIMEOUT_SECONDS,
+             background: bool = True) -> Dict[str, Any]:
+        """One memory_session call. Raises TimeoutError when the server did not
+        answer in time and BackendUnavailable when it is not reachable at all.
+
+        *background*: the sync — its failures stay out of the server's circuit
+        breaker and errors.log (AIS-726); resume hydration passes False.
+        """
         from agent.memory_facade import _unwrap_mcp_result
 
-        raw = self.facade._call_read(self.tool, args, timeout=60.0)
+        raw = self.facade._call_read(self.tool, args, timeout=timeout, background=background)
         payload = _unwrap_mcp_result(raw)
         if isinstance(payload, str):
             try:
@@ -222,6 +279,13 @@ class SessionRemote:
             # The remote already lacks what we want to delete: done.
             if "NOT_FOUND" in text or "session not found" in text.lower():
                 return {"not_found": True}
+            low = text.lower()
+            # The MCP layer reports its own deadline and an open breaker as a
+            # result, not an exception.
+            if "timed out" in low or "timeouterror" in low:
+                raise TimeoutError(f"memory_session: {str(err)[:300]}")
+            if "is unreachable" in low or "is not connected" in low:
+                raise BackendUnavailable(f"memory_session: {str(err)[:300]}")
             raise RuntimeError(f"memory_session: {str(err)[:300]}")
         return payload
 
@@ -229,49 +293,122 @@ class SessionRemote:
 # ── one run ──────────────────────────────────────────────────────────────
 
 
+def _ordinal(message: Dict[str, Any]) -> int:
+    return int(str(message["message_id"]).rsplit(":", 1)[1])
+
+
 def sync_session(db: Any, remote: SessionRemote, row: Dict[str, Any]) -> int:
-    """Bring one session's remote transcript up to date. Returns messages sent."""
+    """Bring one session's remote transcript up to date. Returns messages sent.
+
+    Progress is recorded after every batch (AIS-726), so a transcript too
+    long for one run arrives in parts; a failure carries ``sync_detail``
+    (what was still pending) for the log line and the support case.
+    """
     sid = row["id"]
     gen = int(row["sync_gen"] or 0)
+    synced_gen = int(row["synced_gen"] or 0)
+    upto = int(row["synced_upto"] or 0)
     remote_id = row.get("sync_remote") or db.sync_remote_id(sid)
     rows = db.sync_messages(sid)
     count = len(rows)
 
-    if int(row["synced_gen"] or 0) != gen:
+    if synced_gen != gen:
         # Edit, rewind or replace since the last sync: re-send everything (the
         # server skips unchanged messages) and drop the remote tail beyond the
         # local count.
         start = 0
-        if int(row["synced_upto"] or 0) > count:
+        if upto > count:
             remote.call({"action": "truncate", "session_id": remote_id, "from_message_id": f"{sid}:{count}"})
+            db.sync_progress(sid, gen=synced_gen, upto=count, remote=remote_id)
+            upto = count
     else:
-        start = min(int(row["synced_upto"] or 0), count)
+        start = min(upto, count)
+    # The remote may hold ordinals below *upto* from an older generation; a
+    # partial re-send only counts as progress once it has passed them.
+    floor = upto
 
+    max_messages, max_bytes = _batch_limits(int(row.get("sync_attempts") or 0))
+    messages = build_messages(sid, rows, start)
+    batches = _batches(messages, max_messages=max_messages, max_bytes=max_bytes)
     sent = 0
     title = (row.get("title") or "").strip()
-    for batch in _batches(build_messages(sid, rows, start)):
+    for i, batch in enumerate(batches):
         args: Dict[str, Any] = {"action": "append", "session_id": remote_id, "messages": batch,
                                 "hints": {"client": "hermes", "local_session_id": sid}}
         if title:
             args["title"] = title
-        remote.call(args)
+        try:
+            remote.call(args)
+        except Exception as exc:
+            pending = messages[sent:]
+            try:
+                exc.sync_detail = {  # type: ignore[attr-defined]
+                    "messages_total": count, "messages_pending": len(pending),
+                    "pending_kb": sum(_message_bytes(m) for m in pending) // 1024,
+                    "batch_messages": len(batch), "batch_kb": sum(_message_bytes(m) for m in batch) // 1024,
+                    "batches_done": i, "batches_total": len(batches),
+                }
+            except Exception:
+                pass
+            raise
         sent += len(batch)
+        if i < len(batches) - 1:
+            end = _ordinal(batch[-1]) + 1
+            if end >= floor:
+                db.sync_progress(sid, gen=gen, upto=end, remote=remote_id)
     db.sync_record(sid, gen=gen, upto=count, remote=remote_id)
     db.sync_clear_dirty(sid, gen=gen, count=count)
     return sent
 
 
-def run_once(db: Any, remote: SessionRemote, *, max_sessions: int = RUN_MAX_SESSIONS) -> Dict[str, int]:
+def _describe(detail: Optional[Dict[str, Any]]) -> str:
+    if not detail:
+        return ""
+    return (f"{detail['messages_pending']} of {detail['messages_total']} messages pending "
+            f"({detail['pending_kb']} KB), batch {detail['batches_done'] + 1}/{detail['batches_total']} "
+            f"with {detail['batch_messages']} messages ({detail['batch_kb']} KB)")
+
+
+def _note_failure(session_id: str, attempts: int, exc: BaseException) -> None:
+    """One log line when a failure streak starts and one when it persists —
+    plus one support case then — instead of a line per retry."""
+    detail = _describe(getattr(exc, "sync_detail", None))
+    text = f"{exc}" + (f" — {detail}" if detail else "")
+    if attempts == 1 or attempts == REPORT_AFTER_ATTEMPTS:
+        logger.info("session sync: %s failed (attempt %d, retried with backoff): %s", session_id, attempts, text)
+    else:
+        logger.debug("session sync: %s failed (attempt %d): %s", session_id, attempts, text)
+    if attempts == REPORT_AFTER_ATTEMPTS:
+        try:
+            from hermes_cli.auto_incidents import report_session_sync_stuck
+
+            report_session_sync_stuck(session_id, attempts, text)
+        except Exception:
+            pass
+
+
+def run_once(db: Any, remote: SessionRemote, *, max_sessions: int = RUN_MAX_SESSIONS,
+             budget_seconds: float = RUN_BUDGET_SECONDS) -> Dict[str, int]:
     """Send pending deletes, then up to *max_sessions* dirty sessions.
 
-    A timeout ends the run (AIS-524): a backend that just timed out will not
-    answer the next session either. Since AIS-744 the call itself ends at the
-    facade's timeout and HTTP servers no longer serialize requests, so the
-    user's own memory calls do not queue behind it. The sessions not tried
-    stay due and go out with the next tick.
+    A session that times out is skipped (it backs off on its own) and the run
+    goes on with the next one (AIS-726: one stuck session held every run for
+    weeks). RUN_MAX_TIMEOUTS timeouts in a row, an unreachable server or the
+    time budget end the run (AIS-524): the server itself is slow then. The
+    sessions not tried stay due and go out with the next tick.
     """
     stats = {"sessions": 0, "messages": 0, "deletes": 0, "errors": 0}
+    deadline = time.monotonic() + budget_seconds
+    timeouts = 0
+
+    def _stop(reason: str) -> None:
+        stats["stopped"] = 1
+        logger.info("session sync: %s — stopping this run", reason)
+
     for tomb in db.sync_tombstones_due():
+        if time.monotonic() >= deadline:
+            _stop("run time budget used")
+            return stats
         try:
             args = {"action": tomb["op"], "session_id": tomb["remote_session_id"]}
             if tomb["op"] == "truncate":
@@ -279,26 +416,50 @@ def run_once(db: Any, remote: SessionRemote, *, max_sessions: int = RUN_MAX_SESS
             remote.call(args)
             db.sync_tombstone_done(tomb["id"])
             stats["deletes"] += 1
+            timeouts = 0
+        except BackendUnavailable as exc:
+            _stop(str(exc))
+            return stats
         except Exception as exc:
             stats["errors"] += 1
             db.sync_tombstone_fail(tomb["id"], str(exc), attempts=int(tomb["attempts"] or 0) + 1)
             logger.info("session sync: remote %s of %s failed: %s", tomb["op"], tomb["remote_session_id"], exc)
             if isinstance(exc, TimeoutError):
-                stats["stopped"] = 1
-                return stats
+                timeouts += 1
+                if timeouts >= RUN_MAX_TIMEOUTS:
+                    _stop(f"memory_session timed out {timeouts} times in a row")
+                    return stats
 
+    failed_remotes: set = set()
     for row in db.sync_due_sessions(limit=max_sessions):
+        if time.monotonic() >= deadline:
+            _stop("run time budget used")
+            break
+        sid = row["id"]
+        remote_id = row.get("sync_remote") or db.sync_remote_id(sid)
+        # Segments of one conversation share the remote transcript, which the
+        # server keeps in arrival order: a newer segment waits for older ones.
+        if remote_id in failed_remotes or (remote_id != sid and db.sync_older_segment_pending(sid)):
+            stats["waiting"] = stats.get("waiting", 0) + 1
+            continue
         try:
-            stats["messages"] += sync_session(db, remote, row)
+            stats["messages"] += sync_session(db, remote, {**row, "sync_remote": remote_id})
             stats["sessions"] += 1
+            timeouts = 0
+        except BackendUnavailable as exc:
+            _stop(str(exc))
+            break
         except Exception as exc:
             stats["errors"] += 1
-            db.sync_fail(row["id"], str(exc), attempts=int(row["sync_attempts"] or 0) + 1)
-            logger.info("session sync: %s failed: %s", row["id"], exc)
+            failed_remotes.add(remote_id)
+            attempts = int(row["sync_attempts"] or 0) + 1
+            db.sync_fail(sid, str(exc), attempts=attempts)
+            _note_failure(sid, attempts, exc)
             if isinstance(exc, TimeoutError):
-                logger.info("session sync: memory_session timed out — stopping this run")
-                stats["stopped"] = 1
-                break
+                timeouts += 1
+                if timeouts >= RUN_MAX_TIMEOUTS:
+                    _stop(f"memory_session timed out for {timeouts} sessions in a row")
+                    break
     return stats
 
 
@@ -353,6 +514,8 @@ def slim_once(db: Any, *, after_days: int, limit: int = 10) -> int:
                 continue
             if content.startswith(MARKER_PREFIX) or len(content) < SLIM_MIN_CHARS:
                 continue
+            if row.get("role") == "assistant" and len(content) > MESSAGE_MAX_CHARS:
+                continue  # the server holds a capped copy only — the full text stays local
             if transcript_text(row) is None:
                 continue  # never sent (e.g. a compaction summary) — keep it
             replacements.append((row["id"], marker(remote_id, f"{sid}:{ordinal}", content)))
@@ -413,12 +576,19 @@ def hydrate_messages(messages: List[Dict[str, Any]], remote: Optional["SessionRe
     if wanted and remote is None:
         remote = SessionRemote.for_process()
     if remote is not None:
+        # The user waits on this (resume): bounded per call and in total. A
+        # remote not read completely keeps its hints — partial parts would
+        # restore a cut text.
+        deadline = time.monotonic() + HYDRATE_BUDGET_SECONDS
         for remote_id, ids in wanted.items():
             try:
                 parts: Dict[str, List[Tuple[int, str]]] = {}
                 from_seq = 0
                 for _ in range(max_pages):
-                    page = remote.call({"action": "read", "session_id": remote_id, "from_seq": from_seq, "limit": 200})
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("hydration time budget used")
+                    page = remote.call({"action": "read", "session_id": remote_id, "from_seq": from_seq, "limit": 200},
+                                       timeout=HYDRATE_CALL_TIMEOUT, background=False)
                     for ch in page.get("chunks") or []:
                         if ch.get("message_id") in ids:
                             parts.setdefault(ch["message_id"], []).append((int(ch.get("part") or 0), str(ch.get("content") or "")))
@@ -499,7 +669,23 @@ def maybe_run(db: Any = None) -> Optional[Dict[str, int]]:
         _run_lock.release()
 
 
+def maybe_run_in_background() -> Optional[threading.Thread]:
+    """Ticker entry point (AIS-726): the run gets its own daemon thread, so a
+    slow memory server never holds the cron tick or the other ticker jobs.
+    Returns the started thread, or None when a run is going or not due."""
+    global _bg_thread
+    if _bg_thread is not None and _bg_thread.is_alive():
+        return None
+    if not enabled() or time.monotonic() - _last_run < RUN_INTERVAL_SECONDS:
+        return None
+    thread = threading.Thread(target=maybe_run, name="session-sync", daemon=True)
+    _bg_thread = thread
+    thread.start()
+    return thread
+
+
 __all__ = [
-    "MARKER_PREFIX", "SessionRemote", "build_messages", "enabled", "has_markers", "hydrate_messages",
-    "marker", "maybe_run", "run_once", "slim_once", "sync_session", "transcript_text",
+    "MARKER_PREFIX", "BackendUnavailable", "SessionRemote", "build_messages", "enabled", "has_markers",
+    "hydrate_messages", "marker", "maybe_run", "maybe_run_in_background", "run_once", "slim_once",
+    "sync_session", "transcript_text",
 ]

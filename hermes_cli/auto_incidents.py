@@ -15,7 +15,9 @@ waiting for the user to press "Problem melden":
   the error class and whether the Suite's LLM gateway was up at that moment;
 * a subagent task that ran badly (AIS-456): timed out, failed, used up its
   budget, overflowed its result contract, hit mostly tool errors, or was
-  delegated again after such a run — one kind per agent and criterion.
+  delegated again after such a run — one kind per agent and criterion;
+* a chat transcript that keeps failing to sync to the Suite memory (AIS-726)
+  — once per failure streak, not once per sync run.
 
 Policy comes from ``incident_report``: ``support.auto_report: false`` or
 ``HERMES_SUPPORT_AUTO_REPORT=0`` switches uploads off, one case per kind per
@@ -662,6 +664,26 @@ def report_bundled_mcp_failure(server_name: str, cause: str, detail: str = "", *
         return None
 
 
+def report_session_sync_stuck(session_id: str, attempts: int, detail: str = "") -> Optional[threading.Thread]:
+    """A chat transcript that keeps failing to reach the Suite memory (AIS-726).
+
+    Called once per failure streak (when it crosses the persistence
+    threshold), so a session retried for weeks files one case, not one per run.
+    """
+    try:
+        return report_in_background(
+            "session-sync-stuck",
+            f"Chat transcript {session_id} does not reach the Suite memory ({attempts} attempts in a row)",
+            _clip(_redact(detail), 1500),
+            category="mcp_tools",
+            context_type=CONTEXT_MCP,
+            session_id=session_id,
+        )
+    except Exception as exc:
+        logger.debug("session sync report failed: %s", exc)
+        return None
+
+
 __all__ = [
     "compact_transcript",
     "is_bundled_mcp",
@@ -670,6 +692,7 @@ __all__ = [
     "report_auth_401",
     "report_bundled_mcp_failure",
     "report_in_background",
+    "report_session_sync_stuck",
     "report_subagent_outcome",
     "report_turn_failure",
     "request_shape",

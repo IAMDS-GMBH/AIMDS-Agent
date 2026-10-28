@@ -286,7 +286,9 @@ class MemoryFacade:
     def save_tool(self) -> Optional[str]:
         return self._tool("memory_save")
 
-    def _call_read(self, tool_name: str, args: Dict[str, Any], timeout: float = 20.0) -> Any:
+    def _call_read(
+        self, tool_name: str, args: Dict[str, Any], timeout: float = 20.0, *, background: bool = False
+    ) -> Any:
         """A memory READ that the turn waits for, bounded (AIS-427).
 
         A hung memory backend held a turn for the MCP tool timeout (180 s)
@@ -295,15 +297,20 @@ class MemoryFacade:
         itself is capped at the same *timeout* (AIS-744): an abandoned call
         that ran on to the server's tool timeout kept foreground calls to the
         same server waiting behind it.
+
+        *background* (the session sync, AIS-726): nobody waits on the result,
+        so its failures neither open the server's circuit breaker for the
+        user's own calls nor log as errors.
         """
         import concurrent.futures as _cf
+        import contextlib as _cl
 
         def _bounded_call():
             try:
-                from tools.mcp_tool import mcp_call_timeout
+                from tools.mcp_tool import mcp_background_call, mcp_call_timeout
             except Exception:
                 return self._call(tool_name, args)
-            with mcp_call_timeout(timeout):
+            with mcp_call_timeout(timeout), (mcp_background_call() if background else _cl.nullcontext()):
                 return self._call(tool_name, args)
 
         pool = _cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix="memory-read")
@@ -312,7 +319,10 @@ class MemoryFacade:
         try:
             return future.result(timeout=timeout)
         except _cf.TimeoutError:
-            logger.warning("memory_facade: %s did not answer within %.0fs — continuing without it", tool_name, timeout)
+            if background:
+                logger.info("memory_facade: background %s did not answer within %.0fs", tool_name, timeout)
+            else:
+                logger.warning("memory_facade: %s did not answer within %.0fs — continuing without it", tool_name, timeout)
             raise TimeoutError(f"{tool_name} timed out after {timeout:.0f}s") from None
 
     def _call(self, tool_name: str, args: Dict[str, Any]) -> Any:

@@ -101,3 +101,31 @@ def test_tool_handler_passes_the_capped_timeout():
         with mcp_tool.mcp_call_timeout(60):
             assert json.loads(handler({})) == {"result": "ok"}
     assert seen["timeout"] == 60
+
+
+def _fake_loop(coro_or_factory, timeout=30):
+    coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
+def test_background_failures_leave_the_circuit_breaker_closed():
+    """AIS-726: a slow session sync must not short-circuit the user's calls."""
+    session = MagicMock()
+    session.call_tool = AsyncMock(side_effect=TimeoutError("timed out"))
+    server = SimpleNamespace(session=session, _config={"url": "https://x/mcp"}, _rpc_lock=None)
+    with patch.dict(mcp_tool._servers, {"srv": server}), patch.dict(
+        mcp_tool._server_error_counts, {"srv": 0}
+    ), patch("tools.mcp_tool._run_on_mcp_loop", side_effect=_fake_loop):
+        handler = mcp_tool._make_tool_handler("srv", "memory_session", 180.0)
+        with mcp_tool.mcp_background_call():
+            for _ in range(mcp_tool._CIRCUIT_BREAKER_THRESHOLD + 1):
+                assert "error" in json.loads(handler({}))
+        assert mcp_tool._server_error_counts["srv"] == 0
+
+        # The same failure in the foreground still counts.
+        handler({})
+        assert mcp_tool._server_error_counts["srv"] == 1
