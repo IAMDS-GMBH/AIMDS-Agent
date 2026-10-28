@@ -123,3 +123,56 @@ def test_channel_and_patch_come_from_the_release_marker(tmp_path, monkeypatch):
     monkeypatch.setattr(support_logs, "get_hermes_home", lambda: tmp_path)
 
     assert support_logs._install_channel_and_patch("0.7.7") == ("stable", "2286edd0a0", 0)
+
+
+def _git_checkout(tmp_path):
+    """A tiny git checkout at ``<tmp>/hermes-agent`` with one commit tagged v9.8.7."""
+    import subprocess
+
+    root = tmp_path / "hermes-agent"
+    root.mkdir()
+
+    def git(*args):
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@example.test", "-c", "commit.gpgsign=false", *args],
+            cwd=root,
+            check=True,
+            capture_output=True,
+        )
+
+    git("init", "-q", "-b", "main")
+    (root / "README").write_text("x", encoding="utf-8")
+    git("add", "README")
+    git("commit", "-q", "-m", "init")
+    git("tag", "v9.8.7")
+    return git
+
+
+def _channel_for(tmp_path, monkeypatch, configured):
+    monkeypatch.setattr(support_logs, "get_hermes_home", lambda: tmp_path)
+    updates = {"channel": configured} if configured is not None else {}
+    monkeypatch.setattr(support_logs, "load_config", lambda: {"updates": updates})
+    return support_logs._install_channel_and_patch("9.8.7")[0]
+
+
+def test_detached_release_tag_checkout_reports_the_configured_channel(tmp_path, monkeypatch):
+    # AIS-727: telemetry reported channel "HEAD" for a checkout on a release tag.
+    git = _git_checkout(tmp_path)
+    git("checkout", "-q", "--detach", "v9.8.7")
+
+    assert _channel_for(tmp_path, monkeypatch, "stable") == "stable"
+    assert _channel_for(tmp_path, monkeypatch, "rc") == "preview"
+    # ``auto``/unset on a detached checkout means stable, as for `hermes update`.
+    assert _channel_for(tmp_path, monkeypatch, "auto") == "stable"
+    assert _channel_for(tmp_path, monkeypatch, None) == "stable"
+    assert _channel_for(tmp_path, monkeypatch, "main") == "main"
+
+
+def test_named_branch_checkout_keeps_its_name(tmp_path, monkeypatch):
+    git = _git_checkout(tmp_path)
+    git("checkout", "-q", "-b", "feature/x")
+
+    assert _channel_for(tmp_path, monkeypatch, None) == "feature/x"
+    assert _channel_for(tmp_path, monkeypatch, "main") == "feature/x"
+    # Like the desktop (AIS-299): a configured tag channel is the channel.
+    assert _channel_for(tmp_path, monkeypatch, "stable") == "stable"

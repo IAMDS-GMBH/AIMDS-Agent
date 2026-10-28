@@ -137,11 +137,46 @@ def normalize_telemetry_url(url: str) -> str:
     return raw
 
 
+def _configured_update_channel() -> str:
+    """``updates.channel`` from config.yaml, normalized (``auto`` when unset or unreadable)."""
+    from hermes_cli.release_channels import CHANNEL_AUTO, normalize_channel
+
+    try:
+        updates = (load_config() or {}).get("updates", {})
+        if isinstance(updates, dict) and updates.get("channel"):
+            return normalize_channel(updates.get("channel"))
+    except Exception:
+        pass
+    return CHANNEL_AUTO
+
+
+def _git_checkout_channel(current_branch: str) -> str:
+    """The channel a git checkout reports, mirroring the desktop (AIS-299, AIS-727).
+
+    A checkout sitting on a release tag is a detached HEAD, and ``git
+    rev-parse --abbrev-ref HEAD`` prints the literal ``HEAD`` — the configured
+    channel is the answer then (``auto`` means ``stable`` there, as for
+    ``hermes update``). A configured tag channel (stable/preview) is always
+    reported as such; otherwise a named branch reports its name.
+    """
+    from hermes_cli.release_channels import CHANNEL_AUTO, CHANNEL_MAIN, CHANNEL_STABLE, is_tag_channel
+
+    configured = _configured_update_channel()
+    if is_tag_channel(configured):
+        return configured
+    if current_branch and current_branch != "HEAD":
+        return current_branch
+    if current_branch == "HEAD":
+        return CHANNEL_STABLE if configured == CHANNEL_AUTO else configured
+    return CHANNEL_MAIN
+
+
 def _install_channel_and_patch(version: str) -> tuple[str, str, int]:
     """Update channel, commit and commits-behind-main of this install.
 
     A release-managed install (AIS-312) has no usable git history: its
-    marker names channel and commit. A git checkout reports its branch.
+    marker names channel and commit. A git checkout reports its branch, or
+    the configured channel when it sits detached on a release tag (AIS-727).
     """
     channel, patch_level, commits_behind_main = "main", version, 0
     try:
@@ -161,7 +196,7 @@ def _install_channel_and_patch(version: str) -> tuple[str, str, int]:
                 res = subprocess.run(["git", *git_args], cwd=root, capture_output=True, text=True, timeout=5)
                 return res.stdout.strip() if res.returncode == 0 else ""
 
-            channel = _git("rev-parse", "--abbrev-ref", "HEAD") or channel
+            channel = _git_checkout_channel(_git("rev-parse", "--abbrev-ref", "HEAD"))
             patch_level = _git("rev-parse", "--short", "HEAD") or patch_level
             behind = _git("rev-list", "HEAD..origin/main", "--count")
             if behind.isdigit():
