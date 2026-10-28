@@ -22,13 +22,17 @@ test('restartDue: once a scheduled moment passed since the backend started', () 
   assert.equal(restartDue(at('2026-09-25T09:00:00'), time, at('2026-09-25T03:31:00')), false)
 })
 
+// `set` moves the clock while the machine is awake (wall and monotonic
+// together); `sleepUntil` moves only the wall clock, as a suspension does.
 function harness({ idle = true, start = '2026-09-24T15:00:00' } = {}) {
   let clock = at(start)
+  let mono = 0
   const timers = []
   const calls = { restart: 0, logs: [] }
   const r = createNightlyRestarter({
     restartTime: '03:30',
     now: () => clock,
+    monotonic: () => mono,
     isIdle: async () => (typeof idle === 'function' ? idle() : idle),
     restart: async () => { calls.restart += 1 },
     log: line => calls.logs.push(line),
@@ -36,7 +40,20 @@ function harness({ idle = true, start = '2026-09-24T15:00:00' } = {}) {
     clearTimer: () => {},
     setRepeat: () => 0
   })
-  return { r, calls, timers, set: s => { clock = at(s) } }
+  const set = s => {
+    const next = at(s)
+    mono += next.getTime() - clock.getTime()
+    clock = next
+  }
+  const advance = ms => set(new Date(clock.getTime() + ms).toISOString())
+  const sleepUntil = s => { clock = at(s) }
+  // Fire the newest timer after its delay of awake time.
+  const fire = async () => {
+    const timer = timers.at(-1)
+    advance(timer.ms)
+    return timer.fn()
+  }
+  return { r, calls, timers, set, advance, sleepUntil, fire }
 }
 
 test('scheduled restart happens when idle, once per night', async () => {
@@ -55,19 +72,65 @@ test('busy backend is retried later, never restarted mid-turn', async () => {
   assert.equal(h.calls.restart, 0)
   assert.equal(h.timers.at(-1).ms, 10 * 60 * 1000)
   busy = false
-  await h.timers.at(-1).fn()
+  await h.fire()
   assert.equal(h.calls.restart, 1)
 })
 
 test('a wake that slept through the restart time restarts shortly after', async () => {
   const h = harness()
-  h.set('2026-09-25T07:38:00')
+  h.r.onSuspend()
+  h.sleepUntil('2026-09-25T07:38:00')
   h.r.onResume()
   assert.equal(h.timers.at(-1).ms, 30 * 1000)
-  await h.timers.at(-1).fn()
+  await h.fire()
   assert.equal(h.calls.restart, 1)
   h.r.onResume()
   assert.equal(h.timers.length, 1, 'no second restart the same night')
+})
+
+// AIS-749: the restart ran in a 3-second DarkWake at 03:35 and the Mac slept
+// again mid-boot. Timers fire in a dark wake, a user-visible 'resume' does not.
+test('no restart in a dark wake after a suspend; the next real wake restarts', async () => {
+  const h = harness()
+  h.set('2026-09-24T23:00:00')
+  h.r.onSuspend()
+  h.sleepUntil('2026-09-25T03:35:21')
+  h.r.tick()
+  await Promise.resolve()
+  h.advance(3_000)
+  h.r.tick()
+  await Promise.resolve()
+  assert.equal(h.calls.restart, 0, 'dark wake: interval fired, no restart')
+  h.sleepUntil('2026-09-25T07:59:54')
+  h.r.onResume()
+  await h.fire()
+  assert.equal(h.calls.restart, 1, 'restart 30 s after the real wake')
+})
+
+test('a sleep the app was not told about is caught by clock drift', async () => {
+  const h = harness()
+  h.set('2026-09-24T23:00:00')
+  // No onSuspend(): the wall clock jumps, the monotonic clock does not.
+  h.sleepUntil('2026-09-25T03:35:21')
+  assert.equal(await h.r.attempt('scheduled'), false)
+  assert.match(h.calls.logs.at(-1), /slept since/)
+  h.advance(5_000)
+  assert.equal(await h.r.attempt('scheduled'), false, 'a 5 s wake is too short')
+  h.sleepUntil('2026-09-25T03:52:33')
+  assert.equal(await h.r.attempt('scheduled'), false, 'slept again: window restarts')
+  h.advance(25_000)
+  assert.equal(await h.r.attempt('scheduled'), true, 'awake long enough without interruption')
+  assert.equal(h.calls.restart, 1)
+})
+
+test('a suspend cancels a pending restart timer', async () => {
+  const h = harness()
+  h.set('2026-09-25T07:38:00')
+  h.r.onResume()
+  h.r.onSuspend()
+  // The stale timer (if a platform still fires it) must not restart while asleep.
+  assert.equal(await h.timers.at(-1).fn(), false)
+  assert.equal(h.calls.restart, 0)
 })
 
 test('an app relaunch counts as tonight\'s restart', async () => {
