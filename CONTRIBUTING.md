@@ -52,6 +52,13 @@ If your skill is specialized, community-contributed, or niche, it's better suite
 If your PR changes installer/bootstrap behavior, update `docs/RELEASE.md`, the
 client guide under `docs/client-guide/`, and the README in `apps/bootstrap-installer/`.
 
+## Release Notes
+
+If your PR changes something end users notice, add a line to
+`release-notes/<next X.Y.Z>.json` (`group` new/improved/fixed, `de` + `en`, no
+tool names, ticket or PR numbers). The update dialog shows these notes, not
+commit subjects; see "End-user release notes" in `docs/RELEASE.md`.
+
 ---
 
 ## Memory Providers: Ship as a Standalone Plugin
