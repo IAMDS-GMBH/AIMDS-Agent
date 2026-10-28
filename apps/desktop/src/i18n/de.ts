@@ -1491,7 +1491,7 @@ export const de
     latestBodyBackend: 'Das Backend verwendet die neueste Version.',
     allSetTitle: 'Alles aktuell',
     availableTitle: 'Neues Update verfügbar',
-    availableBody: 'Eine neue Version von Hermes ist zur Installation bereit.',
+    availableBody: 'Eine neue Version ist zur Installation bereit.',
     availableTitleBackend: 'Backend-Update verfügbar',
     availableBodyBackend: 'Eine neuere Version des verbundenen Hermes-Backends ist zur Installation bereit.',
     availableBodyNoChangelog: 'Eine neuere Version ist bereit. Versionshinweise sind für diesen Installationstyp nicht verfügbar.',
@@ -1504,9 +1504,11 @@ export const de
     switchToRelease: tag => `Auf ${tag} wechseln`,
     newerReleaseBody: (headTag, targetTag, channel) =>
       `Diese Installation steht auf ${headTag} und ist neuer als das aktuelle Release ${targetTag} des Kanals „${channel}". Der Kanal zieht nach, sobald eine neuere Version freigegeben ist – es gibt nichts zu installieren.`,
-    releaseAvailable: version => `Version ${version} verfügbar`,
-    releaseAvailableBody: version =>
-      `Hermes ${version} ist bereit zur Installation. Das Update lädt das Release-Archiv herunter und startet Hermes neu.`,
+    versionLabel: version => `Version ${version}`,
+    previewVersionLabel: version => `Version ${version} – Vorabversion`,
+    installedVersion: label => `Installiert: ${label}`,
+    devBuild: 'Entwicklungsstand',
+    changeCount: count => `+${count} ${count === 1 ? 'Änderung' : 'Änderungen'}`,
     manualTitle: 'Update über Terminal durchführen',
     manualBody: 'Hermes wurde über die Befehlszeile installiert, daher laufen Updates dort ebenfalls. In das Terminal einfügen:',
     manualPickedUp: 'Hermes nimmt die neue Version beim nächsten Start auf.',

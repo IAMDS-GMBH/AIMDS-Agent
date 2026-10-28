@@ -10,9 +10,11 @@ import { ErrorIcon, ErrorState } from '@/components/ui/error-state'
 import { Loader } from '@/components/ui/loader'
 import type { DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus } from '@/global'
 import { useI18n } from '@/i18n'
-import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
+import type { CommitGroup } from '@/lib/commit-changelog'
 import { AlertCircle, Check, CheckCircle2, Copy, Terminal } from '@/lib/icons'
+import { PRODUCT_DISPLAY_NAME } from '@/lib/product'
 import { resolveUpdateCopy, type UpdateTarget } from '@/lib/update-copy'
+import { resolveUpdateHeader, resolveUpdateNotes } from '@/lib/update-notes'
 import { cn } from '@/lib/utils'
 import {
   $backendUpdateApply,
@@ -98,7 +100,7 @@ export function UpdatesOverlay() {
     <>
       <Dialog onOpenChange={handleClose} open={open}>
         <DialogContent
-          className="max-w-sm overflow-hidden border-border/70 p-0 gap-0"
+          className="w-[calc(100vw-2rem)] max-w-xl gap-0 border-border/70 p-0"
           showCloseButton={phase !== 'applying'}
         >
           {phase === 'applying' && (
@@ -185,7 +187,7 @@ export function IdleView({
               {u.tryAgain}
             </Button>
             <Button onClick={() => onReportIssue('Update-Prüfung fehlgeschlagen')} size="sm" variant="outline">
-              Problem melden
+              {t.reportIssue.title}
             </Button>
           </div>
         }
@@ -214,7 +216,7 @@ export function IdleView({
               {u.tryAgain}
             </Button>
             <Button onClick={() => onReportIssue('Verbindungsfehler bei Update-Prüfung')} size="sm" variant="outline">
-              Problem melden
+              {t.reportIssue.title}
             </Button>
           </div>
         }
@@ -274,76 +276,36 @@ export function IdleView({
     )
   }
 
-  // Release-managed install (archive updates, AIS-312): there is no commit
-  // log to show, the offer is a whole release. Same card layout as the
-  // changelog below, no commit groups. No hooks here (AIS-276).
-  if (status.source === 'release') {
-    const version = status.targetVersion ?? (status.targetTag ? status.targetTag.replace(/^v/, '') : '')
-
-    return (
-      <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
-        <div className="flex flex-col items-center gap-3 text-center">
-          <BrandMark className="size-16" />
-
-          <div className="flex flex-col items-center gap-1">
-            <DialogTitle className="text-center text-xl">{u.releaseAvailable(version)}</DialogTitle>
-            <div className="inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/10 px-2.5 py-0.5 text-[0.7rem] font-medium text-primary">
-              <span>{status.branch ? `Channel: ${status.branch}` : 'Hermes Update'}</span>
-              <span>•</span>
-              <span>v{version}</span>
-            </div>
-          </div>
-
-          <DialogDescription className="text-center text-sm">{u.releaseAvailableBody(version)}</DialogDescription>
-        </div>
-
-        <div className="grid gap-2">
-          <Button className="font-semibold" onClick={onInstall} size="lg">
-            {u.updateNow}
-          </Button>
-          <div className="flex items-center justify-between gap-2 px-1">
-            <Button className="font-medium" onClick={onLater} type="button" variant="text">
-              {u.maybeLater}
-            </Button>
-            <Button onClick={() => onReportIssue('Problem beim Update')} size="xs" type="button" variant="text">
-              Problem melden
-            </Button>
-          </div>
-        </div>
-      </div>
-    )
-  }
-
-  const groups = buildCommitChangelog(commits, { locale })
-  const shownItems = totalItems(groups)
-  const remaining = Math.max(0, behind - shownItems)
+  // AIS-750: one card for git and release-managed installs (AIS-312). The
+  // header names the product and the target version; release channels list
+  // the curated notes (or one neutral line), only the main channel shows the
+  // scrubbed commit subjects. No hooks here (AIS-276).
+  const header = resolveUpdateHeader(status, behind, u)
+  const { commitItems, groups } = resolveUpdateNotes({ commits, locale, status })
+  const remaining = header.developer && commitItems > 0 ? Math.max(0, behind - commitItems) : 0
 
   // Name what's being updated. In remote mode the overlay acts on the connected
-  // backend, not the local client — say so. When there are no commit rows to
-  // show (e.g. pip/non-git backend), degrade to honest "no release notes" copy
-  // instead of generic filler.
-  const { title, body } = resolveUpdateCopy({ target, shownItems, copy: u })
+  // backend, not the local client — say so.
+  const { title, body } = resolveUpdateCopy({ target, shownItems: totalItems(groups), copy: u })
 
   return (
-    <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">
+    <div className="grid gap-5 px-5 pb-6 pt-7 pr-8 sm:px-8">
       <div className="flex flex-col items-center gap-3 text-center">
         <BrandMark className="size-16" />
 
-        <div className="flex flex-col items-center gap-1">
-          <DialogTitle className="text-center text-xl">{title}</DialogTitle>
-          <div className="inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/10 px-2.5 py-0.5 text-[0.7rem] font-medium text-primary">
-            <span>{status?.branch ? `Branch: ${status.branch}` : 'Hermes Update'}</span>
-            <span>•</span>
-            <span>+{behind} {locale === 'de' ? (behind === 1 ? 'Änderung' : 'Änderungen') : (behind === 1 ? 'Commit' : 'Commits')}</span>
-          </div>
+        <div className="flex flex-col items-center gap-0.5" data-testid="update-header">
+          <p className="text-base font-semibold tracking-tight text-foreground">{PRODUCT_DISPLAY_NAME}</p>
+          {header.versionLine && <p className="text-xs font-medium text-primary">{header.versionLine}</p>}
+          {header.installedLine && <p className="text-[0.7rem] text-muted-foreground">{header.installedLine}</p>}
         </div>
 
-        <DialogDescription className="text-center text-sm">
-          {body}
-        </DialogDescription>
+        <div className="flex flex-col items-center gap-1">
+          <DialogTitle className="text-center text-lg">{title}</DialogTitle>
+          <DialogDescription className="text-center text-sm">{body}</DialogDescription>
+        </div>
       </div>
 
-      <div className="grid gap-3 rounded-xl border border-border/70 bg-muted/20 px-4 py-3">
+      <div className="grid max-h-[min(20rem,40vh)] gap-3 overflow-y-auto overscroll-contain rounded-xl border border-border/70 bg-muted/20 px-4 py-3">
         {groups.map(group => (
           <div key={group.id}>
             <p className="text-[0.625rem] font-semibold uppercase tracking-wide text-muted-foreground">{group.label}</p>
@@ -368,7 +330,7 @@ export function IdleView({
             {u.maybeLater}
           </Button>
           <Button onClick={() => onReportIssue('Problem beim Update')} size="xs" type="button" variant="text">
-            Problem melden
+            {t.reportIssue.title}
           </Button>
         </div>
       </div>
@@ -438,7 +400,7 @@ function ManualView({ command, onDone, onReportIssue }: { command: string; onDon
           {u.done}
         </Button>
         <Button onClick={onReportIssue} size="xs" type="button" variant="text">
-          Problem melden
+          {t.reportIssue.title}
         </Button>
       </div>
     </div>
@@ -480,7 +442,7 @@ function ApplyingView({ apply, isBackend, onReportIssue }: { apply: UpdateApplyS
       <div className="flex flex-col items-center gap-1">
         <p className="text-center text-xs text-muted-foreground">{u.applyingClose}</p>
         <Button onClick={onReportIssue} size="xs" type="button" variant="text">
-          Problem melden
+          {t.reportIssue.title}
         </Button>
       </div>
     </div>
@@ -521,7 +483,7 @@ function ErrorView({
         {u.tryAgain}
       </Button>
       <Button onClick={onReportIssue} variant="outline">
-        Problem melden
+        {t.reportIssue.title}
       </Button>
       <Button onClick={onDismiss} variant="text">
         {u.notNow}

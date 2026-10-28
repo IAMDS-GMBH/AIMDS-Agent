@@ -98,6 +98,16 @@ const {
   resolveDetachedCheckoutChannel
 } = require('./update-apply.cjs')
 const { buildMacSwapScript, findBuiltMacApp, planMacSwap } = require('./update-swap.cjs')
+const {
+  COMMIT_LOG_FORMAT,
+  RELEASE_NOTES_DIR,
+  mergeReleaseNotes,
+  normalizeNoteEntries,
+  parseCommitLog,
+  releaseNotesFromManifest,
+  selectNoteVersions,
+  versionFromNoteFile
+} = require('./release-notes.cjs')
 const { createNightlyRestarter } = require('./nightly-restart.cjs')
 const {
   buildKeycloakAuthUrl,
@@ -1882,7 +1892,14 @@ async function checkReleaseUpdates(root, marker, branch) {
     targetVersion: manifest.version,
     releaseVersion: marker.version,
     releaseBuildId: marker.buildId,
+    installedVersion: marker.version,
     commits: [],
+    // AIS-750: curated end-user notes from the manifest, marker → target.
+    releaseNotes: releaseNotesFromManifest(manifest.notes, {
+      current: marker.version,
+      target: manifest.version,
+      channel: branch
+    }),
     dirty: false,
     hermesRoot: root,
     fetchedAt: Date.now()
@@ -2094,6 +2111,7 @@ async function checkUpdates() {
         }
       }
       if (haveCommit.code !== 0) {
+        const installedVersion = currentInstallVersion(updateRoot, headTags)
         const status = resolveReleaseStatus({
           markerTag: headReleaseTag(headTags) || '',
           markerCommit: currentSha,
@@ -2115,6 +2133,12 @@ async function checkUpdates() {
           targetTag: tagName,
           targetVersion: manifest.version,
           commits: [],
+          installedVersion,
+          releaseNotes: releaseNotesFromManifest(manifest.notes, {
+            current: installedVersion,
+            target: manifest.version,
+            channel: branch
+          }),
           dirty: dirtyStr.length > 0,
           hermesRoot: updateRoot,
           fetchedAt: Date.now()
@@ -2160,6 +2184,15 @@ async function checkUpdates() {
     }
 
     const commits = status.behind > 0 ? await readCommitLog(updateRoot, targetSha) : []
+    // AIS-750: the dialog shows the curated notes of the target commit; the
+    // commit subjects are only the developer fallback.
+    let releaseNotes = []
+    const installedVersion = status.behind > 0 ? currentInstallVersion(updateRoot, headTags) : ''
+    if (status.behind > 0) {
+      const noteScope = { current: installedVersion, target: tagName, channel: branch }
+      releaseNotes = await readGitReleaseNotes(updateRoot, targetSha, noteScope)
+      if (!releaseNotes.length && manifest) releaseNotes = releaseNotesFromManifest(manifest.notes, { ...noteScope, target: manifest.version })
+    }
 
     const updateResult = {
       supported: true,
@@ -2176,6 +2209,8 @@ async function checkUpdates() {
       targetTag: tagName,
       targetVersion: versionFromTag(tagName),
       commits,
+      installedVersion: installedVersion || undefined,
+      releaseNotes,
       dirty: dirtyStr.length > 0,
       hermesRoot: updateRoot,
       fetchedAt: Date.now()
@@ -2233,22 +2268,45 @@ async function checkUpdates() {
 // `target` is any git ref or sha the checkout can resolve locally
 // (origin/<branch>, a fetched tag's commit) — the changelog is the commits
 // between HEAD and that target.
+// `--name-only` marks commits that only touch tests (`testsOnly`), which the
+// changelog hides (AIS-750).
 async function readCommitLog(cwd, target) {
-  const SEP = '\x1f'
-  const REC = '\x1e'
-  const { stdout } = await runGit(
-    ['log', `HEAD..${target}`, `--pretty=format:%H${SEP}%s${SEP}%an${SEP}%at${REC}`, '-n', '40'],
-    { cwd }
-  )
+  const { stdout } = await runGit(['log', `HEAD..${target}`, COMMIT_LOG_FORMAT, '--name-only', '-n', '40'], { cwd })
+  return parseCommitLog(stdout)
+}
 
-  return stdout
-    .split(REC)
-    .map(line => line.trim())
-    .filter(Boolean)
-    .map(line => {
-      const [sha, summary, author, at] = line.split(SEP)
-      return { sha, summary, author, at: Number.parseInt(at, 10) * 1000 }
-    })
+// The installed version the release notes count from: the release tag HEAD
+// sits on, else the highest release tag reachable from HEAD (`0.7.12+6`).
+function currentInstallVersion(updateRoot, headTags) {
+  const tag = headReleaseTag(headTags)
+  if (tag) return versionFromTag(tag)
+  return resolveReleaseDescribeVersion(updateRoot) || ''
+}
+
+// AIS-750: curated notes (`release-notes/<X.Y.Z>.json`) read from the target
+// commit — every version after the installed one up to the target, newest
+// first, filtered for the channel. A target that predates the notes, or a
+// broken file, yields fewer notes, never a failed check.
+async function readGitReleaseNotes(cwd, targetSha, { current, target, channel }) {
+  try {
+    const listing = await runGit(['ls-tree', '--name-only', `${targetSha}:${RELEASE_NOTES_DIR}`], { cwd })
+    if (listing.code !== 0) return []
+    const available = listing.stdout.split('\n').map(versionFromNoteFile).filter(Boolean)
+    const perVersion = []
+    for (const version of selectNoteVersions(available, { current, target })) {
+      const shown = await runGit(['show', `${targetSha}:${RELEASE_NOTES_DIR}/${version}.json`], { cwd })
+      if (shown.code !== 0) continue
+      try {
+        perVersion.push({ version, entries: normalizeNoteEntries(JSON.parse(shown.stdout)) })
+      } catch {
+        rememberLogOnce(`release-notes-invalid:${version}`, `[updates] ${RELEASE_NOTES_DIR}/${version}.json at ${String(targetSha).slice(0, 10)} is not valid JSON; skipped`)
+      }
+    }
+    return mergeReleaseNotes(perVersion, { channel })
+  } catch (error) {
+    rememberLog(`[updates] reading release notes failed: ${error?.message || error}`)
+    return []
+  }
 }
 
 let updateInFlight = false

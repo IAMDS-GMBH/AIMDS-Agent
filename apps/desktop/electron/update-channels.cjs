@@ -15,6 +15,8 @@
 const fs = require('node:fs')
 const path = require('node:path')
 
+const { manifestNotesToVersions } = require('./release-notes.cjs')
+
 const STABLE_TAG_RE = /^v(\d+)\.(\d+)\.(\d+)$/
 const RC_TAG_RE = /^v(\d+)\.(\d+)\.(\d+)-rc\.(\d+)$/
 const CHANNEL_ALIASES = { tags: 'stable', release: 'stable', rc: 'preview', beta: 'preview' }
@@ -316,7 +318,10 @@ function validateReleaseManifest(obj, { channel, releaseRepo = RELEASE_REPO, rel
       build_id: isNonEmptyString(obj.build_id) ? obj.build_id : builtAt,
       channel: normalized,
       package_url: packageUrl,
-      desktop
+      desktop,
+      // AIS-750: curated end-user notes per version (scripts/release_notes.py).
+      // Optional and cosmetic: malformed notes are dropped, never fatal.
+      notes: manifestNotesToVersions(obj.notes)
     }
   }
 }

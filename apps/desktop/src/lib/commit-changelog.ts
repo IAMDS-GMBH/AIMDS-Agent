@@ -1,8 +1,13 @@
 /**
- * Tiny user-facing changelog builder. Takes a list of raw commit summaries,
- * parses the Conventional Commits 1.0 header (`type(scope)!: subject`),
- * filters internal noise (chore/ci/docs/...), and groups the rest into
- * friendly buckets for end users (What's new, Fixed, Faster, Improved).
+ * Tiny changelog builder. Takes a list of raw commit summaries, parses the
+ * Conventional Commits 1.0 header (`type(scope)!: subject`), filters internal
+ * noise (chore/ci/docs/tests, test-only commits), scrubs ticket/PR numbers and
+ * trailing technical clauses, and groups the rest into buckets (What's new,
+ * Fixed, Faster, Improved).
+ *
+ * Since AIS-750 this is only the fallback: release channels show the curated
+ * notes (`release-notes/<X.Y.Z>.json`, see lib/update-notes.ts); the commit
+ * list is the developer view of the main channel.
  *
  * Inlined (rather than depending on `conventional-commits-parser`) because
  * that package's index re-exports a Node `stream` helper which won't load
@@ -27,6 +32,8 @@ export interface ParsedCommit {
 
 export interface CommitChangelogInput {
   summary?: string
+  /** Every changed path is a test file (main process, `git log --name-only`). */
+  testsOnly?: boolean
 }
 
 export interface BuildOptions {
@@ -75,14 +82,31 @@ const HIDDEN_TYPES = new Set([
   'wip'
 ])
 
-function getFallbackGroup(lang: string): CommitGroup {
-  const isDe = lang.startsWith('de')
+// Scopes and subjects that say "tests only" — nothing a user can notice.
+const HIDDEN_SCOPES = new Set(['test', 'tests', 'ci', 'e2e', 'build', 'deps'])
+const TESTS_ONLY_SUBJECT = /^(?:the\s+)?(?:tests?|test runs?|test suite|unit tests?|test fixtures?|ci)\b|\b(?:tests? only|only (?:in )?tests?)\b/i
+
+/** The single line shown when nothing user-facing is left (AIS-750). */
+export function getFallbackGroup(locale: string): CommitGroup {
+  const isDe = locale.startsWith('de')
 
   return {
     id: 'other',
-    items: [isDe ? 'Allgemeine Verbesserungen und Stabilitätsoptimierungen' : 'General improvements and stability fixes'],
+    items: [isDe ? 'Fehlerbehebungen und Verbesserungen' : 'Fixes and improvements'],
     label: isDe ? 'In diesem Update' : 'In this update'
   }
+}
+
+/** Localized label of a changelog / release-notes group. */
+export function changelogGroupLabel(id: CommitGroupId, locale: string): string {
+  const lang = locale.startsWith('de') ? 'de' : 'en'
+
+  return GROUP_META[id].label[lang] ?? GROUP_META[id].label.en
+}
+
+/** Display order of a group (new → fixed → faster → improved → other). */
+export function changelogGroupOrder(id: CommitGroupId): number {
+  return GROUP_META[id].order
 }
 
 const CONVENTIONAL_HEADER = /^(?<type>[a-zA-Z][a-zA-Z0-9_-]*)(?:\((?<scope>[^)]+)\))?(?<bang>!)?:\s+(?<subject>.+)$/
@@ -124,8 +148,50 @@ export function parseCommitHeader(raw: string): ParsedCommit {
   }
 }
 
+// Ticket keys of the trackers this repository uses (AIS-750): AIS-123,
+// SUP-20261027-091112, DEVOPS-101. Explicit prefixes, so UTF-8 or SHA-256
+// survive.
+const TICKET_KEY = /\[?\b(?:AIS|SUP|DEVOPS)-\d+(?:-\d+)*\b\]?:?/g
+
+/**
+ * Strip what only developers read: `(#233)` PR references, ticket keys, and
+ * the technical clause after a dash or semicolon ("Adopt X — one call per
+ * set, …" → "Adopt X").
+ */
+export function scrubSubject(subject: string): string {
+  return subject
+    .replace(/\s*\(#\d+\)/g, '')
+    .replace(/(^|\s)#\d+\b/g, '$1')
+    .replace(TICKET_KEY, '')
+    .replace(/\(\s*[,;&/]*\s*\)/g, '')
+    .split(/\s+[—–]\s+|\s+--?\s+|\s*;\s+/, 1)[0]
+    .replace(/\s*\([^()]*\)\s*$/, '')
+    .replace(/^[\s:,;–—-]+/, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/** True for commits a user cannot notice: tests/CI only, by files or by message. */
+export function isInternalCommit(commit: CommitChangelogInput, parsed: ParsedCommit = parseCommitHeader(commit.summary ?? '')): boolean {
+  if (commit.testsOnly) {
+    return true
+  }
+
+  if (parsed.type && HIDDEN_TYPES.has(parsed.type)) {
+    return true
+  }
+
+  const scopes = (parsed.scope ?? '').split(/[\s,]+/).map(scope => scope.toLowerCase())
+
+  if (scopes.some(scope => HIDDEN_SCOPES.has(scope))) {
+    return true
+  }
+
+  return TESTS_ONLY_SUBJECT.test(scrubSubject(parsed.subject))
+}
+
 function tidySubject(subject: string): string {
-  const cleaned = subject
+  const cleaned = scrubSubject(subject)
     .replace(/\s+/g, ' ')
     .replace(/[.;,\s]+$/, '')
     .trim()
@@ -159,7 +225,7 @@ export function buildCommitChangelog(
 
     const parsed = parseCommitHeader(commit.summary ?? '')
 
-    if (parsed.type && HIDDEN_TYPES.has(parsed.type)) {
+    if (isInternalCommit(commit, parsed)) {
       continue
     }
 

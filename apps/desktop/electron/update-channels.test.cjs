@@ -396,3 +396,30 @@ test('validateReleaseManifest: desktop assets are optional, resolved to download
   )
   assert.equal(spaced.ok, false)
 })
+
+// AIS-750: curated release notes ride along in the manifest; bad notes never
+// invalidate the manifest itself.
+test('validateReleaseManifest: notes are optional, validated and never fatal', () => {
+  const plain = validateReleaseManifest(manifest(), { channel: 'stable' })
+  assert.equal(plain.ok, true)
+  assert.deepEqual(plain.manifest.notes, [])
+
+  const withNotes = validateReleaseManifest(
+    manifest({
+      notes: {
+        '0.7.6': [{ group: 'new', de: 'Neu', en: 'New' }, { group: 'bogus', de: 'x', en: 'x' }],
+        '0.7.5': [{ group: 'fixed', de: 'Behoben', en: 'Fixed', channels: ['preview'] }]
+      }
+    }),
+    { channel: 'stable' }
+  )
+  assert.equal(withNotes.ok, true)
+  assert.deepEqual(withNotes.manifest.notes, [
+    { version: '0.7.6', entries: [{ group: 'new', de: 'Neu', en: 'New' }] },
+    { version: '0.7.5', entries: [{ group: 'fixed', de: 'Behoben', en: 'Fixed', channels: ['preview'] }] }
+  ])
+
+  const broken = validateReleaseManifest(manifest({ notes: 'garbage' }), { channel: 'stable' })
+  assert.equal(broken.ok, true)
+  assert.deepEqual(broken.manifest.notes, [])
+})

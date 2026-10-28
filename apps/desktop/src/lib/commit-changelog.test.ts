@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { buildCommitChangelog, parseCommitHeader } from './commit-changelog'
+import { buildCommitChangelog, isInternalCommit, parseCommitHeader, scrubSubject } from './commit-changelog'
 
 describe('parseCommitHeader', () => {
   it('extracts type, scope, and subject from a conventional header', () => {
@@ -91,7 +91,10 @@ describe('buildCommitChangelog', () => {
   it('falls back to a neutral placeholder when every commit is filtered or empty', () => {
     const groups = buildCommitChangelog([{ summary: 'chore: bump' }, { summary: 'ci: stuff' }])
 
-    expect(groups).toEqual([{ id: 'other', items: ['General improvements and stability fixes'], label: 'In this update' }])
+    expect(groups).toEqual([{ id: 'other', items: ['Fixes and improvements'], label: 'In this update' }])
+    expect(buildCommitChangelog([], { locale: 'de' })).toEqual([
+      { id: 'other', items: ['Fehlerbehebungen und Verbesserungen'], label: 'In diesem Update' }
+    ])
   })
 
   it('provides German localized group labels and fallbacks', () => {
@@ -130,5 +133,57 @@ describe('buildCommitChangelog', () => {
 
     const totalItems = groups.reduce((sum, g) => sum + g.items.length, 0)
     expect(totalItems).toBe(3)
+  })
+})
+
+// AIS-750: the subjects the v0.7.13-rc.1 dialog showed verbatim.
+describe('scrubSubject', () => {
+  it('strips PR numbers, ticket keys and the technical clause after a dash', () => {
+    expect(scrubSubject('adopt OpenProject MCP 0.6 — one call per set, no per-project loops, local server on the 0.6.1 contract (#233)')).toBe(
+      'adopt OpenProject MCP 0.6'
+    )
+    expect(scrubSubject('chat history survives a running turn — per-round persistence, resume re-binds to the live session (#234)')).toBe(
+      'chat history survives a running turn'
+    )
+    expect(scrubSubject('AIS-735: login works again (SUP-20261027-091112)')).toBe('login works again')
+    expect(scrubSubject('[AIS-12] fix crash; see issue #38727')).toBe('fix crash')
+    expect(scrubSubject('read UTF-8 and SHA-256 files')).toBe('read UTF-8 and SHA-256 files')
+  })
+})
+
+describe('internal commits', () => {
+  it('hides test/ci/build/chore types, test scopes, test-only subjects and test-only file sets', () => {
+    expect(isInternalCommit({ summary: 'test: cover the parser' })).toBe(true)
+    expect(isInternalCommit({ summary: 'build(desktop): bump electron' })).toBe(true)
+    expect(isInternalCommit({ summary: 'fix(tests): flaky gateway fixture' })).toBe(true)
+    expect(
+      isInternalCommit({ summary: 'fix(AIS-728): test runs no longer write into the real ~/.hermes/logs, so test noise stays out of support bundles (#232)' })
+    ).toBe(true)
+    expect(isInternalCommit({ summary: 'fix: something users notice', testsOnly: true })).toBe(true)
+    expect(isInternalCommit({ summary: 'fix(AIS-749): the desktop reconnects after a nightly restart (#235)' })).toBe(false)
+    expect(isInternalCommit({ summary: 'fix: the latest model list loads again' })).toBe(false)
+  })
+
+  it('builds the developer list from the rc.1 commits without numbers or test-only changes', () => {
+    const groups = buildCommitChangelog(
+      [
+        { summary: 'feat(AIS-711): adopt OpenProject MCP 0.6 — one call per set, no per-project loops (#233)' },
+        { summary: 'fix(AIS-728): test runs no longer write into the real ~/.hermes/logs (#232)', testsOnly: true },
+        { summary: 'fix(AIS-735, AIS-736): chat history survives a running turn — per-round persistence (#234)' }
+      ],
+      { locale: 'de' }
+    )
+
+    expect(groups).toEqual([
+      { id: 'new', items: ['Adopt OpenProject MCP 0.6'], label: 'Neuerungen' },
+      { id: 'fixed', items: ['Chat history survives a running turn'], label: 'Fehlerbehebungen' }
+    ])
+    expect(JSON.stringify(groups)).not.toMatch(/#\d|AIS-|test runs/)
+  })
+
+  it('shows one generic line when only internal commits remain', () => {
+    const groups = buildCommitChangelog([{ summary: 'fix(AIS-728): test runs stay hermetic (#232)' }, { summary: 'ci: cache' }], { locale: 'de' })
+
+    expect(groups).toEqual([{ id: 'other', items: ['Fehlerbehebungen und Verbesserungen'], label: 'In diesem Update' }])
   })
 })

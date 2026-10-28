@@ -288,6 +288,18 @@ export interface DesktopUpdateCommit {
   summary: string
   author: string
   at: number
+  /** Every changed path is a test file (`git log --name-only`, AIS-750). */
+  testsOnly?: boolean
+}
+
+/** One curated end-user release note (`release-notes/<X.Y.Z>.json`, AIS-750). */
+export interface DesktopReleaseNote {
+  group: 'new' | 'improved' | 'fixed'
+  /** One of the two may be empty; the dialog then shows the other one. */
+  de: string
+  en: string
+  /** The release (X.Y.Z) the note belongs to. */
+  version?: string
 }
 
 export interface DesktopUpdateStatus {
@@ -320,9 +332,16 @@ export interface DesktopUpdateStatus {
   /** Tag channels: the release tag (`v0.7.4`) / version (`0.7.4`) targeted. */
   targetTag?: string
   targetVersion?: string
+  /** Release channels: the installed version the update counts from
+   *  (`0.7.12`, `0.7.13-rc.1`, `0.7.12+6` for a dev checkout) (AIS-750). */
+  installedVersion?: string
   currentSha?: string
   targetSha?: string
   commits?: DesktopUpdateCommit[]
+  /** Curated notes for every version between the install and the target,
+   *  newest first, already filtered for the channel (AIS-750). Empty when the
+   *  target predates the notes or the channel is `main`. */
+  releaseNotes?: DesktopReleaseNote[]
   dirty?: boolean
   fetchedAt?: number
 }
