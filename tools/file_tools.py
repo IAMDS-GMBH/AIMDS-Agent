@@ -825,6 +825,33 @@ def _convert_document_for_read(path: str, resolved_str: str, file_ops) -> tuple:
         return None, {"error": f"Could not convert '{path}' to text: {type(exc).__name__}: {exc}", "path": path}
 
 
+def _read_table_for_read(path: str, resolved_str: str, file_ops, offset: int, limit: int) -> dict | None:
+    """CSV/TSV as a paged Markdown table (AIS-600); ``None`` falls back to text.
+
+    The table is decoded and parsed on the host, so — like document
+    conversion — only for the local file backend; a remote sandbox keeps the
+    line-based read.
+    """
+    from tools.table_reader import TableReadError, read_table
+
+    local_check = getattr(file_ops, "_lsp_local_only", None)
+    try:
+        is_local = bool(local_check()) if callable(local_check) else True
+    except Exception:
+        is_local = True
+    if not is_local:
+        return None
+    try:
+        page = read_table(resolved_str, offset, limit, max_chars=min(_get_max_read_chars(), 40_000))
+    except TableReadError as exc:
+        logger.debug("table read fell back to text for %s: %s", resolved_str, exc)
+        return None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("table read crashed for %s: %s", resolved_str, exc, exc_info=True)
+        return None
+    return page.to_dict()
+
+
 def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers."""
     try:
@@ -941,14 +968,20 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # ── Perform the read ──────────────────────────────────────────
         file_ops = _get_file_ops(task_id)
         _converted = None
+        _table = None
         if _is_document:
             _converted, _conv_error = _convert_document_for_read(path, resolved_str, file_ops)
             if _conv_error:
                 return json.dumps(_conv_error, ensure_ascii=False)
-            result = file_ops.read_file(_converted.cache_path, offset, limit)
+            result_dict = file_ops.read_file(_converted.cache_path, offset, limit).to_dict()
         else:
-            result = file_ops.read_file(path, offset, limit)
-        result_dict = result.to_dict()
+            # ── Delimited tables (AIS-600) ──────────────────────────────
+            # CSV/TSV come back as a Markdown table with detected encoding
+            # and delimiter; offset/limit page through data rows.
+            from tools.table_reader import is_table_file
+            if is_table_file(_resolved):
+                _table = _read_table_for_read(path, resolved_str, file_ops, offset, limit)
+            result_dict = _table if _table is not None else file_ops.read_file(path, offset, limit).to_dict()
         if _converted is not None:
             result_dict["converted_from"] = resolved_str
             result_dict["converter"] = _converted.backend
@@ -971,11 +1004,11 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # Note: we check the formatted content (with line-number prefixes),
         # not the raw file size, because that's what actually enters context.
         # Check BEFORE redaction to avoid expensive regex on huge content.
-        content_len = len(result.content or "")
+        content_len = len(result_dict.get("content") or "")
         file_size = result_dict.get("file_size", 0)
         max_chars = _get_max_read_chars()
         if content_len > max_chars:
-            total_lines = result_dict.get("total_lines", "unknown")
+            total_lines = result_dict.get("total_lines", result_dict.get("total_rows", "unknown"))
             return json.dumps({
                 "error": (
                     f"Read produced {content_len:,} characters which exceeds "
@@ -989,13 +1022,13 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             }, ensure_ascii=False)
 
         # ── Redact secrets (after guard check to skip oversized content) ──
-        if result.content:
-            result.content = redact_sensitive_text(result.content, code_file=True)
-            result_dict["content"] = result.content
+        if result_dict.get("content"):
+            result_dict["content"] = redact_sensitive_text(result_dict["content"], code_file=True)
 
         # Large-file hint: if the file is big and the caller didn't ask
         # for a narrow window, nudge toward targeted reads.
-        if (file_size and file_size > _LARGE_FILE_HINT_BYTES
+        if (_table is None
+                and file_size and file_size > _LARGE_FILE_HINT_BYTES
                 and limit > 200
                 and result_dict.get("truncated")):
             result_dict.setdefault("_hint", (
@@ -1573,13 +1606,13 @@ def _check_file_reqs():
 
 READ_FILE_SCHEMA = {
     "name": "read_file",
-    "description": "Read text files with line numbers. Use offset/limit for large files. Office files (docx/xlsx/pptx/odt/ods/odp) and PDFs are returned as Markdown automatically (AIMDS-Suite Docling when reachable, local converters otherwise; the result names the converter and any Docling frontmatter as `metadata`) — never parse them with terminal commands. Document metadata beyond that: `office_word(action=read_metadata)` for .docx; the AIMDS-Suite `storage_document_meta` / `storage_summary` tools for an ingested document.",
+    "description": "Read text files with line numbers. Use offset/limit for large files. CSV/TSV files come back as a Markdown table (encoding and delimiter detected, `columns`, `total_rows`; offset/limit page through data rows) — never read a table with terminal Python or pandas. Office files (docx/xlsx/pptx/odt/ods/odp) and PDFs are returned as Markdown automatically (AIMDS-Suite Docling when reachable, local converters otherwise; the result names the converter and any Docling frontmatter as `metadata`) — never parse them with terminal commands. Document metadata beyond that: `office_word(action=read_metadata)` for .docx; the AIMDS-Suite `storage_document_meta` / `storage_summary` tools for an ingested document.",
     "parameters": {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "Path to the file to read (absolute, relative, or ~/path)"},
-            "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1)", "default": 1, "minimum": 1},
-            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 500, max: 2000)", "default": 500, "maximum": 2000}
+            "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1); data row for CSV/TSV", "default": 1, "minimum": 1},
+            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 500, max: 2000); rows for CSV/TSV", "default": 500, "maximum": 2000}
         },
         "required": ["path"]
     }
