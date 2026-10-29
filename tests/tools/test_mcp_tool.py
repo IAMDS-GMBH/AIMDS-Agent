@@ -5695,6 +5695,36 @@ class TestCheckMcpArgNames:
         assert error is None and args == {"date_from": "2026-09-01", "project": "AIS"}
         assert notes and "'project_id'" in notes[0] and "'project'" in notes[0]
 
+    def test_arguments_a_tool_answer_handed_back_are_taken(self, monkeypatch):
+        """AIS-775: go-mcp-openproject 0.7.0 answers a batched move with
+        ``continue`` carrying ``move_offset``, which the schema does not list."""
+        from tools import mcp_tool
+        from tools.mcp_tool import _check_mcp_arg_names, _remember_handed_back_args
+
+        monkeypatch.setattr(mcp_tool, "_handed_back_args", {})
+        tool = _make_mcp_tool(name="pm_update_work_package", input_schema={
+            "type": "object", "properties": {"id": {}, "project": {}, "dry_run": {}}})
+        server = _make_mock_server("AIMDSSuiteMCP", tools=[tool])
+        nxt = {"id": "AIS-700", "project": "LBBW", "dry_run": False, "move_offset": 50}
+        assert _check_mcp_arg_names(server, "pm_update_work_package", nxt)[2]  # unknown before the answer
+        _remember_handed_back_args("AIMDSSuiteMCP", "pm_update_work_package",
+                                   json.dumps({"moved": 50, "remaining": 20, "continue": nxt}))
+        assert _check_mcp_arg_names(server, "pm_update_work_package", nxt) == (nxt, [], None)
+        # Only that tool, and only the handed-back names.
+        assert _check_mcp_arg_names(server, "pm_update_work_package", dict(nxt, projekt="X"))[2]
+        _remember_handed_back_args("AIMDSSuiteMCP", "pm_update_work_package", "not json \"continue\"")
+        assert mcp_tool._handed_back_args == {("AIMDSSuiteMCP", "pm_update_work_package"): {"id", "project", "dry_run", "move_offset"}}
+
+    def test_unknown_argument_of_a_deprecated_tool_names_its_successor(self):
+        """AIS-775: a 0.7.0 alias lists only its required arguments."""
+        from tools.mcp_tool import _check_mcp_arg_names
+
+        tool = _make_mcp_tool(name="pm_comment_work_package", description="DEPRECATED — use pm_update_work_package(id, comment).",
+                              input_schema={"type": "object", "properties": {"id": {}, "comment": {}}})
+        server = _make_mock_server("AIMDSSuiteMCP", tools=[tool])
+        _args, _notes, error = _check_mcp_arg_names(server, "pm_comment_work_package", {"id": 1, "comment": "x", "notify": True})
+        assert error.endswith("This tool is deprecated: DEPRECATED — use pm_update_work_package(id, comment).")
+
 
 def test_stdio_env_carries_the_agent_hermes_home(monkeypatch, tmp_path):
     """AIS-418: every stdio MCP keeps its state under the agent's Hermes home."""

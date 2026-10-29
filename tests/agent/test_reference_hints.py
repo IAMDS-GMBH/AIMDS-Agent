@@ -40,15 +40,15 @@ def reachable(monkeypatch):
 
 
 def test_hint_names_the_suite_first_and_the_local_fallback(reachable, monkeypatch):
-    reachable += [f"{SUITE}pm_get_work_package", f"{SUITE}pm_search_work_packages", f"{LOCAL}pm_get_work_package",
-                  f"{LOCAL}pm_search_work_packages", "mcp_AIMDSSuiteMCP_mcp_memory_memory_search"]
+    reachable += [f"{SUITE}pm_get_work_package", f"{SUITE}pm_list_work_packages", f"{LOCAL}pm_get_work_package",
+                  f"{LOCAL}pm_list_work_packages", "mcp_AIMDSSuiteMCP_mcp_memory_memory_search"]
     monkeypatch.setattr("agent.openproject_suite.suite_accepts_display_ids", lambda: False)
 
     hint = rh.ticket_reference_hint(_Agent(), "PRO-6 Ticket müssen wir uns ansehen")
 
     assert hint.startswith("[Ticket reference] PRO-6: look it up directly")
     assert hint.index("AIMDS Suite") < hint.index("local server")
-    assert f"`{SUITE}pm_get_work_package` (numeric id only; find a key via `{SUITE}pm_search_work_packages`)" in hint
+    assert f"`{SUITE}pm_get_work_package` (numeric id only; find a key via `{SUITE}pm_list_work_packages`)" in hint
     assert f"`{LOCAL}pm_get_work_package` (the key works as id)" in hint
     assert "Jira" not in hint
 
@@ -82,7 +82,7 @@ def test_jira_only(reachable):
 def test_bridge_loads_the_tools_into_the_session(reachable, monkeypatch):
     import agent.deferred_tools as dt
 
-    reachable += [f"{SUITE}pm_get_work_package", f"{SUITE}pm_search_work_packages"]
+    reachable += [f"{SUITE}pm_get_work_package", f"{SUITE}pm_list_work_packages"]
     loaded = []
     monkeypatch.setattr(dt, "tool_search_active", lambda agent: True)
     monkeypatch.setattr(dt, "load_deferred_tool", lambda agent, name, **kw: loaded.append((name, kw["reason"])) or name)
@@ -90,7 +90,7 @@ def test_bridge_loads_the_tools_into_the_session(reachable, monkeypatch):
 
     rh.ticket_reference_hint(_Agent(), "PRO-6")
 
-    assert loaded == [(f"{SUITE}pm_get_work_package", "ticket_reference"), (f"{SUITE}pm_search_work_packages", "ticket_reference")]
+    assert loaded == [(f"{SUITE}pm_get_work_package", "ticket_reference"), (f"{SUITE}pm_list_work_packages", "ticket_reference")]
 
 
 def test_the_list_tool_is_the_search_since_openproject_mcp_060(reachable, monkeypatch):
@@ -108,3 +108,25 @@ def test_the_list_tool_is_the_search_since_openproject_mcp_060(reachable, monkey
 
     assert loaded == [f"{SUITE}pm_get_work_package", f"{SUITE}pm_list_work_packages"]
     assert f"find a key via `{SUITE}pm_list_work_packages`" in hint
+
+
+def test_deprecated_search_is_never_recommended(reachable, monkeypatch):
+    """AIS-775: without the list tool the hint says "search", never the alias."""
+    reachable += [f"{SUITE}pm_search_work_packages", f"{SUITE}pm_get_work_package"]
+    monkeypatch.setattr("agent.openproject_suite.suite_accepts_display_ids", lambda: False)
+
+    hint = rh.ticket_reference_hint(_Agent(), "PRO-6")
+
+    assert "search_work_packages" not in hint and "find a key via search" in hint
+
+
+@pytest.mark.parametrize("params, named", [({"id", "ids", "include"}, True), ({"id", "text_limit"}, False)])
+def test_several_keys_use_ids_where_the_getter_takes_them(reachable, monkeypatch, params, named):
+    """AIS-775: go-mcp-openproject 0.7.0 gets up to 25 keys in one call; an
+    older server (0.6.x on prod) is not told about ids."""
+    reachable += [f"{SUITE}pm_get_work_package", f"{SUITE}pm_list_work_packages"]
+    monkeypatch.setattr("agent.openproject_suite.suite_accepts_display_ids", lambda: True)
+    monkeypatch.setattr("tools.openproject_names.tool_param_names", lambda name: params)
+
+    assert ("several keys in one call with `ids`" in rh.ticket_reference_hint(_Agent(), "AIS-469 und AIS-470")) is named
+    assert "`ids`" not in rh.ticket_reference_hint(_Agent(), "AIS-469")

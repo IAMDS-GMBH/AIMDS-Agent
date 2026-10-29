@@ -1,6 +1,6 @@
 {
   "source": "IAMDS-GMBH/AIMDS-Suite container/go-mcp-openproject",
-  "commit": "4b733506",
+  "commit": "a67e8619",
   "tools": [
     {
       "description": "Only to replace an existing link or token: returns a one-time link_url (10 min) where the user enters a new personal access token. Give the user exactly that URL — never build one or send them to the API. No arguments.",
@@ -51,7 +51,7 @@
       "inputSchema": {
         "properties": {
           "project": {
-            "description": "Project identifier (e.g. \"AIS\"), name or numeric id to list that project's members; a key like \"AIS-499\" names its project.",
+            "description": "Project identifier (e.g. \"AIS\"), name or id to list that project's members; a key like \"AIS-499\" names its project.",
             "type": "string"
           },
           "query": {
@@ -85,7 +85,7 @@
             "type": "boolean"
           },
           "project": {
-            "description": "Project identifier (e.g. \"AIS\"), name or numeric id; a key like \"AIS-499\" names its project.",
+            "description": "Project identifier (e.g. \"AIS\"), name or id; a key like \"AIS-499\" names its project.",
             "type": "string"
           }
         },
@@ -149,7 +149,7 @@
             "type": "string"
           },
           "project": {
-            "description": "Project identifier (e.g. \"AIS\"), name or numeric id to scope results to; a key like \"AIS-499\" names its project.",
+            "description": "Project identifier (e.g. \"AIS\"), name or id to scope results to; a key like \"AIS-499\" names its project.",
             "type": "string"
           },
           "query": {
@@ -157,7 +157,7 @@
             "type": "string"
           },
           "select": {
-            "description": "Fields per row; [\"*\"] = all (adds id, author, responsible, created_at, updated_at).",
+            "description": "Fields per row; [\"*\"] = all (adds id, author, responsible, version, category, timestamps).",
             "items": {
               "type": "string"
             },
@@ -211,7 +211,7 @@
       "name": "pm_search_work_packages"
     },
     {
-      "description": "Get one work package by key (e.g. \"AIS-469\") or numeric id, including its description. Required: id. Optional: text_limit.",
+      "description": "Get work packages by id or ids (max 25), with description; include adds the comment log (limit = newest) and relations.",
       "inputSchema": {
         "properties": {
           "id": {
@@ -223,25 +223,88 @@
                 "type": "string"
               }
             ],
-            "description": "Work package key (e.g. \"AIS-469\") or numeric id (e.g. 17806)."
+            "description": "Work package key (e.g. \"AIS-469\") or numeric id."
+          },
+          "ids": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "string"
+                }
+              ]
+            },
+            "type": "array"
+          },
+          "include": {
+            "items": {
+              "enum": [
+                "activity",
+                "relations"
+              ],
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "limit": {
+            "type": "integer"
           },
           "text_limit": {
-            "description": "Truncate the description to this many characters (default 6000, 0 = full).",
+            "description": "Cut the description (default 6000, 0 = full) and comments.",
             "type": "integer"
           }
         },
-        "required": [
-          "id"
-        ],
         "type": "object"
       },
       "name": "pm_get_work_package"
     },
     {
-      "description": "Create a work package. Required: project, type (name or id), subject. assignee: id, login or \"me\"; parent: key or id; date: milestones; estimated_time: ISO-8601 (e.g. \"PT8H\"). Dates are YYYY-MM-DD. A milestone (e.g. weekly goal) cannot be a parent — pass it in relates_to instead.",
+      "description": "Create a work package. Required: project, type (name or id), subject. assignee/responsible: id, login or \"me\"; version/category: name or id; date: milestones; estimated_time: ISO-8601 (e.g. \"PT8H\"). Dates YYYY-MM-DD. A milestone (e.g. weekly goal) cannot be a parent — pass it in relates_to instead.",
       "inputSchema": {
         "properties": {
+          "add_relations": {
+            "items": {
+              "properties": {
+                "to": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "type": {
+                  "enum": [
+                    "relates",
+                    "blocks",
+                    "blocked",
+                    "precedes",
+                    "follows",
+                    "duplicates",
+                    "duplicated",
+                    "includes",
+                    "partof",
+                    "requires",
+                    "required"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "to"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
           "assignee": {
+            "type": "string"
+          },
+          "category": {
             "type": "string"
           },
           "date": {
@@ -272,7 +335,7 @@
             "type": "string"
           },
           "project": {
-            "description": "Project identifier (e.g. \"AIS\"), name or numeric id; a key like \"AIS-499\" names its project.",
+            "description": "Project identifier (e.g. \"AIS\"), name or id; a key like \"AIS-499\" names its project.",
             "type": "string"
           },
           "relates_to": {
@@ -285,10 +348,12 @@
                 {
                   "type": "string"
                 }
-              ],
-              "description": "Work package key (e.g. \"AIS-469\") or numeric id (e.g. 17806)."
+              ]
             },
             "type": "array"
+          },
+          "responsible": {
+            "type": "string"
           },
           "start_date": {
             "type": "string"
@@ -300,6 +365,9 @@
             "type": "string"
           },
           "type": {
+            "type": "string"
+          },
+          "version": {
             "type": "string"
           }
         },
@@ -313,10 +381,53 @@
       "name": "pm_create_work_package"
     },
     {
-      "description": "Update a work package's fields. Required: id (or ids for several) plus one field; lock_version is fetched if omitted. Milestones (e.g. weekly goals) have one date: set date. Unapplied fields come back in warnings; a status change returns next_statuses. If the workflow forbids a direct status change, the answer has updated=false, allowed_next and usually retry — pass retry as the next call's arguments.",
+      "description": "Update, comment, relate or move work packages: id, or ids (max 25) for the same change. responsible/version/category \"none\" clears; milestones take date. Unapplied fields → warnings. A status change returns next_statuses; a refused one answers updated=false with retry — pass it as the next call's arguments. project moves them (include_descendants: whole subtree): the first call previews; after the user confirms, repeat with dry_run=false, then pass continue while it comes back.",
       "inputSchema": {
         "properties": {
+          "add_relations": {
+            "items": {
+              "properties": {
+                "to": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "type": {
+                  "enum": [
+                    "relates",
+                    "blocks",
+                    "blocked",
+                    "precedes",
+                    "follows",
+                    "duplicates",
+                    "duplicated",
+                    "includes",
+                    "partof",
+                    "requires",
+                    "required"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "to"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
           "assignee": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          },
+          "comment": {
             "type": "string"
           },
           "date": {
@@ -325,6 +436,9 @@
           },
           "description": {
             "type": "string"
+          },
+          "dry_run": {
+            "type": "boolean"
           },
           "due_date": {
             "type": "string"
@@ -338,10 +452,9 @@
                 "type": "string"
               }
             ],
-            "description": "Work package key (e.g. \"AIS-469\") or numeric id (e.g. 17806)."
+            "description": "Work package key (e.g. \"AIS-469\") or numeric id."
           },
           "ids": {
-            "description": "Instead of id: apply the same change to these (max 25).",
             "items": {
               "anyOf": [
                 {
@@ -350,16 +463,40 @@
                 {
                   "type": "string"
                 }
-              ],
-              "description": "Work package key (e.g. \"AIS-469\") or numeric id (e.g. 17806)."
+              ]
             },
             "type": "array"
           },
+          "include_descendants": {
+            "type": "boolean"
+          },
           "lock_version": {
-            "description": "Optional; fetched automatically if omitted.",
             "type": "integer"
           },
+          "notify": {
+            "type": "boolean"
+          },
           "priority": {
+            "type": "string"
+          },
+          "project": {
+            "description": "Project identifier (e.g. \"AIS\"), name or id; a key like \"AIS-499\" names its project.",
+            "type": "string"
+          },
+          "remove_relations": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "string"
+                }
+              ]
+            },
+            "type": "array"
+          },
+          "responsible": {
             "type": "string"
           },
           "start_date": {
@@ -369,13 +506,20 @@
             "type": "string"
           },
           "status_path": {
-            "description": "Statuses to walk in order, last = target, e.g. [\"In Review\",\"Closed\"]; every hop is saved, other fields go with the first. Max 4.",
+            "description": "Statuses walked in order, last = target (max 4); other fields go with the first.",
             "items": {
               "type": "string"
             },
             "type": "array"
           },
           "subject": {
+            "type": "string"
+          },
+          "type_map": {
+            "description": "Source type → target type.",
+            "type": "object"
+          },
+          "version": {
             "type": "string"
           }
         },
@@ -384,7 +528,7 @@
       "name": "pm_update_work_package"
     },
     {
-      "description": "Add a comment to a work package. Required: id, comment. Optional: notify (bool, default false).",
+      "description": "DEPRECATED — use pm_update_work_package(id, comment).",
       "inputSchema": {
         "properties": {
           "comment": {
@@ -398,11 +542,7 @@
               {
                 "type": "string"
               }
-            ],
-            "description": "Work package key (e.g. \"AIS-469\") or numeric id (e.g. 17806)."
-          },
-          "notify": {
-            "type": "boolean"
+            ]
           }
         },
         "required": [
@@ -414,7 +554,7 @@
       "name": "pm_comment_work_package"
     },
     {
-      "description": "A work package's comment/activity log, oldest first (limit keeps the newest). Required: id. Optional: limit, text_limit (per entry).",
+      "description": "DEPRECATED — use pm_get_work_package(id, include=[\"activity\"]).",
       "inputSchema": {
         "properties": {
           "id": {
@@ -425,14 +565,7 @@
               {
                 "type": "string"
               }
-            ],
-            "description": "Work package key (e.g. \"AIS-469\") or numeric id (e.g. 17806)."
-          },
-          "limit": {
-            "type": "integer"
-          },
-          "text_limit": {
-            "type": "integer"
+            ]
           }
         },
         "required": [
@@ -443,7 +576,7 @@
       "name": "pm_list_work_package_activity"
     },
     {
-      "description": "List a work package's relations (blocks, precedes, relates to, ...). Required: id.",
+      "description": "DEPRECATED — use pm_get_work_package(id, include=[\"relations\"]).",
       "inputSchema": {
         "properties": {
           "id": {
@@ -454,8 +587,7 @@
               {
                 "type": "string"
               }
-            ],
-            "description": "Work package key (e.g. \"AIS-469\") or numeric id (e.g. 17806)."
+            ]
           }
         },
         "required": [
@@ -466,7 +598,7 @@
       "name": "pm_list_work_package_relations"
     },
     {
-      "description": "Relate two work packages (id → related_to_id). An existing pair is returned with already_exists=true.",
+      "description": "DEPRECATED — use pm_update_work_package(id, add_relations=[{to, type}]).",
       "inputSchema": {
         "properties": {
           "id": {
@@ -477,8 +609,7 @@
               {
                 "type": "string"
               }
-            ],
-            "description": "Work package key (e.g. \"AIS-469\") or numeric id (e.g. 17806)."
+            ]
           },
           "related_to_id": {
             "anyOf": [
@@ -488,23 +619,9 @@
               {
                 "type": "string"
               }
-            ],
-            "description": "Work package key (e.g. \"AIS-469\") or numeric id (e.g. 17806)."
+            ]
           },
           "relation_type": {
-            "enum": [
-              "relates",
-              "blocks",
-              "blocked",
-              "precedes",
-              "follows",
-              "duplicates",
-              "duplicated",
-              "includes",
-              "partof",
-              "requires",
-              "required"
-            ],
             "type": "string"
           }
         },
@@ -518,7 +635,7 @@
       "name": "pm_create_work_package_relation"
     },
     {
-      "description": "Delete a relation by relation_id, or by the pair id + related_to_id (either direction).",
+      "description": "DEPRECATED — use pm_update_work_package(id, remove_relations=[key]).",
       "inputSchema": {
         "properties": {
           "id": {
@@ -529,8 +646,7 @@
               {
                 "type": "string"
               }
-            ],
-            "description": "Work package key (e.g. \"AIS-469\") or numeric id (e.g. 17806)."
+            ]
           },
           "related_to_id": {
             "anyOf": [
@@ -540,11 +656,7 @@
               {
                 "type": "string"
               }
-            ],
-            "description": "Work package key (e.g. \"AIS-469\") or numeric id (e.g. 17806)."
-          },
-          "relation_id": {
-            "type": "integer"
+            ]
           }
         },
         "type": "object"
@@ -556,7 +668,7 @@
       "inputSchema": {
         "properties": {
           "project": {
-            "description": "Project identifier (e.g. \"AIS\"), name or numeric id; a key like \"AIS-499\" names its project.",
+            "description": "Project identifier (e.g. \"AIS\"), name or id; a key like \"AIS-499\" names its project.",
             "type": "string"
           },
           "search": {
@@ -729,7 +841,7 @@
             "type": "integer"
           },
           "project": {
-            "description": "Project identifier (e.g. \"AIS\"), name or numeric id; a key like \"AIS-499\" names its project.",
+            "description": "Project identifier (e.g. \"AIS\"), name or id; a key like \"AIS-499\" names its project.",
             "type": "string"
           },
           "spent_on_from": {
@@ -753,7 +865,7 @@
                 "type": "string"
               }
             ],
-            "description": "Work package key (e.g. \"AIS-469\") or numeric id (e.g. 17806)."
+            "description": "Work package key (e.g. \"AIS-469\") or numeric id."
           }
         },
         "type": "object"
@@ -784,7 +896,7 @@
             "type": "boolean"
           },
           "project": {
-            "description": "Project identifier (e.g. \"AIS\"), name or numeric id; a key like \"AIS-499\" names its project.",
+            "description": "Project identifier (e.g. \"AIS\"), name or id; a key like \"AIS-499\" names its project.",
             "type": "string"
           },
           "spent_on": {
@@ -808,7 +920,7 @@
                 "type": "string"
               }
             ],
-            "description": "Work package key (e.g. \"AIS-469\") or numeric id (e.g. 17806)."
+            "description": "Work package key (e.g. \"AIS-469\") or numeric id."
           }
         },
         "required": [

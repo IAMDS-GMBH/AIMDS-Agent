@@ -2016,6 +2016,17 @@ export const de
           read: { pending: (o, p) => `Öffne ${o} ${p.in}`, done: (o, p) => `${o} ${p.in} geöffnet` },
           create: { pending: (o, p) => `Lege ${o} ${p.in} an`, done: (o, p) => `${o} ${p.in} angelegt` },
           update: { pending: (o, p) => `Ändere ${o} ${p.in}`, done: (o, p) => `${o} ${p.in} geändert` },
+          comment: { pending: (o, p) => `Kommentiere ${o} ${p.in}`, done: (o, p) => `${o} ${p.in} kommentiert` },
+          updateComment: {
+            pending: (o, p) => `Ändere und kommentiere ${o} ${p.in}`,
+            done: (o, p) => `${o} ${p.in} geändert und kommentiert`
+          },
+          relate: { pending: (o, p) => `Verknüpfe ${o} ${p.in}`, done: (o, p) => `${o} ${p.in} verknüpft` },
+          movePreview: {
+            pending: (o, p) => `Plane das Verschieben von ${o} ${p.in}`,
+            done: (o, p) => `Verschieben von ${o} ${p.in} geplant`
+          },
+          move: { pending: (o, p) => `Verschiebe ${o} ${p.in}`, done: (o, p) => `${o} ${p.in} verschoben` },
           delete: { pending: (o, p) => `Entferne ${o} ${p.in}`, done: (o, p) => `${o} ${p.in} entfernt` },
           other: { pending: (_o, p) => `Arbeite ${p.in}`, done: (_o, p) => `${p.name} genutzt` }
         },

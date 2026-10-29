@@ -109,3 +109,21 @@ def find_openproject_tool(names: Iterable[str], suffix: str, *, skip_hidden: boo
     """The preferred registered name for ``suffix``: the Suite's when both exist."""
     hits = openproject_tools(names, suffix, skip_hidden=skip_hidden)
     return hits[0] if hits else None
+
+
+def tool_param_names(name: str) -> "set[str]":
+    """Parameter names of a registered tool's schema (empty when unknown).
+
+    Guidance names an argument only when the connected server's schema has it
+    (tools are self-describing): Suite go-mcp-openproject 0.6.x and 0.7.0 run
+    side by side while a release rolls out, and an older server rejects or
+    drops an argument it does not know (AIS-711, AIS-775)."""
+    try:
+        from tools.registry import registry
+
+        entry = registry.get_entry(name)
+        schema = getattr(entry, "schema", None) or {}
+        params = schema.get("parameters") or schema.get("inputSchema") or {}
+        return set((params.get("properties") or {}).keys())
+    except Exception:
+        return set()

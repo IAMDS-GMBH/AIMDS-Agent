@@ -2014,6 +2014,17 @@ export const en: Translations = {
           read: { pending: (o, p) => `Opening ${o} ${p.in}`, done: (o, p) => `Opened ${o} ${p.in}` },
           create: { pending: (o, p) => `Creating ${o} ${p.in}`, done: (o, p) => `Created ${o} ${p.in}` },
           update: { pending: (o, p) => `Updating ${o} ${p.in}`, done: (o, p) => `Updated ${o} ${p.in}` },
+          comment: { pending: (o, p) => `Commenting on ${o} ${p.in}`, done: (o, p) => `Commented on ${o} ${p.in}` },
+          updateComment: {
+            pending: (o, p) => `Updating and commenting on ${o} ${p.in}`,
+            done: (o, p) => `Updated and commented on ${o} ${p.in}`
+          },
+          relate: { pending: (o, p) => `Linking ${o} ${p.in}`, done: (o, p) => `Linked ${o} ${p.in}` },
+          movePreview: {
+            pending: (o, p) => `Planning the move of ${o} ${p.in}`,
+            done: (o, p) => `Planned the move of ${o} ${p.in}`
+          },
+          move: { pending: (o, p) => `Moving ${o} ${p.in}`, done: (o, p) => `Moved ${o} ${p.in}` },
           delete: { pending: (o, p) => `Removing ${o} ${p.in}`, done: (o, p) => `Removed ${o} ${p.in}` },
           other: { pending: (_o, p) => `Working ${p.in}`, done: (_o, p) => `Used ${p.name}` }
         },

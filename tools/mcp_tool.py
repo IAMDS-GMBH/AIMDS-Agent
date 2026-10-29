@@ -4078,6 +4078,36 @@ _ARG_SYNONYM_GROUPS: Tuple[frozenset, ...] = (
     frozenset({"project", "project_id"}),
 )
 
+# AIS-775: arguments a tool's own answer handed back for the next call —
+# ``continue`` (go-mcp-openproject 0.7.0 moves carry ``move_offset``) and
+# ``retry`` — are taken even when the schema does not list them: the server
+# accepts them on purpose, and the guidance says to pass them unchanged.
+# Bounded: a few keys per tool, a few hundred tools.
+_HANDED_BACK_KEYS = ("continue", "retry")
+_handed_back_args: Dict[Tuple[str, str], set] = {}
+_HANDED_BACK_MAX_TOOLS = 256
+_HANDED_BACK_MAX_KEYS = 32
+
+
+def _remember_handed_back_args(server_name: str, tool_name: str, text: str) -> None:
+    """Record the argument names of a ``continue``/``retry`` object in a tool answer."""
+    if not text or not any(f'"{k}"' in text for k in _HANDED_BACK_KEYS):
+        return
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError):
+        return
+    if not isinstance(payload, dict):
+        return
+    keys = {str(k) for h in _HANDED_BACK_KEYS if isinstance(payload.get(h), dict) for k in payload[h]}
+    if not keys:
+        return
+    slot = (server_name, tool_name)
+    if slot not in _handed_back_args and len(_handed_back_args) >= _HANDED_BACK_MAX_TOOLS:
+        return
+    known = _handed_back_args.setdefault(slot, set())
+    known.update(sorted(keys)[: max(0, _HANDED_BACK_MAX_KEYS - len(known))])
+
 
 def _check_mcp_arg_names(
     server: "MCPServerTask", tool_name: str, args: Any
@@ -4106,8 +4136,9 @@ def _check_mcp_arg_names(
     fixed = dict(args)
     notes: List[str] = []
     unknown: List[str] = []
+    handed_back = _handed_back_args.get((getattr(server, "name", ""), tool_name), ())
     for key in list(args):
-        if key in props or key in ("name", "tool_name"):
+        if key in props or key in ("name", "tool_name") or key in handed_back:
             continue
         target = None
         for group in _ARG_SYNONYM_GROUPS:
@@ -4122,11 +4153,17 @@ def _check_mcp_arg_names(
         else:
             unknown.append(key)
     if unknown:
-        return args, notes, (
+        error = (
             f"Unknown argument(s) for tool '{tool_name}': {', '.join(sorted(unknown))}. "
             f"Allowed arguments: {', '.join(sorted(props))}. Nothing was executed; "
             "call again with the declared argument names."
         )
+        # A deprecated alias keeps only its required arguments in the schema
+        # (go-mcp-openproject 0.7.0, AIS-775): name the successor it points to.
+        description = str(getattr(tool_obj, "description", "") or "")
+        if re.match(r"^\W*deprecated\b", description, re.IGNORECASE):
+            error += f" This tool is deprecated: {description.strip()}"
+        return args, notes, error
     return fixed, notes, None
 
 
@@ -4463,6 +4500,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, pr
                 if image_tag:
                     parts.append(image_tag)
             text_result = "\n".join(parts) if parts else ""
+            _remember_handed_back_args(server_name, tool_name, text_result)
 
             # Combine content + structuredContent when both are present.
             # MCP spec: content is model-oriented (text), structuredContent

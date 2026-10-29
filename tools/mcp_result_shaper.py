@@ -337,6 +337,12 @@ def _is_error_payload(data: Any) -> bool:
     return isinstance(data, dict) and ("error" in data or data.get("isError") is True)
 
 
+def _names_its_rows(tool_args: Any) -> bool:
+    """The call asked for explicit records by a non-empty ``ids`` list."""
+    ids = tool_args.get("ids") if isinstance(tool_args, dict) else None
+    return isinstance(ids, list) and bool(ids)
+
+
 def dumps_stable(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -348,6 +354,7 @@ def shape_tool_result(
     *,
     rows_ingested: bool = False,
     config: Optional[ShapeConfig] = None,
+    tool_args: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Return the shaped result text, or ``content`` unchanged when shaping
     does not apply (non-MCP tool, non-JSON, error payload, disabled)."""
@@ -356,6 +363,11 @@ def shape_tool_result(
     cfg = (config or load_shape_config()).for_tool(tool_name)
     if not cfg.enabled:
         return content
+    if _names_its_rows(tool_args):
+        # Rows the call named one by one (``ids``, e.g. go-mcp-openproject
+        # 0.7.0's pm_get_work_package) are records, not a listing preview:
+        # their texts stay whole like a single get's (AIS-775).
+        cfg = replace(cfg, max_string_chars=0)
     data = _isolate_json(content)
     if data is None or _is_error_payload(data):
         return content

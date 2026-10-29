@@ -108,9 +108,66 @@ const DETAIL_KEYS = [
   'subject',
   'title',
   'id',
+  'ids',
   'url',
   'path'
 ]
+
+// Arguments that do not change a field of the item an update touches: ids,
+// the call's own options, what it adds besides (comment, relations, move)
+// and the origin fields the gateway puts next to the arguments.
+const NON_FIELD_ARGS = new Set([
+  'add_relations',
+  'comment',
+  'context',
+  'dry_run',
+  'id',
+  'ids',
+  'include_descendants',
+  'lock_version',
+  'mcp_server',
+  'mcp_tool',
+  'move_offset',
+  'notify',
+  'preview',
+  'project',
+  'remove_relations',
+  'type_map'
+])
+
+function filled(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return value.length > 0
+  }
+
+  return value !== undefined && value !== null && value !== ''
+}
+
+/** What an update does, from its arguments (AIS-775): go-mcp-openproject 0.7.0
+ *  comments, relates and moves through one update tool. A target project is
+ *  a move — a preview until the call says dry_run=false. */
+function updateVerb(args: Record<string, unknown>): VerbKey {
+  if (stringField(args, 'project')) {
+    return args.dry_run === false || args.dry_run === 'false' ? 'move' : 'movePreview'
+  }
+
+  const fields = Object.keys(args).some(key => !NON_FIELD_ARGS.has(key) && filled(args[key]))
+
+  if (stringField(args, 'comment')) {
+    return fields ? 'updateComment' : 'comment'
+  }
+
+  if (!fields && (filled(args.add_relations) || filled(args.remove_relations))) {
+    return 'relate'
+  }
+
+  return 'update'
+}
+
+/** The update touches several items (a list of ids or a whole subtree). */
+function touchesSeveral(args: Record<string, unknown>): boolean {
+  return (Array.isArray(args.ids) && args.ids.length > 1) || args.include_descendants === true
+}
 
 function activityCopy(copy?: ToolActivityCopy): ToolActivityCopy {
   return copy ?? TRANSLATIONS[getRuntimeI18nLocale()].assistant.tool.activity
@@ -144,6 +201,18 @@ function stringField(args: Record<string, unknown>, key: string): string {
   return typeof value === 'number' ? String(value) : ''
 }
 
+/** "AIS-1, AIS-2 (+3)" for a list of keys (AIS-775). */
+function idsField(value: unknown): string {
+  if (!Array.isArray(value)) {
+    return ''
+  }
+
+  const keys = value.filter(v => typeof v === 'string' || typeof v === 'number').map(String)
+  const shown = keys.slice(0, 2).join(', ')
+
+  return keys.length > 2 ? `${shown} (+${keys.length - 2})` : shown
+}
+
 function tokens(value: string): string[] {
   return value
     .replace(/([a-z])([A-Z])/g, '$1_$2')
@@ -160,13 +229,17 @@ function plural(word: string): string {
   return /[^aeiou]y$/.test(word) ? `${word.slice(0, -1)}ies` : `${word}s`
 }
 
-function objectLabel(words: string[], place: ToolActivityPlace, copy: ToolActivityCopy): string {
+function objectLabel(words: string[], place: ToolActivityPlace, copy: ToolActivityCopy, several = false): string {
   if (words.length === 0) {
     return place.object ?? copy.defaultObject
   }
 
   const joined = words.join('_')
   const pluralJoined = [...words.slice(0, -1), plural(words[words.length - 1])].join('_')
+
+  if (several) {
+    return copy.objects[pluralJoined] ?? copy.objects[joined] ?? words.join(' ')
+  }
 
   return copy.objects[joined] ?? copy.objects[pluralJoined] ?? words.join(' ')
 }
@@ -195,12 +268,13 @@ function mcpLabel(toolName: string, args: Record<string, unknown>, copy: ToolAct
     copy.customPlace(serviceDisplayName(server || (ownName ? '' : toolName.split('_')[1] || '')) || toolName)
 
   const verbIndex = words.findIndex(word => VERB_TOKENS[word])
-  const verb: VerbKey = verbIndex >= 0 ? VERB_TOKENS[words[verbIndex]] : 'other'
+  const toolVerb: VerbKey = verbIndex >= 0 ? VERB_TOKENS[words[verbIndex]] : 'other'
+  const verb: VerbKey = toolVerb === 'update' ? updateVerb(args) : toolVerb
 
   const objectWords =
     verbIndex >= 0 ? words.slice(verbIndex + 1).filter(word => !AREA_TOKENS[word] && !VERB_TOKENS[word]) : []
 
-  const object = objectLabel(objectWords, place, copy)
+  const object = objectLabel(objectWords, place, copy, touchesSeveral(args))
   const template = copy.verbs[verb]
 
   return {
@@ -257,7 +331,7 @@ export function toolDetail(rawArgs?: unknown, useContext = true): string {
 
   if (!detail) {
     for (const key of DETAIL_KEYS) {
-      detail = stringField(args, key)
+      detail = key === 'ids' ? idsField(args.ids) : stringField(args, key)
 
       if (detail) {
         break

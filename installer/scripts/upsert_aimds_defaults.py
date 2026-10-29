@@ -164,10 +164,15 @@ _AIMDS_TOOL_INCLUDE_RAW = [
     "pm_list_projects",
     "pm_get_project",
     "pm_list_work_packages",
-    "pm_search_work_packages",
     "pm_get_work_package",
     "pm_create_work_package",
     "pm_update_work_package",
+    # Deprecated aliases since go-mcp-openproject 0.6/0.7.0 (AIS-711,
+    # AIS-775): pm_list_work_packages(query), pm_get_work_package(include),
+    # pm_update_work_package(comment, add_relations, remove_relations). They
+    # stay until the Suite removes them (2.18.0 / 2.19.0): a key still served
+    # by go-mcp-openproject 0.6.x needs them for comments and relations.
+    "pm_search_work_packages",
     "pm_comment_work_package",
     "pm_list_work_package_activity",
     "pm_list_work_package_relations",

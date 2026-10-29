@@ -92,16 +92,24 @@ def _openproject_lookup(kind: str) -> Callable[[Sequence[str]], List[str]]:
             return []
         out: List[str] = []
         # The getter, then the search: pm_list_work_packages(query) since
-        # go-mcp-openproject 0.6.0 (AIS-711); the deprecated
-        # pm_search_work_packages only where the list tool is missing.
-        for wanted in (("pm_get_work_package",), ("pm_list_work_packages", "pm_search_work_packages")):
-            found = [n for n in names if openproject_kind(n) == kind and pm_suffix(n) in wanted and not is_hidden(n)]
-            found.sort(key=lambda n: wanted.index(pm_suffix(n)))
+        # go-mcp-openproject 0.6.0 (AIS-711). The deprecated
+        # pm_search_work_packages is never recommended (AIS-775).
+        for wanted in ("pm_get_work_package", "pm_list_work_packages"):
+            found = sorted(n for n in names if openproject_kind(n) == kind and pm_suffix(n) == wanted and not is_hidden(n))
             if found:
                 out.append(found[0])
         return out
 
     return lookup
+
+
+def _param_names(name: str) -> "set[str]":
+    try:
+        from tools.openproject_names import tool_param_names
+
+        return tool_param_names(name)
+    except Exception:
+        return set()
 
 
 def _suite_accepts_key() -> bool:
@@ -166,6 +174,11 @@ def ticket_reference_hint(agent, text: str) -> str:
         note = "the key works as id" if system.accepts_key() else "numeric id only; find a key via " + (
             f"`{tools[1]}`" if len(tools) > 1 else "search"
         )
+        # Several keys in one call where the getter's schema takes a list
+        # (go-mcp-openproject 0.7.0 `ids`, AIS-775): get→get was prod's most
+        # frequent chain.
+        if len(refs) > 1 and "ids" in _param_names(getter):
+            note += "; several keys in one call with `ids`"
         parts.append(f"{system.label}: `{getter}` ({note})")
     keys = ", ".join(refs)
     if not parts:

@@ -75,6 +75,11 @@ auth:
 tools:
   # AIS-479: the AIMDS Suite go-mcp-openproject contract (27 pm_* tools since
   # 0.6.1, contract/go-mcp-openproject.tools.json) plus pm_delete_work_package.
+  # Since 0.7.0 (AIS-775) pm_comment_work_package,
+  # pm_list_work_package_activity/_relations and
+  # pm_create/delete_work_package_relation are deprecated aliases of
+  # pm_get_work_package(include) / pm_update_work_package(comment,
+  # add_relations, remove_relations); the Suite drops them in 2.19.0.
   default_enabled:
     - pm_link_status
     - pm_link_account
@@ -163,6 +168,8 @@ post_install: |
     listed but refuse projects outside that list with an error naming it.
   - Writes run directly (no preview step); pm_create_work_package warns when
     the same subject was created in the project within the last 15 minutes.
+    Moving work packages to another project (pm_update_work_package with
+    project) is the exception: the first call previews, dry_run=false moves.
   - Time tracking works like Jira + Tempo: pm_create_time_entry books on a
     work package or project, with start and end time when the user names
     them, else as a duration (PT1H30M, 1.5 or '1h30m'). Exact times need

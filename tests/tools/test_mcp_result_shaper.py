@@ -82,6 +82,18 @@ class TestCaps:
         assert row["body"].startswith("x" * 100) and row["body"].endswith("[+4900 chars]")
         assert row["short"] == "ok"
 
+    def test_rows_the_call_named_by_ids_keep_their_texts(self):
+        """AIS-775: pm_get_work_package(ids=…) answers full records, not a
+        listing preview — a description must not be cut at 1,200 chars."""
+        payload = {"work_packages": [{"key": "AIS-1", "description": "d" * 5000}, {"key": "AIS-2", "description": "ok"}]}
+        tool = "mcp_AIMDSSuiteMCP_mcp_openproject_pm_get_work_package"
+        out = json.loads(_shape(payload, tool=tool, config=ShapeConfig(max_string_chars=100),
+                                tool_args={"ids": ["AIS-1", "AIS-2"]}))["result"]
+        assert out["work_packages"][0]["description"] == "d" * 5000
+        listed = json.loads(_shape({"value": [{"body": "x" * 5000}]}, tool=tool, config=ShapeConfig(max_string_chars=100),
+                                   tool_args={"query": "x", "ids": []}))["result"]
+        assert listed["value"][0]["body"].endswith("[+4900 chars]")
+
     def test_single_object_long_field_stays_complete(self):
         # An email body / document text is not a row preview.
         payload = {"id": "m1", "subject": "Plan", "body": {"content": "y" * 5000}}

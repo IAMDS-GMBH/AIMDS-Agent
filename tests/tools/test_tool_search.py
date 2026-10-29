@@ -1765,7 +1765,10 @@ class TestLargeServerOpenProject:
         assert top("mcp_op_pm_search_work_packages")[0] == "mcp_op_pm_search_work_packages"  # named outright
         assert top("arbeitspaket erstellen")[0] == "mcp_op_pm_create_work_package"
         assert "mcp_op_pm_create_time_entry" in top("zeit buchen openproject")
-        assert "mcp_op_pm_comment_work_package" in top("openproject kommentar hinzufügen")
+        # AIS-775 (0.7.0): commenting, relating and moving are pm_update_work_package.
+        assert top("openproject kommentar hinzufügen")[0] == "mcp_op_pm_update_work_package"
+        assert top("relation erstellen openproject")[0] == "mcp_op_pm_update_work_package"
+        assert top("ticket verschieben openproject")[0] == "mcp_op_pm_update_work_package"
         assert "mcp_op_pm_list_time_entries" in top("openproject time entries")
 
     _SUITE_PM = {
@@ -2005,3 +2008,23 @@ def test_deprecated_tool_names_its_successor_on_the_same_server():
     assert _is_deprecated("[Deprecated] use x") and not _is_deprecated("Lists deprecated APIs.")
     assert _successor_entry([local_list, dep, suite_list], dep) is suite_list
     assert _successor_entry([local_list, dep], dep) is None
+
+
+def test_deprecated_match_through_a_live_sibling_name_is_not_handed_over():
+    """AIS-775: pm_create_work_package_relation (use pm_update_work_package)
+    contains pm_create_work_package; "create a work package" belongs to the
+    live sibling, "create a relation" to the successor."""
+    from tools.tool_search import CatalogEntry, _match_belongs_to_sibling, _split_words, _tokenize
+
+    def entry(name, desc):
+        return CatalogEntry(name, desc, _td(name, desc), "mcp", "mcp-OpenProjectMCP",
+                            _name_tokens=set(_tokenize(_split_words(name))))
+
+    dep = entry("mcp_op_pm_create_work_package_relation", "DEPRECATED — use pm_update_work_package(id, add_relations).")
+    create = entry("mcp_op_pm_create_work_package", "Create a work package.")
+    update = entry("mcp_op_pm_update_work_package", "Update, comment, relate or move work packages.")
+    catalog = [dep, create, update]
+    assert _match_belongs_to_sibling(catalog, dep, {"create", "work", "package"})
+    assert not _match_belongs_to_sibling(catalog, dep, {"create", "relation"})
+    comment = entry("mcp_op_pm_comment_work_package", "DEPRECATED — use pm_update_work_package(id, comment).")
+    assert not _match_belongs_to_sibling([comment, create, update], comment, {"comment"})
