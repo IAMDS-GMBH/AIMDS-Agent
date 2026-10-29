@@ -108,7 +108,8 @@ def test_iamds_litellm_prefers_model_info_endpoint(monkeypatch):
         result = M.provider_model_ids("iamds-litellm", force_refresh=True)
 
     assert result == ["gpt-5.5", "claude-sonnet-5"]
-    mock_model_info.assert_called_once_with("iamds-key", "https://staging.suite.iamds.com")
+    mock_model_info.assert_called_once()
+    assert mock_model_info.call_args.args == ("iamds-key", "https://staging.suite.iamds.com")
     mock_generic.assert_not_called()
 
 
