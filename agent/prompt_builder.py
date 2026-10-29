@@ -2646,9 +2646,10 @@ _OPENPROJECT_WRITE_SUFFIXES = (
     "pm_create_work_package", "pm_update_work_package", "pm_comment_work_package",
     "pm_create_time_entry", "pm_update_time_entry",
 )
+# pm_search_work_packages is deprecated since go-mcp-openproject 0.6
+# (pm_list_work_packages(query)); it is never named as the entry tool.
 _OPENPROJECT_READ_SUFFIXES = (
-    "pm_list_work_packages", "pm_search_work_packages", "pm_get_work_package",
-    "pm_list_projects",
+    "pm_list_work_packages", "pm_get_work_package", "pm_list_projects",
 )
 
 MCP_PERMISSION_BYPASS_GUIDANCE = (
@@ -2697,26 +2698,29 @@ def _openproject_tools_of(names: "set[str]", suffixes: "tuple[str, ...]", kind: 
 
 def _tool_param_names(name: str) -> "set[str]":
     """Parameter names of a registered tool's schema (empty when unknown)."""
-    try:
-        from tools.registry import registry
+    from tools.openproject_names import tool_param_names
 
-        entry = registry.get_entry(name)
-        schema = getattr(entry, "schema", None) or {}
-        params = schema.get("parameters") or schema.get("inputSchema") or {}
-        return set((params.get("properties") or {}).keys())
-    except Exception:
-        return set()
+    return tool_param_names(name)
 
 
 # AIS-711 (go-mcp-openproject 0.6): what one call can cover. Prod sessions
 # looped instead — one pm_list_time_entries per project (449 requests a day),
-# status changes one by one, a relation call after every create.
+# status changes one by one, a relation call after every create. AIS-775
+# (0.7.0): get→get, get→activity/relations, update→comment and
+# create→relation were the most frequent chains on prod (Suite AIS-771).
+# (tool suffix, parameter, text, unless the tool also has this parameter)
 _OPENPROJECT_SET_CAPABILITIES = (
     ("pm_list_time_entries", "group_by", "hours of a day or week across all projects in one "
-                                         "`pm_list_time_entries` call with the date range and `group_by`"),
-    ("pm_list_work_packages", "query", "free-text search through `pm_list_work_packages` `query`"),
-    ("pm_update_work_package", "ids", "the same change for several work packages through `ids`"),
-    ("pm_create_work_package", "relates_to", "relations of a new work package through `relates_to` when creating it"),
+                                         "`pm_list_time_entries` call with the date range and `group_by`", ""),
+    ("pm_list_work_packages", "query", "free-text search through `pm_list_work_packages` `query`", ""),
+    ("pm_get_work_package", "ids", "several work packages through one `pm_get_work_package` with `ids`", ""),
+    ("pm_get_work_package", "include", "their comment log and relations through `include` on that get", ""),
+    ("pm_update_work_package", "ids", "the same change for several work packages through `ids`", ""),
+    ("pm_update_work_package", "comment", "a comment on the change through `comment` in the same update", ""),
+    ("pm_update_work_package", "add_relations", "relations through `add_relations`/`remove_relations` in the update "
+                                                "or create", ""),
+    ("pm_create_work_package", "relates_to", "relations of a new work package through `relates_to` when creating it",
+     "add_relations"),
 )
 
 
@@ -2725,7 +2729,10 @@ def _openproject_whole_sets(names: "set[str]", op_tools: "dict[str, dict[str, li
 
     Capabilities come from the registered schemas, so an older Suite without
     ``query``/``group_by``/``ids``/``relates_to`` is never told to pass them
-    (its server would ignore an unknown argument silently).
+    (its server would ignore an unknown argument silently). AIS-775: the same
+    holds for go-mcp-openproject 0.7.0's ``include``, ``comment``,
+    ``add_relations`` and moves (``project`` + ``dry_run``) — prod may still
+    run 0.6.x when a release ships.
     """
     from tools.openproject_names import openproject_kind, openproject_tools
 
@@ -2738,12 +2745,18 @@ def _openproject_whole_sets(names: "set[str]", op_tools: "dict[str, dict[str, li
         tool = tool_of(suffix)
         return bool(tool) and param in _tool_param_names(tool)
 
-    can = [text for suffix, param, text in _OPENPROJECT_SET_CAPABILITIES if has(suffix, param)]
+    can = [text for suffix, param, text, unless in _OPENPROJECT_SET_CAPABILITIES
+           if has(suffix, param) and not (unless and has(suffix, unless))]
     out = ""
     if can:
         out += " OpenProject covers a whole set in one call instead of one call per item: " + "; ".join(can) + "."
     if has("pm_update_work_package", "status_path"):
         out += " A refused status change answers with `retry`: pass it unchanged as the next call's arguments."
+    if has("pm_update_work_package", "project") and has("pm_update_work_package", "dry_run"):
+        # A move changes many tickets at once: the user confirms the preview.
+        out += (" Moving work packages to another project (`project` in the update) answers with a preview first:"
+                " show it and apply with `dry_run=false` only after the user confirms; pass a returned `continue`"
+                " unchanged as the next call's arguments.")
     if tool_of("pm_link_status"):
         out += (" Call `pm_link_status` only after a tool answered `action_required` or when the user asks"
                 " which account is linked — never as a check before other calls.")

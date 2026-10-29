@@ -437,6 +437,25 @@ def _successor_entry(catalog: List["CatalogEntry"], entry: "CatalogEntry") -> Op
     return None
 
 
+def _match_belongs_to_sibling(catalog: List["CatalogEntry"], entry: "CatalogEntry", query_tokens: "set[str]") -> bool:
+    """Did a deprecated tool match only through a live sibling's name?
+
+    ``pm_create_work_package_relation`` (deprecated, use
+    ``pm_update_work_package``) contains ``pm_create_work_package``: "create a
+    work package" matches it by the sibling's words, and handing that match
+    to the successor would rank the update above the create (AIS-775). The
+    hand-over stays when the query also names what only the deprecated tool
+    adds ("create a relation")."""
+    for other in catalog:
+        if other is entry or other.source_name != entry.source_name or other.kind != "tool":
+            continue
+        if _is_deprecated(other.description) or not other._name_tokens < entry._name_tokens:
+            continue
+        if not (entry._name_tokens - other._name_tokens) & query_tokens:
+            return True
+    return False
+
+
 def _mcp_name_group(name: str) -> str:
     """``mcp_<Server>_<tool>`` → ``mcp_<server>`` (empty for native tools)."""
     parts = str(name or "").split("_")
@@ -828,6 +847,9 @@ _ACTION_VERB_SYNONYMS: Dict[str, Tuple[str, ...]] = {
     "buchen": ("create", "book", "log"),
     "kommentiere": ("add", "comment"),
     "kommentieren": ("add", "comment"),
+    # Moving work packages is an update with a target project (AIS-775).
+    "verschiebe": ("move", "update"),
+    "verschieben": ("move", "update"),
     "aktualisiere": ("update", "edit"),
     "aktualisieren": ("update", "edit"),
     "ändere": ("update", "edit"),
@@ -1455,7 +1477,7 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
 
         if deprecated:
             successor = _successor_entry(catalog, entry)
-            if successor is not None:
+            if successor is not None and not _match_belongs_to_sibling(catalog, entry, expanded_tokens):
                 inherited[successor.name] = (max(total_score, inherited.get(successor.name, (0.0, None))[0]), successor)
             total_score -= 25.0
 

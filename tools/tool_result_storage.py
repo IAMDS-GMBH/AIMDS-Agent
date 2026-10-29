@@ -283,7 +283,7 @@ def maybe_persist_tool_result(
             from tools.mcp_result_shaper import shape_tool_result
 
             content = shape_tool_result(
-                content, tool_name, tool_use_id, rows_ingested=ingest_count > 0,
+                content, tool_name, tool_use_id, rows_ingested=ingest_count > 0, tool_args=tool_args,
             )
         except Exception as exc:
             logger.debug("Result shaping failed for %s: %s", tool_use_id, exc)

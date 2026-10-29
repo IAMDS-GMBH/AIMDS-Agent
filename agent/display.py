@@ -242,10 +242,11 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
 
     key = primary_args.get(tool_name)
     if not key:
-        # The id keys (AIS-744) give MCP lookups a preview ("IAMDS-477").
+        # The id keys (AIS-744) give MCP lookups a preview ("IAMDS-477");
+        # ``ids`` names several at once (go-mcp-openproject 0.7.0, AIS-775).
         for fallback_key in (
             "query", "text", "command", "path", "name", "prompt", "code", "goal",
-            "work_package_id", "id", "key",
+            "work_package_id", "id", "ids", "key",
         ):
             if fallback_key in args:
                 key = fallback_key
@@ -255,7 +256,11 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         return None
 
     value = args[key]
-    if isinstance(value, list):
+    if key == "ids" and isinstance(value, list) and len(value) > 2:
+        value = f"{value[0]}, {value[1]} (+{len(value) - 2})"
+    elif key == "ids" and isinstance(value, list):
+        value = ", ".join(str(v) for v in value)
+    elif isinstance(value, list):
         value = value[0] if value else ""
 
     preview = _oneline(str(value))

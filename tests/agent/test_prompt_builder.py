@@ -2086,9 +2086,16 @@ class TestTicketSystemsLine:
 
     def test_suite_only(self):
         from agent.prompt_builder import build_ticket_routing_guidance as g
-        text = g({f"{self.SUITE}search_work_packages", f"{self.SUITE}comment_work_package"})
-        assert text.startswith(f"# Ticket systems in this session: OpenProject via the AIMDS Suite (`{self.SUITE}search_work_packages`).")
+        text = g({f"{self.SUITE}list_work_packages", f"{self.SUITE}update_work_package"})
+        assert text.startswith(f"# Ticket systems in this session: OpenProject via the AIMDS Suite (`{self.SUITE}list_work_packages`).")
         assert "local server" not in text
+
+    def test_deprecated_search_is_never_the_entry_tool(self):
+        """AIS-775: pm_search_work_packages is a deprecated alias of
+        pm_list_work_packages(query); the guidance never recommends it."""
+        from agent.prompt_builder import build_ticket_routing_guidance as g
+        text = g({f"{self.SUITE}search_work_packages", f"{self.SUITE}list_work_packages", f"{self.SUITE}update_work_package"})
+        assert "search_work_packages" not in text
 
     def test_routing_block_comes_first(self):
         from agent.prompt_builder import build_ticket_routing_guidance as g
@@ -2165,6 +2172,42 @@ class TestOpenProjectWholeSets:
         assert "group_by" not in g(both)
         assert "group_by" in g(self._names("mcp_op_pm_"))
         assert "pm_link_status" not in g({f"{self.SUITE}list_work_packages"})
+
+    # go-mcp-openproject 0.7.0 (Suite AIS-771): get ids/include, update
+    # comment/relations/move, create add_relations.
+    V070 = {
+        "pm_list_time_entries": {"group_by", "spent_on_from", "spent_on_to"},
+        "pm_list_work_packages": {"query", "assignee"},
+        "pm_get_work_package": {"id", "ids", "include", "limit", "text_limit"},
+        "pm_update_work_package": {"id", "ids", "status", "status_path", "comment", "notify", "add_relations",
+                                   "remove_relations", "project", "include_descendants", "type_map", "dry_run"},
+        "pm_create_work_package": {"project", "relates_to", "add_relations"},
+    }
+
+    def test_suite_070_teaches_the_call_saving_arguments(self, monkeypatch):
+        """AIS-775: the 0.7.0 arguments are named once the schema has them."""
+        from agent.prompt_builder import build_ticket_routing_guidance as g
+        self._params(monkeypatch, self.V070)
+        text = g(self._names(self.SUITE) | {f"{self.SUITE}get_work_package"})
+        assert ("several work packages through one `pm_get_work_package` with `ids`; their comment log and relations "
+                "through `include` on that get; the same change for several work packages through `ids`; a comment on "
+                "the change through `comment` in the same update; relations through `add_relations`/`remove_relations` "
+                "in the update or create.") in text
+        assert "relates_to" not in text  # add_relations covers it
+        assert ("Moving work packages to another project (`project` in the update) answers with a preview first: show "
+                "it and apply with `dry_run=false` only after the user confirms; pass a returned `continue` unchanged "
+                "as the next call's arguments.") in text
+        assert "search_work_packages" not in text
+
+    def test_suite_06x_on_prod_is_not_told_about_070_arguments(self, monkeypatch):
+        """Prod may still run go-mcp-openproject 0.6.x when a release ships:
+        include/comment/add_relations/moves appear only with the schema."""
+        from agent.prompt_builder import build_ticket_routing_guidance as g
+        self._params(monkeypatch, dict(self.V060, pm_get_work_package={"id", "text_limit"}))
+        text = g(self._names(self.SUITE) | {f"{self.SUITE}get_work_package"})
+        for word in ("`include`", "`comment`", "add_relations", "dry_run", "continue", "pm_get_work_package` with `ids`"):
+            assert word not in text, word
+        assert "relations of a new work package through `relates_to`" in text
 
 
 class TestBuildMcpStatusPrompt:

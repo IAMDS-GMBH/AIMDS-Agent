@@ -57,6 +57,12 @@ class TestBuildToolPreview:
         assert result is not None
         assert "test query" in result
 
+    def test_ids_preview_names_the_first_keys(self):
+        """AIS-775: pm_get/update_work_package(ids=…) show which tickets."""
+        name = "mcp_AIMDSSuiteMCP_mcp_openproject_pm_get_work_package"
+        assert build_tool_preview(name, {"ids": ["AIS-1", "AIS-2"]}) == "AIS-1, AIS-2"
+        assert build_tool_preview(name, {"ids": ["AIS-1", "AIS-2", "AIS-3", "AIS-4"]}) == "AIS-1, AIS-2 (+2)"
+
     def test_unknown_tool_no_matching_key(self):
         """Unknown tool with no recognized keys should return None."""
         result = build_tool_preview("custom_tool", {"foo": "bar"})
