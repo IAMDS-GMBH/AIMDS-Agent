@@ -603,7 +603,7 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
       <ReportIssueDialog
         contextType="install_error"
         defaultCategory="installation_update"
-        defaultSummary={`Installationsfehler: ${state.error || 'Unbekannt'}`}
+        defaultSummary={copy.reportSummary(state.error)}
         installType="fresh_install"
         onOpenChange={setReportOpen}
         open={reportOpen}

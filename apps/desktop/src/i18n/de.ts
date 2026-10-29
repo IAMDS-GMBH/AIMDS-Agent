@@ -1,4 +1,5 @@
 import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
+import { PRODUCT_DISPLAY_NAME } from '@/lib/product'
 
 import type { Translations } from './types'
 
@@ -193,11 +194,11 @@ export const de
     backendOutOfDateTitle: 'Backend veraltet',
     backendOutOfDateMessage:
       'Dein Hermes-Backend ist älter als dieser Desktop-Build und funktioniert möglicherweise nicht korrekt. Aktualisiere, um beide zu synchronisieren.',
-    updateHermes: 'Hermes aktualisieren',
+    updateHermes: `${PRODUCT_DISPLAY_NAME} aktualisieren`,
     updateReadyTitle: 'Update bereit',
     updateReadyMessage: count => `${count} neue Änderung${count === 1 ? '' : 'en'} verfügbar.`,
-    updateVersionMessage: (target, current) => `Hermes ${target} ist verfügbar – du nutzt ${current}.`,
-    updateOutdatedTitle: 'Hermes ist veraltet',
+    updateVersionMessage: (target, current) => `${PRODUCT_DISPLAY_NAME} ${target} ist verfügbar – du nutzt ${current}.`,
+    updateOutdatedTitle: `${PRODUCT_DISPLAY_NAME} ist veraltet`,
     updateOutdatedMessage: (target, current) =>
       `Du nutzt ${current}, aktuell ist ${target}. Bitte installiere das Update – neuere Versionen beheben bekannte Fehler.`,
     seeWhatsNew: 'Neuigkeiten ansehen',
@@ -462,7 +463,7 @@ export const de
       cantReach: 'Der Update-Server konnte nicht erreicht werden.',
       tapCheck: '"Jetzt prüfen" antippen, um nach Updates zu suchen.',
       updateReady: count => `Ein neues Update ist bereit (${count} Änderung${count === 1 ? '' : 'en'} enthalten).`,
-      updateReadyVersion: (target, current) => `Hermes ${target} ist verfügbar (installiert: ${current}).`,
+      updateReadyVersion: (target, current) => `${PRODUCT_DISPLAY_NAME} ${target} ist verfügbar (installiert: ${current}).`,
       lastChecked: age => `Zuletzt geprüft ${age}`,
       justNowSuffix: ' · gerade eben',
       automaticUpdates: 'Automatische Updates',
@@ -1477,7 +1478,7 @@ export const de
       fetch: 'Wird heruntergeladen…',
       pull: 'Fast fertig…',
       pydeps: 'Schließe ab…',
-      restart: 'Hermes wird neu gestartet…',
+      restart: `${PRODUCT_DISPLAY_NAME} wird neu gestartet…`,
       manual: 'Update über Terminal durchführen',
       error: 'Update pausiert'
     },
@@ -1485,7 +1486,7 @@ export const de
     checkFailedTitle: 'Updates konnten nicht geprüft werden',
     tryAgain: 'Erneut versuchen',
     notAvailableTitle: 'Update nicht verfügbar',
-    unsupportedMessage: 'Diese Version von Hermes kann sich nicht innerhalb der App aktualisieren.',
+    unsupportedMessage: `Diese Version von ${PRODUCT_DISPLAY_NAME} kann sich nicht innerhalb der App aktualisieren.`,
     connectionRetry: 'Verbindung prüfen und erneut versuchen.',
     latestBody: 'Du verwendest die neueste Version.',
     latestBodyBackend: 'Das Backend verwendet die neueste Version.',
@@ -1493,7 +1494,7 @@ export const de
     availableTitle: 'Neues Update verfügbar',
     availableBody: 'Eine neue Version ist zur Installation bereit.',
     availableTitleBackend: 'Backend-Update verfügbar',
-    availableBodyBackend: 'Eine neuere Version des verbundenen Hermes-Backends ist zur Installation bereit.',
+    availableBodyBackend: 'Eine neuere Version des verbundenen Backends ist zur Installation bereit.',
     availableBodyNoChangelog: 'Eine neuere Version ist bereit. Versionshinweise sind für diesen Installationstyp nicht verfügbar.',
     updateNow: 'Jetzt aktualisieren',
     maybeLater: 'Vielleicht später',
@@ -1510,19 +1511,27 @@ export const de
     devBuild: 'Entwicklungsstand',
     changeCount: count => `+${count} ${count === 1 ? 'Änderung' : 'Änderungen'}`,
     manualTitle: 'Update über Terminal durchführen',
-    manualBody: 'Hermes wurde über die Befehlszeile installiert, daher laufen Updates dort ebenfalls. In das Terminal einfügen:',
-    manualPickedUp: 'Hermes nimmt die neue Version beim nächsten Start auf.',
+    manualBody: `${PRODUCT_DISPLAY_NAME} wurde über die Befehlszeile installiert, daher laufen Updates dort ebenfalls. In das Terminal einfügen:`,
+    manualPickedUp: `${PRODUCT_DISPLAY_NAME} nimmt die neue Version beim nächsten Start auf.`,
     copy: 'Kopieren',
     copied: 'Kopiert',
     done: 'Fertig',
-    applyingBody: 'Das Hermes-Update-Programm übernimmt in einem eigenen Fenster und öffnet Hermes nach Abschluss erneut.',
-    applyingBodyBackend: 'Das Remote-Backend wendet das Update an und startet neu. Hermes verbindet sich automatisch wieder.',
-    applyingClose: 'Hermes wird zum Installieren des Updates geschlossen.',
+    applyingBody: `Das Update-Programm von ${PRODUCT_DISPLAY_NAME} übernimmt in einem eigenen Fenster und öffnet ${PRODUCT_DISPLAY_NAME} nach Abschluss erneut.`,
+    applyingBodyBackend: `Das Remote-Backend wendet das Update an und startet neu. ${PRODUCT_DISPLAY_NAME} verbindet sich automatisch wieder.`,
+    applyingClose: `${PRODUCT_DISPLAY_NAME} wird zum Installieren des Updates geschlossen.`,
     errorTitle: 'Update nicht abgeschlossen',
     errorBody: 'Keine Sorge — nichts ging verloren. Du kannst es jetzt erneut versuchen.',
     offlineTitle: 'Keine Internetverbindung',
     offlineBody: 'Es wurde nichts verändert. Ich versuche das Update automatisch erneut, sobald du wieder online bist.',
     notNow: 'Nicht jetzt',
+    reportSummary: {
+      generic: 'Problem beim Update',
+      checkFailed: 'Update-Prüfung fehlgeschlagen',
+      checkUnreachable: 'Update-Prüfung erreicht den Server nicht',
+      stuck: 'Update hängt oder wurde abgebrochen',
+      manualFailed: 'Manuelles Update fehlgeschlagen',
+      failed: message => `Update fehlgeschlagen: ${message || 'unbekannter Fehler'}`
+    },
     applyStatus: {
       preparing: 'Backend wird aktualisiert…',
       pulling: 'Backend aktualisiert sich…',
@@ -1541,7 +1550,7 @@ export const de
       skipped: 'Übersprungen',
       failed: 'Fehlgeschlagen'
     },
-    oneTimeTitle: 'Hermes benötigt eine einmalige Installation',
+    oneTimeTitle: `${PRODUCT_DISPLAY_NAME} benötigt eine einmalige Installation`,
     unsupportedDesc: platform =>
       `Automatische Erststart-Installation ist auf ${platform} noch nicht verfügbar. Terminal öffnen, den folgenden Befehl ausführen und dann die App neu starten. Folgestarts überspringen diesen Schritt.`,
     installCommand: 'Installationsbefehl',
@@ -1550,12 +1559,12 @@ export const de
     installTo: 'Wird installiert in',
     retryAfterRun: 'Ausgeführt — erneut versuchen',
     failedTitle: 'Installation fehlgeschlagen',
-    settingUpTitle: 'Hermes Agent wird eingerichtet',
+    settingUpTitle: `${PRODUCT_DISPLAY_NAME} wird eingerichtet`,
     finishingTitle: 'Schließe ab',
     failedDesc:
-      'Einer der Installationsschritte ist fehlgeschlagen. Unter Windows kann dies passieren, wenn eine andere Hermes-CLI oder Desktop-Instanz läuft. Alle laufenden Hermes-Instanzen stoppen und dann erneut versuchen. Details unten oder im Desktop-Protokoll prüfen.',
+      `Einer der Installationsschritte ist fehlgeschlagen. Unter Windows kann dies passieren, wenn ${PRODUCT_DISPLAY_NAME} noch in einem anderen Fenster läuft. Alle Fenster von ${PRODUCT_DISPLAY_NAME} schließen und dann erneut versuchen. Details unten oder im Desktop-Protokoll prüfen.`,
     activeDesc:
-      'Dies ist eine einmalige Einrichtung. Der Hermes-Installer lädt Abhängigkeiten herunter und konfiguriert dein System. Folgestarts überspringen diesen Schritt.',
+      `Dies ist eine einmalige Einrichtung. Der Installer von ${PRODUCT_DISPLAY_NAME} lädt Abhängigkeiten herunter und konfiguriert dein System. Folgestarts überspringen diesen Schritt.`,
     progress: (completed, total) => `${completed} von ${total} Schritten abgeschlossen`,
     currentStage: stage => ` — aktuell: ${stage}`,
     fetchingManifest: 'Installer-Manifest wird abgerufen...',
@@ -1569,14 +1578,15 @@ export const de
     transcriptSaved: 'Vollständiges Transkript gespeichert in',
     copiedOutput: 'Kopiert!',
     copyOutput: 'Ausgabe kopieren',
-    reloadRetry: 'Neu laden und erneut versuchen'
+    reloadRetry: 'Neu laden und erneut versuchen',
+    reportSummary: error => `Installation fehlgeschlagen: ${error || 'unbekannter Fehler'}`
   },
 
   onboarding: {
-    headerTitle: 'Lass uns Hermes Agent für dich einrichten',
+    headerTitle: `Lass uns ${PRODUCT_DISPLAY_NAME} für dich einrichten`,
     headerDesc: 'Einen Modellanbieter verbinden, um loszulegen. Die meisten Optionen benötigen nur einen Klick.',
-    preparingInstall: 'Hermes schließt die Installation ab. Dies dauert beim ersten Start normalerweise unter einer Minute.',
-    starting: 'Hermes wird gestartet…',
+    preparingInstall: `${PRODUCT_DISPLAY_NAME} schließt die Installation ab. Dies dauert beim ersten Start normalerweise unter einer Minute.`,
+    starting: `${PRODUCT_DISPLAY_NAME} wird gestartet…`,
     lookingUpProviders: 'Anbieter werden gesucht...',
     collapse: 'Einklappen',
     otherProviders: 'Andere Anbieter',
@@ -1724,7 +1734,7 @@ export const de
       releaseAvailable: tag => `Release ${tag} verfügbar`,
       aheadOfRelease: (count, tag) => `Entwicklungsstand: ${count} Commit${count === 1 ? '' : 's'} vor ${tag}`,
       newerRelease: (headTag, targetTag, channel) => `${headTag} ist neuer als das ${channel}-Release ${targetTag}`,
-      desktopVersion: version => `Hermes Desktop v${version}`,
+      desktopVersion: version => `${PRODUCT_DISPLAY_NAME} v${version}`,
       backendVersion: version => `Backend v${version}`,
       clientLabel: version => `Client v${version}`,
       backendLabel: version => `Backend v${version}`,

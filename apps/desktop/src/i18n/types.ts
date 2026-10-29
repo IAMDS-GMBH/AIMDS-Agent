@@ -1287,6 +1287,15 @@ export interface Translations {
     offlineTitle: string
     offlineBody: string
     notNow: string
+    /** Pre-filled summaries of a problem report from the update dialog (AIS-755). */
+    reportSummary: {
+      generic: string
+      checkFailed: string
+      checkUnreachable: string
+      stuck: string
+      manualFailed: string
+      failed: (message?: null | string) => string
+    }
     applyStatus: {
       preparing: string
       pulling: string
@@ -1325,6 +1334,8 @@ export interface Translations {
     copiedOutput: string
     copyOutput: string
     reloadRetry: string
+    /** Pre-filled summary of a problem report from the install screen (AIS-755). */
+    reportSummary: (error?: null | string) => string
   }
 
   onboarding: {

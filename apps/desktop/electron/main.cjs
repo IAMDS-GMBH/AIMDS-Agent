@@ -186,6 +186,10 @@ try {
 // at ready, and the Windows AppUserModelID (taskbar pins, notifications)
 // defaults to electron.app.<name>.
 const INTERNAL_APP_NAME = 'Hermes'
+// AIS-755: the visible product name in main-process texts the user reads
+// (update progress). Mirrors src/lib/product.ts; src/lib/product.test.ts pins
+// both copies to the same literal.
+const PRODUCT_DISPLAY_NAME = 'AIMDS Suite Agent'
 const USER_DATA_OVERRIDE = process.env.HERMES_DESKTOP_USER_DATA_DIR
 if (USER_DATA_OVERRIDE) {
   const resolvedUserData = path.resolve(USER_DATA_OVERRIDE)
@@ -2550,7 +2554,7 @@ async function applyUpdates(opts = {}) {
       return { ok: true, manual: true, command, hermesRoot: updateRoot }
     }
 
-    emitUpdateProgress({ stage: 'restart', message: 'Handing off to the Hermes updater…', percent: 100 })
+    emitUpdateProgress({ stage: 'restart', message: `Handing off to the ${PRODUCT_DISPLAY_NAME} updater…`, percent: 100 })
 
     // AIS-331 / SUP-20260914-105316: everything from here to the spawn used to
     // run without a catch. A throw landed in the IPC handler's `.catch` as
@@ -2748,7 +2752,7 @@ async function applyUpdatesPosixInApp() {
     // best effort
   }
 
-  emitUpdateProgress({ stage: 'update', message: 'Updating Hermes (git + dependencies)…', percent: 10 })
+  emitUpdateProgress({ stage: 'update', message: `Updating ${PRODUCT_DISPLAY_NAME} (git + dependencies)…`, percent: 10 })
   const updated = await runStreamedUpdate(hermes, ['update', '--yes', ...branchArgs], {
     cwd: updateRoot,
     env,
@@ -2795,7 +2799,7 @@ async function applyUpdatesPosixInApp() {
     )
     emitUpdateProgress({
       stage: 'error',
-      message: 'Backend updated, but the desktop rebuild failed. Restart Hermes to retry.',
+      message: `Backend updated, but the desktop rebuild failed. Restart ${PRODUCT_DISPLAY_NAME} to retry.`,
       error: rebuilt.error || 'rebuild-failed'
     })
     return { ok: false, backendUpdated: true, error: 'desktop rebuild failed' }
@@ -2812,7 +2816,7 @@ async function applyUpdatesPosixInApp() {
   if (!rebuiltApp || !targetApp) {
     emitUpdateProgress({
       stage: 'done',
-      message: 'Backend updated. Restart Hermes to load the new version.',
+      message: `Backend updated. Restart ${PRODUCT_DISPLAY_NAME} to load the new version.`,
       percent: 100
     })
     return { ok: true, backendUpdated: true, rebuiltApp: rebuiltApp || null }
@@ -2831,7 +2835,7 @@ async function applyUpdatesPosixInApp() {
   } catch (err) {
     emitUpdateProgress({
       stage: 'done',
-      message: 'Backend + app updated. Restart Hermes to load the new version.',
+      message: `Backend + app updated. Restart ${PRODUCT_DISPLAY_NAME} to load the new version.`,
       percent: 100
     })
     rememberLog(`[updates] could not write swap script: ${err.message}; rebuilt app at ${rebuiltApp}`)

@@ -180,3 +180,74 @@ export function resolveUpdateNotes({
     groups
   }
 }
+
+export interface UpdateIndicatorCopy extends UpdateHeaderCopy {
+  /** "+ 3 more changes included." */
+  moreChanges: (count: number) => string
+}
+
+export interface ReleaseUpdateIndicator {
+  /** Compact target for the status-bar pill: "v0.7.14" (never the rc number). */
+  label: string
+  /** "Version 0.7.14 – preview", like the dialog header. */
+  heading: string
+  installedLine: null | string
+  /** The dialog's groups, cut to `maxItems` rows in total. */
+  groups: CommitGroup[]
+  /** "+ N more changes included." when rows were cut, else null. */
+  more: null | string
+}
+
+/**
+ * AIS-755: the status-bar version pill of a release channel says what the
+ * update dialog says — the target version and the curated notes in the UI
+ * language — instead of the branch and a commit count. Same data as the
+ * dialog (the last check's `releaseNotes`), no extra fetch. Null for the
+ * developer view (main channel) and when nothing is pending; the caller keeps
+ * its commit-count hint there.
+ */
+export function resolveReleaseUpdateIndicator({
+  copy,
+  locale,
+  maxItems = 6,
+  status
+}: {
+  copy: UpdateIndicatorCopy
+  locale: string
+  maxItems?: number
+  status: DesktopUpdateStatus | null | undefined
+}): null | ReleaseUpdateIndicator {
+  const behind = status?.behind ?? 0
+
+  if (!status || behind <= 0 || !isReleaseUpdate(status)) {
+    return null
+  }
+
+  const header = resolveUpdateHeader(status, behind, copy)
+  const target = (status.targetVersion || status.targetTag || '').trim()
+  const parsed = parseVersion(target)
+  const label = parsed ? `v${parsed.base}` : target ? `v${target.replace(/^v(?=\d)/, '')}` : header.versionLine
+  const { groups } = resolveUpdateNotes({ commits: [], locale, status })
+
+  let left = Math.max(1, maxItems)
+  let hidden = 0
+  const shown: CommitGroup[] = []
+
+  for (const group of groups) {
+    const items = group.items.slice(0, left)
+    hidden += group.items.length - items.length
+    left -= items.length
+
+    if (items.length) {
+      shown.push({ ...group, items })
+    }
+  }
+
+  return {
+    groups: shown,
+    heading: header.versionLine,
+    installedLine: header.installedLine,
+    label,
+    more: hidden > 0 ? copy.moreChanges(hidden) : null
+  }
+}
