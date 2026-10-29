@@ -32,6 +32,51 @@ describe('toolTitle for MCP tools', () => {
     )
   })
 
+  // go-mcp-openproject 0.7.0 (AIS-775): one update tool comments, relates and moves.
+  it('names an update by what its arguments do', () => {
+    const name = 'mcp_AIMDSSuiteMCP_mcp_openproject_pm_update_work_package'
+
+    expect(toolTitle(name, { id: 'AIS-711', comment: 'Released.' }, true, de)).toBe('Kommentiere Ticket in OpenProject: „AIS-711“')
+    expect(toolTitle(name, { id: 'AIS-711', comment: 'Released.' }, false, en)).toBe(
+      'Commented on ticket in OpenProject: “AIS-711”'
+    )
+    expect(toolTitle(name, { id: 'AIS-711', status: 'Closed', comment: 'Released.' }, false, de)).toBe(
+      'Ticket in OpenProject geändert und kommentiert: „AIS-711“'
+    )
+    expect(toolTitle(name, { id: 'AIS-711', add_relations: [{ to: 'AIS-729' }] }, true, de)).toBe(
+      'Verknüpfe Ticket in OpenProject: „AIS-711“'
+    )
+    expect(toolTitle(name, { id: 'AIS-711', remove_relations: ['AIS-729'] }, false, en)).toBe(
+      'Linked ticket in OpenProject: “AIS-711”'
+    )
+    expect(toolTitle(name, { id: 'AIS-711', status: 'Closed' }, false, de)).toBe('Ticket in OpenProject geändert: „AIS-711“')
+  })
+
+  it('tells a move preview from the move itself', () => {
+    const name = 'mcp_op_pm_update_work_package'
+    const preview = { id: 'AIS-700', project: 'LBBW', include_descendants: true }
+
+    expect(toolTitle(name, preview, true, de)).toBe('Plane das Verschieben von Tickets in OpenProject: „AIS-700“')
+    expect(toolTitle(name, preview, false, en)).toBe('Planned the move of tickets in OpenProject: “AIS-700”')
+    expect(toolTitle(name, { ...preview, dry_run: false, move_offset: 1 }, true, de)).toBe(
+      'Verschiebe Tickets in OpenProject: „AIS-700“'
+    )
+    expect(toolTitle(name, { id: 'AIS-701', project: 'LBBW', dry_run: false }, false, en)).toBe(
+      'Moved ticket in OpenProject: “AIS-701”'
+    )
+  })
+
+  it('shows the first keys of an ids call', () => {
+    const name = 'mcp_AIMDSSuiteMCP_mcp_openproject_pm_get_work_package'
+
+    expect(toolTitle(name, { ids: ['AIS-1', 'AIS-2', 'AIS-3'] }, false, de)).toBe(
+      'Tickets in OpenProject geöffnet: „AIS-1, AIS-2 (+1)“'
+    )
+    expect(
+      toolTitle('mcp_op_pm_update_work_package', { ids: ['AIS-1', 'AIS-2'], comment: 'x' }, true, en)
+    ).toBe('Commenting on tickets in OpenProject: “AIS-1, AIS-2”')
+  })
+
   it('uses the place object for memory tools and hides technical slugs', () => {
     const args = { slug: 'tool-mcp-aimdssuitemcp-mcp-openproject-pm-list-time-entries' }
 

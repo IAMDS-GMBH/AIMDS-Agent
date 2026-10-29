@@ -1854,7 +1854,24 @@ export interface ToolActivityStep {
 
 export interface ToolActivityCopy {
   areas: Record<string, ToolActivityPlace>
-  verbs: Record<'search' | 'list' | 'read' | 'create' | 'update' | 'delete' | 'other', ToolActivityVerb>
+  /** comment/updateComment/relate/movePreview/move: an update named by its
+   *  arguments (go-mcp-openproject 0.7.0 comments, relates and moves through
+   *  one update tool, AIS-775). */
+  verbs: Record<
+    | 'search'
+    | 'list'
+    | 'read'
+    | 'create'
+    | 'update'
+    | 'comment'
+    | 'updateComment'
+    | 'relate'
+    | 'movePreview'
+    | 'move'
+    | 'delete'
+    | 'other',
+    ToolActivityVerb
+  >
   /** Plural object nouns keyed by the normalized tool noun (work_packages, time_entries …). */
   objects: Record<string, string>
   /** Object used when a tool names none ("entries" / "Einträge"). */
