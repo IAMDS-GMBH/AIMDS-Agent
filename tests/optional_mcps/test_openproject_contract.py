@@ -77,7 +77,7 @@ def _assert_compatible(tool, prop, suite, local):
 
 def test_snapshot_has_the_27_suite_tools():
     tools = _snapshot()
-    assert len(tools) == 27  # go-mcp-openproject 0.6.1 (AIS-711)
+    assert len(tools) == 27  # go-mcp-openproject 0.7.0 (AIS-775): five of them are deprecated aliases
     assert all(name.startswith("pm_") for name in tools)
 
 
@@ -160,7 +160,8 @@ def test_project_and_work_package_parameter_descriptions_follow_the_suite(local_
             if "description" in spec and (prop == "project" or "anyOf" in spec):
                 assert local_props[prop].get("description") == spec["description"], (name, prop)
                 checked += 1
-    assert checked >= 18
+    # 0.7.0 (AIS-771) drops the description of repeated id items and aliases.
+    assert checked >= 13
 
 
 def test_manifest_enables_exactly_the_server_tools(monkeypatch):
@@ -170,3 +171,41 @@ def test_manifest_enables_exactly_the_server_tools(monkeypatch):
     names = {t.name for t in asyncio.run(_load_server(monkeypatch, write="").list_tools())}
     assert set(manifest["tools"]["default_enabled"]) == names
     assert manifest["tool_prefix"] == "op"
+
+
+DEPRECATED_ALIASES = {
+    # go-mcp-openproject 0.7.0 (AIS-771): alias -> its successor and the old
+    # optional arguments it still takes.
+    "pm_search_work_packages": ("pm_list_work_packages", {"project", "status", "limit", "select"}),
+    "pm_comment_work_package": ("pm_update_work_package", {"notify"}),
+    "pm_list_work_package_activity": ("pm_get_work_package", {"limit", "text_limit"}),
+    "pm_list_work_package_relations": ("pm_get_work_package", set()),
+    "pm_create_work_package_relation": ("pm_update_work_package", set()),
+    "pm_delete_work_package_relation": ("pm_update_work_package", {"relation_id"}),
+}
+
+
+def test_deprecated_aliases_name_their_successor_and_keep_old_arguments(local_tools, monkeypatch):
+    """AIS-775: the aliases list only their required arguments (the tool list
+    goes with every request) and still accept the old optional ones."""
+    server = _load_server(monkeypatch, write="*")
+    suite = _snapshot()
+    for name, (successor, old_args) in DEPRECATED_ALIASES.items():
+        assert local_tools[name]["description"].startswith("DEPRECATED — use " + successor), name
+        assert set(local_tools[name]["inputSchema"]["properties"]) == set(suite[name]["inputSchema"]["properties"]), name
+        schema = server.TOOLS[name][1]
+        args = {k: 1 for k in schema["properties"]} | {k: 1 for k in old_args}
+        assert server._unknown_args(name, schema, args) is None, name
+
+
+def test_unknown_arguments_are_rejected_with_the_argument_list(monkeypatch):
+    """AIS-771: a ``project`` sent to an update used to move nothing."""
+    server = _load_server(monkeypatch, write="*")
+    result = asyncio.run(server.call_tool("pm_get_work_package", {"id": "AIS-1", "projekt": "X"}))
+    text = result.content[0].text
+    assert result.isError and text.startswith("pm_get_work_package does not take projekt. Arguments: ")
+    assert "include" in text and "move_offset" not in text
+    # An argument only an answer hands back (continue) is taken, not advertised.
+    schema = server.TOOLS["pm_update_work_package"][1]
+    assert server._unknown_args("pm_update_work_package", schema, {"id": 1, "project": "X", "move_offset": 50}) is None
+    assert "move_offset" not in schema["properties"]

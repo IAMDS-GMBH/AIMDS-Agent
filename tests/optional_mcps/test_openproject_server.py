@@ -45,6 +45,14 @@ USERS = [
     {"id": 14, "name": "Johannes Huchler", "login": "jhuchler", "email": "jh@example.com"},
     {"id": 20, "name": "Tobias Hehl", "login": "thehl", "email": "th@example.com"},
 ]
+# Versions and categories of a project (AIS-762).
+VERSIONS = [{"id": 10, "name": "2.17.10"}, {"id": 11, "name": "2.17.11"}]
+CATEGORIES = [{"id": 5, "name": "Docs"}]
+LINK_TITLES = {
+    "responsible": {u["id"]: u["name"] for u in USERS},
+    "version": {v["id"]: v["name"] for v in VERSIONS},
+    "category": {c["id"]: c["name"] for c in CATEGORIES},
+}
 
 
 def _wp(wid=17699, project=107, status=(17, "In Progress"), subject="Own server", created="2026-01-01T00:00:00Z",
@@ -121,6 +129,7 @@ class FakeOpenProject:
         self.workflow = None  # {from status id: [allowed status ids]}; None = every transition allowed
         self.status_of = {}  # work package id -> status id saved by a PATCH
         self.saved_fields = {}  # work package id -> fields saved by a PATCH
+        self.saved_links = {}  # work package id -> responsible/version/category links saved by a PATCH
 
     def _status(self, wid):
         if wid in self.status_of:
@@ -149,6 +158,8 @@ class FakeOpenProject:
         size = int(query.get("pageSize") or 50)
         if (method, path) == ("GET", "projects"):
             return ok(_collection(self.projects))
+        if method == "GET" and path.startswith("projects/") and path.endswith(("/versions", "/categories")):
+            return ok(_collection(VERSIONS if path.endswith("/versions") else CATEGORIES))
         if method == "GET" and path.startswith("projects/") and path.count("/") == 1:
             ref = path.split("/", 1)[1]
             for p in self.projects + self.hidden_projects:
@@ -218,6 +229,14 @@ class FakeOpenProject:
             fields.update({k: body[k] for k in ("subject", "startDate", "dueDate", "date") if k in body})
             saved = _with_status(_wp(wid, project, subject=base["subject"], display=base["displayId"], lock=body["lockVersion"] + 1), current)
             saved.update(fields)
+            # Links set by a PATCH stay, titled like OpenProject does (AIS-762).
+            saved_links = self.saved_links.setdefault(wid, {})
+            for name, link in (body.get("_links") or {}).items():
+                if name in LINK_TITLES:
+                    href = link.get("href")
+                    title = LINK_TITLES[name].get(int(href.rsplit("/", 1)[-1])) if href else None
+                    saved_links[name] = {"href": href, "title": title} if href else {"href": None}
+            saved["_links"].update(saved_links)
             return ok(saved)
         if method == "POST" and path.endswith("/form") and path.startswith("work_packages/"):
             wid = int(path.split("/")[1])
@@ -490,6 +509,7 @@ def test_list_work_packages_resolves_filters_and_paginates(op):
     assert (call_[2]["offset"], call_[2]["pageSize"]) == ("2", "50")
     row = data["work_packages"][0]
     assert set(row) == {"key", "id", "subject", "status", "type", "priority", "project", "assignee", "responsible",
+                        "version", "category",  # go-mcp-openproject 0.6.2 (AIS-762)
                         "parent_key", "parent_id", "author", "start_date", "due_date", "created_at", "updated_at"}
     assert row["parent_id"] == 0 and row["parent_key"] == "" and row["due_date"] == "" and row["project"] == "AIMDS Suite"
     assert "groups" not in data
@@ -547,12 +567,12 @@ def test_get_work_package_with_text_limit_and_key(op):
 
 def test_get_work_package_errors(op):
     server, _ = op
-    assert fail(server, "pm_get_work_package") == "id is required"
+    assert fail(server, "pm_get_work_package") == "id (or ids) is required"
     assert fail(server, "pm_get_work_package", id="abc") == \
         'invalid arguments: "abc" is neither a work package key like "AIS-469" nor a numeric id'
     assert fail(server, "pm_get_work_package", id=1.5) == \
         'invalid arguments: work package id must be a key like "AIS-469" or a number'
-    assert fail(server, "pm_get_work_package", id=-3) == "id is required"
+    assert fail(server, "pm_get_work_package", id=-3) == "id (or ids) is required"
     assert fail(server, "pm_get_work_package", id=1).startswith("Not found in OpenProject: openproject: not found:")
 
 
@@ -1107,17 +1127,305 @@ def test_relation_pairs_are_idempotent_and_deletable(op):
     assert ok(server, "pm_delete_work_package_relation", id=17699, related_to_id=17695)["reason"] == "not_found"
     assert fail(server, "pm_delete_work_package_relation") == "relation_id, or id and related_to_id, are required"
 
+# ─── go-mcp-openproject 0.6.2 / 0.7.0 (AIS-762, AIS-771 → AIS-775) ────────────
 
-def test_move_to_another_project_and_ignored_move(op, monkeypatch):
+
+def test_get_with_ids_and_include(op):
+    """AIS-775: ids replaces a loop of gets, include the activity/relation tools."""
     server, fake = op
-    monkeypatch.setenv("OPENPROJECT_WRITE_PROJECTS", "AIS,PRO,MOAP")
-    row = ok(server, "pm_update_work_package", id=17695, project="PRO", assignee="none")
-    patch = requests(fake, "PATCH", "work_packages/17695")[-1][3]
-    assert patch["_links"]["project"] == {"href": "/api/v3/projects/46"}
-    assert patch["_links"]["assignee"] == {"href": None}
-    assert row["project"] == "Projektmanagement"
-    fake.patch_project = 109
-    assert "did not move" in fail(server, "pm_update_work_package", id=17695, project="PRO")
+    data = ok(server, "pm_get_work_package", ids=["AIS-408", 17054, "AIS-1"])
+    rows = data["work_packages"]
+    assert [r["key"] for r in rows] == ["AIS-408", "17054", "AIS-1"]
+    assert rows[0]["description"] == "A long description of the work" and rows[1]["subject"] == "EVN Ongoing"
+    assert rows[2]["error"].startswith("Not found in OpenProject")  # one missing key does not fail the rest
+    row = ok(server, "pm_get_work_package", id="AIS-408", include=["activity", "relations"], limit=1, text_limit=4)
+    assert row["activity"] == [{"id": 3, "user": "Former Colleague", "created_at": "2026-01-03T00:00:00Z", "comment": "thir",
+                                "comment_truncated": True}]
+    assert row["relations"][0]["id"] == 5 and row["description"] == "A lo"
+    # include answers exactly what the deprecated tools answer.
+    assert ok(server, "pm_get_work_package", id=17699, include=["activity"])["activity"] == \
+        ok(server, "pm_list_work_package_activity", id=17699)["activity"]
+    assert ok(server, "pm_get_work_package", id=17699, include=["relations"])["relations"] == \
+        ok(server, "pm_list_work_package_relations", id=17699)["relations"]
+    assert fail(server, "pm_get_work_package", id=1, ids=[2]) == "pass either id or ids, not both"
+    assert fail(server, "pm_get_work_package", ids=list(range(1, 27))) == "ids has 26 entries; at most 25 per call"
+    assert fail(server, "pm_get_work_package", id=1, include=["history"]) == \
+        'include "history" is unknown; use "activity" and/or "relations"'
+
+
+def test_update_comments_and_relates_without_a_field_change(op):
+    server, fake = op
+    row = ok(server, "pm_update_work_package", id="AIS-408", comment="done", notify=True,
+             add_relations=[{"to": 17054, "type": "follows"}], remove_relations=["17054"])
+    assert row["commented"] is True and row["key"] == "AIS-408" and row["id"] == 17699
+    assert [r.get("type") for r in row["relations"]] == ["follows", "blocks"] and row["relations"][1]["deleted"] is True
+    assert not requests(fake, "PATCH", "work_packages/17699")  # nothing but comment and relations is written
+    assert requests(fake, "POST", "work_packages/17699/relations")[-1][3] == {
+        "type": "follows", "_links": {"to": {"href": "/api/v3/work_packages/17054"}}}
+    comment = requests(fake, "POST", "work_packages/17699/activities")[-1]
+    assert comment[2] == {"notify": "true"} and comment[3] == {"comment": {"raw": "done"}}
+    assert fail(server, "pm_update_work_package", id=17699) == \
+        "nothing to update: pass a field, comment, add_relations/remove_relations or project"
+
+
+def test_update_saves_the_fields_before_comment_and_relations(op):
+    server, fake = op
+    row = ok(server, "pm_update_work_package", id=17699, subject="New", comment="renamed",
+             add_relations=[{"to": "AIS-408", "type": "nonsense"}, {"to": 17054}])
+    writes = [c[:2] for c in fake.calls if c[0] in ("PATCH", "POST") and "form" not in c[1]]
+    assert writes == [("PATCH", "work_packages/17699"), ("POST", "work_packages/17699/relations"),
+                      ("POST", "work_packages/17699/activities")]
+    assert row["commented"] is True and row["subject"] == "New"
+    assert row["relations"][0] == {"to": "AIS-408", "type": "nonsense",
+                                   "error": f"Unknown relation_type 'nonsense'. Allowed: {', '.join(server._RELATION_TYPES)}."}
+    assert row["relations"][1]["type"] == "relates"  # the default type
+    fake.errors[("POST", "work_packages/17699/activities")] = (403, {"message": "no permission"})
+    row = ok(server, "pm_update_work_package", id=17699, subject="Again", comment="x")
+    assert "commented" not in row and row["warnings"][0].startswith("comment not added: OpenProject denied permission")
+
+
+def test_bulk_update_comments_every_work_package(op):
+    server, fake = op
+    data = ok(server, "pm_update_work_package", ids=["AIS-408", 17054], comment="Released.")
+    assert data["updated"] == 2 and all(r["commented"] is True for r in data["results"])
+    assert len(requests(fake, "POST", "work_packages/17699/activities")) == 1
+    assert len(requests(fake, "POST", "work_packages/17054/activities")) == 1
+
+
+def test_refused_status_walk_repeats_comment_and_relations_in_retry(op):
+    server, fake = op
+    fake.workflow = {17: [18], 18: [12]}
+    data = ok(server, "pm_update_work_package", id=17699, status="Done", comment="shipped", notify=True,
+              add_relations=[{"to": 17054}], remove_relations=[17695], priority="High")
+    assert data["updated"] is False
+    assert data["retry"] == {"id": "AIS-408", "status_path": ["In Review", "Done"], "comment": "shipped", "notify": True,
+                             "add_relations": [{"to": 17054}], "remove_relations": [17695], "priority": "High"}
+    assert not requests(fake, "POST", "work_packages/17699/activities")  # the comment waits for the walk
+
+
+def test_create_adds_relations_of_any_type(op):
+    server, fake = op
+    row = ok(server, "pm_create_work_package", project="AIS", type="Task", subject="Child",
+             relates_to=["AIS-408"], add_relations=[{"to": 17054, "type": "precedes"}])
+    assert row["relations"][0] == {"to": "AIS-408", "id": 6}
+    assert row["relations"][1]["type"] == "precedes" and row["relations"][1]["to_id"] == 17054
+    assert fail(server, "pm_create_work_package", project="AIS", type="Task", subject="x", add_relations=[{"type": "blocks"}]) == \
+        "every add_relations entry needs to (a work package key or id)"
+    assert not requests(fake, "POST", "projects/107/work_packages")[1:]  # the malformed call created nothing
+
+
+def test_responsible_version_and_category(op):
+    """go-mcp-openproject 0.6.2 (AIS-762): by name, unique part or id within
+    the work package's project; "none" clears on update."""
+    server, fake = op
+    ok(server, "pm_create_work_package", project="AIS", type="Task", subject="Goal", responsible="thehl",
+       version="2.17.11", category="docs")
+    links = requests(fake, "POST", "projects/107/work_packages")[-1][3]["_links"]
+    assert links["responsible"] == {"href": "/api/v3/users/20"}
+    assert links["version"] == {"href": "/api/v3/versions/11"} and links["category"] == {"href": "/api/v3/categories/5"}
+    row = ok(server, "pm_update_work_package", id=17699, responsible="me", version="none", category="Docs")
+    patch = requests(fake, "PATCH", "work_packages/17699")[-1][3]["_links"]
+    assert patch == {"responsible": {"href": "/api/v3/users/14"}, "version": {"href": None},
+                     "category": {"href": "/api/v3/categories/5"}}
+    assert "warnings" not in row and row["version"] == "" and row["category"] == "Docs"
+    assert fail(server, "pm_update_work_package", id=17699, version="3.0") == \
+        'Unknown version "3.0" in this project. Allowed: 2.17.10, 2.17.11.'
+    assert fail(server, "pm_update_work_package", id=17699, version="2.17") == \
+        'OpenProject version "2.17" is ambiguous: 2.17.10, 2.17.11.'
+
+
+def test_unknown_arguments_are_rejected_before_any_request(op):
+    server, fake = op
+    assert fail(server, "pm_update_work_package", id=17699, projekt="PRO").startswith(
+        "pm_update_work_package does not take projekt. Arguments: add_relations, assignee,")
+    assert not fake.calls
+    # The aliases keep their old optional arguments.
+    ok(server, "pm_comment_work_package", id=17699, comment="x", notify=False)
+    ok(server, "pm_search_work_packages", query="Own", project="AIS", limit=5)
+
+
+# A subtree like the Suite's move fixture (consolidate_test.go): epic AIS-700
+# in AIS (107) with children; PRO (46) enables Task, Epic and Milestone and
+# shares version 2.17.11.
+#
+#   AIS-700 Epic, category Docs, version 2.17.10 (not shared with PRO)
+#   ├─ AIS-701 Task, version 2.17.11 (shared)
+#   │  └─ AIS-703 Task
+#   ├─ AIS-702 Wochenziel (not enabled in PRO)
+#   └─ AIS-704 Task, already in PRO
+
+
+def _tree_wp(wid, type_id, type_name, project, parent=0, **links):
+    wp = _wp(wid, project, (15, "Backlog"), f"WP {wid}", display=f"AIS-{wid + 400}", lock=1)
+    wp["_links"]["type"] = {"href": f"/api/v3/types/{type_id}", "title": type_name}
+    wp["_links"]["category"] = {"href": None}
+    wp["_links"]["version"] = {"href": None}
+    if parent:
+        wp["_links"]["parent"] = {"href": f"/api/v3/work_packages/{parent}", "title": ""}
+    wp["_links"].update(links)
+    return wp
+
+
+class MoveFake(FakeOpenProject):
+    """FakeOpenProject plus a work package tree, project types/versions/
+    categories and PATCHes that keep the links they set."""
+
+    def __init__(self):
+        super().__init__()
+        self.tree = {wp["id"]: wp for wp in (
+            _tree_wp(300, 3, "Epic", 107, category={"href": "/api/v3/categories/5", "title": "Docs"},
+                     version={"href": "/api/v3/versions/10", "title": "2.17.10"}),
+            _tree_wp(301, 1, "Task", 107, 300, version={"href": "/api/v3/versions/11", "title": "2.17.11"}),
+            _tree_wp(302, 4, "Wochenziel", 107, 300),
+            _tree_wp(303, 1, "Task", 107, 301),
+            _tree_wp(304, 1, "Task", 46, 300),
+        )}
+        self.fail_status = set()  # work package ids whose PATCH the target workflow refuses
+        self.keep_project = set()  # work package ids OpenProject saves without moving them
+
+    def __call__(self, request):
+        url = urlparse(str(request.url))
+        path = url.path.split("/api/v3/", 1)[-1]
+        query = {k: v[0] for k, v in parse_qs(url.query).items()}
+        method = request.method
+        body = json.loads(request.content) if request.content else None
+        by_key = {wp["displayId"]: wp for wp in self.tree.values()}
+        if (method, path) in self.errors:
+            return super().__call__(request)
+        if (method, path) == ("GET", "projects/46/types"):
+            return self._log(request, _collection([{"id": 1, "name": "Task"}, {"id": 3, "name": "Epic"}, {"id": 6, "name": "Milestone"}]))
+        if (method, path) == ("GET", "projects/46/versions"):
+            return self._log(request, _collection([{"id": 11, "name": "2.17.11"}]))
+        if (method, path) == ("GET", "projects/46/categories"):
+            return self._log(request, _collection([{"id": 8, "name": "PRO-Docs"}]))
+        if (method, path) == ("GET", "work_packages") and "parent" in query.get("filters", ""):
+            filters = json.loads(query["filters"])
+            parent = next(f["parent"]["values"][0] for f in filters if "parent" in f)
+            assert {"status": {"operator": "*", "values": []}} in filters  # every status
+            children = sorted((wp for wp in self.tree.values()
+                               if wp["_links"]["parent"].get("href") == f"/api/v3/work_packages/{parent}"), key=lambda w: w["id"])
+            offset, size = int(query.get("offset") or 1), int(query.get("pageSize") or 50)
+            return self._log(request, _collection(children[(offset - 1) * size: offset * size], offset, size, len(children)))
+        if method in ("GET", "PATCH") and path.startswith("work_packages/") and path.count("/") == 1:
+            ref = path.split("/", 1)[1]
+            wp = self.tree.get(int(ref)) if ref.isdigit() else by_key.get(ref)
+            if wp is not None:
+                if method == "PATCH":
+                    if wp["id"] in self.fail_status:
+                        return self._log(request, {"_type": "Error", "message": "Status is invalid.",
+                                                   "_embedded": {"details": {"attribute": "status"}}}, 422)
+                    links = dict(body.get("_links") or {})
+                    if wp["id"] in self.keep_project:
+                        links.pop("project", None)
+                    wp["_links"].update(links)
+                    wp["lockVersion"] += 1
+                return self._log(request, wp)
+        return super().__call__(request)
+
+    def _log(self, request, payload, status=200):
+        url = urlparse(str(request.url))
+        body = json.loads(request.content) if request.content else None
+        self.calls.append((request.method, url.path.split("/api/v3/", 1)[-1],
+                           {k: v[0] for k, v in parse_qs(url.query).items()}, body))
+        return httpx.Response(status, json=payload)
+
+    def project_of(self, wid):
+        return int(self.tree[wid]["_links"]["project"]["href"].rsplit("/", 1)[-1])
+
+
+@pytest.fixture
+def move(monkeypatch):
+    server = _load(monkeypatch)
+    fake = MoveFake()
+    client = httpx.Client(transport=httpx.MockTransport(fake), base_url="https://op.example.com/api/v3/")
+    monkeypatch.setattr(server, "_http", lambda: client)
+    monkeypatch.setattr(server.time, "sleep", lambda _s: None)
+    return server, fake
+
+
+def test_move_preview_names_conflicts_and_patches_nothing(move):
+    server, fake = move
+    out = ok(server, "pm_update_work_package", id="AIS-700", project="PRO", include_descendants=True)
+    assert not requests(fake, "PATCH", "work_packages/300") and not [c for c in fake.calls if c[0] == "PATCH"]
+    assert (out["dry_run"], out["ready"], out["to_move"], out["skipped"]) == (True, False, 4, 1)
+    assert out["keys"] == ["AIS-700", "AIS-701", "AIS-702", "AIS-703"]  # top-down: epic first, grandchild last
+    assert out["conflicts"] == [{"type": "Wochenziel", "count": 1, "allowed": ["Task", "Epic", "Milestone"]}]
+    assert out["clears"] == {"category": 1, "version": 1}  # the epic's; the shared 2.17.11 stays
+    assert out["by_type"] == {"Epic": 1, "Task": 2, "Wochenziel": 1} and out["project"] == "Projektmanagement"
+    assert out["next_step"].startswith("Ask the user which type")
+    child = ok(server, "pm_update_work_package", id="AIS-701", project="PRO")
+    assert child["parent_kept"] == ["AIS-701"] and "parent_note" in child and child["ready"] is True
+
+
+def test_move_apply_refuses_open_conflicts(move):
+    server, fake = move
+    text = fail(server, "pm_update_work_package", id="AIS-700", project="PRO", include_descendants=True, dry_run=False)
+    assert text.startswith('Not moved: type "Wochenziel" (1×) is not enabled. Map them with type_map')
+    assert not [c for c in fake.calls if c[0] == "PATCH"]
+
+
+def test_move_apply_top_down_with_type_map_and_clears(move):
+    server, fake = move
+    fake.fail_status = {303}
+    out = ok(server, "pm_update_work_package", id="AIS-700", project="PRO", include_descendants=True,
+             type_map={"wochenziel": "milestone"}, dry_run=False)
+    assert (out["moved"], out["failed"], out["skipped"]) == (3, 1, 1) and "continue" not in out
+    patches = [c for c in fake.calls if c[0] == "PATCH"]
+    assert [c[1] for c in patches] == ["work_packages/300", "work_packages/301", "work_packages/302", "work_packages/303"]
+    assert patches[0][3]["_links"] == {"project": {"href": "/api/v3/projects/46"}, "category": {"href": None},
+                                       "version": {"href": None}}
+    assert "version" not in patches[1][3]["_links"]  # the shared 2.17.11 stays
+    assert patches[2][3]["_links"]["type"] == {"href": "/api/v3/types/6"}
+    assert out["results"][0]["cleared"] == ["category Docs", "version 2.17.10"] and out["results"][2]["type"] == "Milestone"
+    assert out["results"][3]["key"] == "AIS-703" and "change the status first" in out["results"][3]["error"]
+    assert [fake.project_of(i) for i in (300, 301, 302, 303)] == [46, 46, 46, 107]
+
+
+def test_move_takes_no_other_fields(move):
+    server, fake = move
+    text = fail(server, "pm_update_work_package", id="AIS-700", project="PRO", status="Done", comment="x")
+    assert text == ("A move takes only project, include_descendants, type_map, version, category and dry_run; "
+                    "change comment, status in a separate call.")
+    assert not fake.calls
+
+
+def test_move_continues_without_skipping_work_packages(move):
+    """A batch is 50; continue resumes after the work packages that failed so
+    far. The Suite's offset (end of the batch) would skip as many as were
+    moved, because moved ones are in the target on the next call."""
+    server, fake = move
+    for wid in range(400, 460):  # 60 more children of the epic: 64 to move
+        fake.tree[wid] = _tree_wp(wid, 1, "Task", 107, 300)
+    fake.fail_status = {410}
+    args = {"id": "AIS-700", "project": "PRO", "include_descendants": True, "type_map": {"Wochenziel": "Milestone"}}
+    first = ok(server, "pm_update_work_package", dry_run=False, **args)
+    assert (first["moved"], first["failed"], first["remaining"]) == (49, 1, 14)
+    assert first["continue"] == {"project": "PRO", "dry_run": False, "move_offset": 1, "id": "AIS-700",
+                                 "include_descendants": True, "type_map": {"Wochenziel": "Milestone"}}
+    second = ok(server, "pm_update_work_package", **first["continue"])
+    assert (second["moved"], second["failed"], second["skipped"]) == (14, 0, 50) and "continue" not in second
+    assert [w for w in fake.tree if fake.project_of(w) != 46] == [410]  # only the refused one stays behind
+
+
+def test_move_is_bounded_and_honours_the_write_list(move, monkeypatch):
+    server, fake = move
+    monkeypatch.setattr(server, "_MAX_MOVE_COLLECT", 3)
+    assert fail(server, "pm_update_work_package", id="AIS-700", project="PRO", include_descendants=True).startswith(
+        "More than 3 work packages; move part of the tree per call")
+    monkeypatch.setenv("OPENPROJECT_WRITE_PROJECTS", "AIS")
+    assert "Writes are disabled for project PRO" in fail(server, "pm_update_work_package", id="AIS-701", project="PRO")
+
+
+def test_move_without_permission_is_reported_per_work_package(move):
+    server, fake = move
+    fake.errors[("PATCH", "work_packages/301")] = (403, {"message": "You are not authorized"})
+    out = ok(server, "pm_update_work_package", ids=["AIS-701", "AIS-703"], project="PRO", dry_run=False)
+    assert (out["moved"], out["failed"]) == (1, 1)
+    assert out["results"][0]["error"].endswith('Moving needs the permission "Move work packages" in both projects.')
+    # A PATCH that OpenProject accepts but that keeps the project is no move either.
+    fake.keep_project = {302}
+    out = ok(server, "pm_update_work_package", id="AIS-702", project="PRO", type_map={"Wochenziel": "Task"}, dry_run=False)
+    assert out["moved"] == 0 and "kept it in its project" in out["results"][0]["error"]
 
 
 def test_comment_and_delete(op):
