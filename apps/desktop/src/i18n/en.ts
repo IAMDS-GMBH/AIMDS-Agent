@@ -773,6 +773,15 @@ export const en: Translations = {
         grantForOrgHint: 'Tenant admin: approve Teams chat, presence, shared mailboxes and To Do once for everyone',
         orgApproved: 'Organization approved',
         selfOnly: 'Mail, calendar and files only',
+        partlyApproved: 'Partly approved',
+        capabilities: {
+          org: 'Teams chats, shared mailboxes and tasks',
+          groups: 'group calendars',
+          directory: 'the company directory and SharePoint sites',
+          channels: 'reading and posting in Teams channels'
+        },
+        stillNeedsApproval: capabilities => `Your organization still has to approve ${capabilities}.`,
+        listJoin: items => new Intl.ListFormat('en', { type: 'conjunction' }).format(items),
         copied: 'Consent link copied',
         openedAndCopied: 'Consent link opened in the browser and copied. Only a tenant administrator can accept it.',
         loadFailed: 'Could not build the admin consent link'

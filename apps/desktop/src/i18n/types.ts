@@ -658,6 +658,12 @@ export interface Translations {
         grantForOrgHint: string
         orgApproved: string
         selfOnly: string
+        /** AIS-755: some, not all features approved by the organization. */
+        partlyApproved: string
+        /** End-user names of what a missing approval would unlock (no scope names). */
+        capabilities: Record<'channels' | 'directory' | 'groups' | 'org', string>
+        stillNeedsApproval: (capabilities: string) => string
+        listJoin: (items: string[]) => string
         copied: string
         openedAndCopied: string
         loadFailed: string

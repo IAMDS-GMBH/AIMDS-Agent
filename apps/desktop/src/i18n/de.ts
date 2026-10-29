@@ -774,6 +774,15 @@ export const de
         grantForOrgHint: 'Tenant-Admin: Teams-Chat, Präsenz, geteilte Postfächer und To Do einmalig für alle freigeben',
         orgApproved: 'Organisation freigegeben',
         selfOnly: 'Nur Mail, Kalender und Dateien',
+        partlyApproved: 'Teilweise freigegeben',
+        capabilities: {
+          org: 'Teams-Chats, geteilte Postfächer und Aufgaben',
+          groups: 'Gruppenkalender',
+          directory: 'das Firmenverzeichnis und SharePoint-Websites',
+          channels: 'Lesen und Posten in Teams-Kanälen'
+        },
+        stillNeedsApproval: capabilities => `Deine Organisation muss noch freigeben: ${capabilities}.`,
+        listJoin: items => new Intl.ListFormat('de', { type: 'conjunction' }).format(items),
         copied: 'Freigabe-Link kopiert',
         openedAndCopied: 'Freigabe-Link im Browser geöffnet und kopiert. Nur ein Tenant-Administrator kann ihn bestätigen.',
         loadFailed: 'Admin-Freigabe-Link konnte nicht erzeugt werden'
