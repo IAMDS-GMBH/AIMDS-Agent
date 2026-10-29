@@ -1701,7 +1701,9 @@ class MCPServerTask:
 
                 # Timeout — no lifecycle event fired.  Send a keepalive
                 # to exercise the connection and detect stale sockets.
-                if self.session:
+                # Not while the Suite key waits for a re-login (AIS-756):
+                # the ping is a 401 and its reconnect five more.
+                if self.session and not _suite_reauth_block(self.name, getattr(self, "_config", None)):
                     try:
                         call_res = self.session.list_tools()
                         if inspect.isawaitable(call_res):
@@ -2462,6 +2464,17 @@ class MCPServerTask:
                     )
                     return
 
+                # AIS-756: the Suite revoked the key of a running session.
+                # Reconnecting repeats the 401; flag it once and wait for the
+                # re-login, which reconnects the server.
+                if _is_auth_error(exc) and _iamds_provider_for_server(self.name, getattr(self, "_config", None)):
+                    logger.warning(
+                        "MCP server '%s' rejected the key (401) — not reconnecting until the re-login",
+                        self.name,
+                    )
+                    _flag_iamds_mcp_auth_failure(self.name, exc, getattr(self, "_config", None))
+                    return
+
                 retries += 1
                 # ExceptionGroup text ("unhandled errors in a TaskGroup") says
                 # nothing; name the sub-exception that actually broke the link.
@@ -2749,6 +2762,54 @@ def _flag_iamds_mcp_auth_failure(server_name: str, exc: BaseException, config: O
         pass
 
 
+def _suite_reauth_block(server_name: str, config: Optional[dict] = None) -> Optional[str]:
+    """The Suite environment this server waits on for a re-login, else None (AIS-756).
+
+    While it waits, nothing connects, reconnects or pings the server on its
+    own: each attempt was a 401 at the Suite, night after night. The
+    re-login (``apply_reauth``) or the hourly health probe reconnects it.
+    """
+    try:
+        from hermes_cli.iamds_suite import suite_auth_failures, suite_background_blocked
+
+        if not suite_auth_failures():
+            return None
+        provider = _iamds_provider_for_server(server_name, config)
+        return provider if provider and suite_background_blocked(provider) else None
+    except Exception:
+        return None
+
+
+def _drop_reauth_blocked(servers: Dict[str, dict]) -> Dict[str, dict]:
+    """*servers* without the Suite servers that wait for a re-login (AIS-756)."""
+    try:
+        from hermes_cli.iamds_suite import suite_auth_failures
+
+        if not servers or not suite_auth_failures():
+            return servers
+    except Exception:
+        return servers
+    kept: Dict[str, dict] = {}
+    waiting: Dict[str, List[str]] = {}
+    for name, cfg in servers.items():
+        provider = _suite_reauth_block(name, cfg)
+        if provider:
+            waiting.setdefault(provider, []).append(name)
+        else:
+            kept[name] = cfg
+    for provider, names in waiting.items():
+        logger.info("MCP: %s not connected — %s waits for the re-login", ", ".join(sorted(names)), provider)
+    return kept
+
+
+def _suite_reauth_hint(server_name: str) -> str:
+    return (
+        f"MCP server '{server_name}' rejected the AIMDS-Suite virtual key (401). "
+        "Ask the user to re-authenticate via Settings → Providers → AIMDS-Suite → "
+        "Re-authenticate (Keycloak SSO). Do NOT retry this tool."
+    )
+
+
 def _is_auth_error(exc: BaseException) -> bool:
     """Return True if ``exc`` indicates an MCP OAuth failure.
 
@@ -2913,11 +2974,7 @@ def _handle_auth_error_and_retry(
             pass
     if _iamds_provider:
         _flag_iamds_mcp_auth_failure(server_name, exc)
-        _reauth_hint = (
-            f"MCP server '{server_name}' rejected the AIMDS-Suite virtual key (401). "
-            "Ask the user to re-authenticate via Settings → Providers → AIMDS-Suite → "
-            "Re-authenticate (Keycloak SSO). Do NOT retry this tool."
-        )
+        _reauth_hint = _suite_reauth_hint(server_name)
     else:
         _reauth_hint = (
             f"MCP server '{server_name}' requires re-authentication. "
@@ -4319,6 +4376,20 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, pr
 
         with _lock:
             server = _servers.get(server_name)
+        # AIS-756: a Suite server that waits for a re-login is not
+        # reconnected per call — background calls (the session sync) stop
+        # quietly, the model is told to ask for the re-login.
+        if not server or not server.session or _background_call.get():
+            if _suite_reauth_block(server_name):
+                if _background_call.get():
+                    return json.dumps(
+                        {"error": f"MCP server '{server_name}' is not connected (waiting for the re-login)"},
+                        ensure_ascii=False,
+                    )
+                return json.dumps(
+                    {"error": _suite_reauth_hint(server_name), "needs_reauth": True, "server": server_name},
+                    ensure_ascii=False,
+                )
         if not server or not server.session:
             try:
                 reconnect_mcp_server(server_name)
@@ -6220,6 +6291,7 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
             else:
                 _parallel_safe_servers.discard(sanitize_mcp_name_component(srv_name))
 
+    new_servers = _drop_reauth_blocked(new_servers)
     if not new_servers:
         return _existing_tool_names()
 
@@ -6331,7 +6403,7 @@ def refresh_mcp_server_tools(name: str, timeout: float = 15) -> bool:
         return False
     with _lock:
         server = _servers.get(name)
-    if server is None or getattr(server, "session", None) is None:
+    if server is None or getattr(server, "session", None) is None or _suite_reauth_block(name):
         return False
     try:
         _run_on_mcp_loop(server._refresh_tools, timeout=timeout)
@@ -6477,6 +6549,8 @@ def discover_mcp_tools() -> List[str]:
             if name not in _servers
             and _parse_boolish(cfg.get("enabled", True), default=True)
         ]
+    # Servers waiting for a Suite re-login are skipped, not failed (AIS-756).
+    new_server_names = [name for name in new_server_names if not _suite_reauth_block(name, servers[name])]
 
     tool_names = register_mcp_servers(servers)
     if not new_server_names:

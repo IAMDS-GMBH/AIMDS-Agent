@@ -219,6 +219,15 @@ def _install_update_source() -> str:
         return "git"
 
 
+def _suite_key_hash_prefixes() -> dict[str, str]:
+    try:
+        from hermes_cli.iamds_suite import suite_key_hash_prefixes
+
+        return suite_key_hash_prefixes()
+    except Exception:
+        return {}
+
+
 def send_client_telemetry(args: Any = None) -> dict[str, Any]:
     """Send client version telemetry to the support server.
 
@@ -262,6 +271,9 @@ def send_client_telemetry(args: Any = None) -> dict[str, Any]:
             # AIS-476: this client installs a renamed desktop app; the rename
             # release waits until (nearly) every client reports it.
             "rename_bridge": RENAME_BRIDGE_VERSION,
+            # AIS-756: which LiteLLM key this client sends, as the first 12
+            # hex chars of LiteLLM's key hash — never the key itself.
+            "suite_key_hash_prefix": _suite_key_hash_prefixes(),
         }
 
         data_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")

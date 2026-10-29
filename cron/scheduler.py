@@ -1984,19 +1984,19 @@ def suite_reauth_blocking(job: dict) -> Optional[str]:
 
     A revoked key failed every 30-minute run, each with a model fallback and a
     failure message in the chat. Pure script jobs (``no_agent``) never call a
-    model and keep running.
+    model and keep running. A changed key runs the job again at once (AIS-756).
     """
     if job.get("no_agent"):
         return None
     try:
-        from hermes_cli.iamds_suite import canonical_suite_provider, suite_reauth_pending
+        from hermes_cli.iamds_suite import canonical_suite_provider, suite_background_blocked
 
         provider = str(job.get("provider") or "").strip()
         if not provider:
             model_cfg = (load_config() or {}).get("model") or {}
             provider = str(model_cfg.get("provider") or "") if isinstance(model_cfg, dict) else ""
         canonical = canonical_suite_provider(provider)
-        if canonical and suite_reauth_pending(canonical):
+        if canonical and suite_background_blocked(canonical):
             return canonical
     except Exception as exc:
         logger.debug("cron: re-auth check failed for %s: %s", job.get("id"), exc)

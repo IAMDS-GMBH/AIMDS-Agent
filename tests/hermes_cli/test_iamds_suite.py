@@ -543,6 +543,12 @@ def test_rebind_path_only_mismatch_now_triggers_reconnect(monkeypatch):
 
 # --------------------------------------------------------------------------- periodic health check (AIS-394)
 
+def _HOUR_LATER() -> float:
+    import time
+
+    return time.time() + suite.REAUTH_PROBE_INTERVAL_SECONDS + 1
+
+
 class TestSuiteHealthCheck:
     CFG = {"providers": {"aimds-suite-prod": {"base_url": "https://suite.iamds.com/litellm/v1"}}}
 
@@ -560,7 +566,7 @@ class TestSuiteHealthCheck:
         suite.mark_suite_auth_failure("aimds-suite-prod", 401, "old failure", source="llm")
 
         result = suite.check_suite_environment_health(
-            "aimds-suite-prod", probe_fn=lambda u, k: (None, "ConnectionRefused")
+            "aimds-suite-prod", probe_fn=lambda u, k: (None, "ConnectionRefused"), now=_HOUR_LATER()
         )
 
         assert result["outcome"] == "unreachable"
@@ -577,8 +583,14 @@ class TestSuiteHealthCheck:
         assert first["outcome"] == "newly_broken"
         since_first = suite.suite_auth_failures()["aimds-suite-prod"]["since"]
 
+        # AIS-756: within the hour no request at all, then one probe.
+        calls: list = []
+        waiting = suite.check_suite_environment_health(
+            "aimds-suite-prod", probe_fn=lambda u, k: calls.append(k) or (401, "unauthorized")
+        )
+        assert waiting["outcome"] == "waiting_reauth" and calls == []
         second = suite.check_suite_environment_health(
-            "aimds-suite-prod", probe_fn=lambda u, k: (401, "unauthorized")
+            "aimds-suite-prod", probe_fn=lambda u, k: (401, "unauthorized"), now=_HOUR_LATER()
         )
         assert second["outcome"] == "still_broken"
         assert suite.suite_auth_failures()["aimds-suite-prod"]["since"] == since_first
@@ -628,7 +640,7 @@ class TestSuiteHealthCheck:
         monkeypatch.setattr(suite, "apply_reauth", lambda provider, **kw: reauth_calls.append(provider))
 
         result = suite.check_suite_environment_health(
-            "aimds-suite-prod", probe_fn=lambda u, k: (200, "")
+            "aimds-suite-prod", probe_fn=lambda u, k: (200, ""), now=_HOUR_LATER()
         )
 
         assert result["outcome"] == "recovered"
