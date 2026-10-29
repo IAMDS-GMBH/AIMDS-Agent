@@ -20,7 +20,7 @@ def pending(monkeypatch):
     import hermes_cli.iamds_suite as suite
 
     waiting: set = set()
-    monkeypatch.setattr(suite, "suite_reauth_pending", lambda provider=None: suite.canonical_suite_provider(provider) in waiting)
+    monkeypatch.setattr(suite, "suite_background_blocked", lambda provider=None: suite.canonical_suite_provider(provider) in waiting)
     monkeypatch.setattr(sched, "load_config", lambda: {"model": {"provider": "aimds-suite-prod"}})
     return waiting
 

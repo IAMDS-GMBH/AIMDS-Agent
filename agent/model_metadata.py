@@ -684,6 +684,20 @@ def fetch_endpoint_model_metadata(
         if cached is not None and (time.time() - cached_at) < _ENDPOINT_MODEL_CACHE_TTL:
             return cached
 
+    # AIS-756: a Suite key that waits for a re-login answered each of the up
+    # to four lookups below with a 401 — nothing is asked until it is back.
+    # Local servers share "localhost" with the local-dev Suite; leave them out.
+    suite_401_source: Optional[str] = None
+    if not is_local_endpoint(normalized):
+        try:
+            from hermes_cli.iamds_suite import suite_env_for_url, suite_url_background_blocked
+
+            if suite_url_background_blocked(normalized):
+                return _endpoint_model_metadata_cache.get(normalized) or {}
+            suite_401_source = suite_env_for_url(normalized)
+        except Exception:
+            pass
+
     candidates = [normalized]
     if normalized.endswith("/v1"):
         alternate = normalized[:-3].rstrip("/")
@@ -773,6 +787,11 @@ def fetch_endpoint_model_metadata(
         url = candidate.rstrip("/") + "/models"
         try:
             response = requests.get(url, headers=headers, timeout=10, verify=_resolve_requests_verify())
+            if response.status_code == 401 and suite_401_source:
+                from hermes_cli.iamds_suite import note_background_suite_401
+
+                note_background_suite_401(suite_401_source, "model metadata: http_401", source="model_metadata")
+                break
             if response.ok:
                 payload = response.json()
                 for model in payload.get("data", []) or []:

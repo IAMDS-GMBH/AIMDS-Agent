@@ -833,6 +833,9 @@ def resolve_suite_ntfy(
         result.user_id = str(cached["user_id"])
         result.topics = [str(t) for t in (cached.get("topics") or [])]
         result.user_source = "cache"
+    elif suite_background_blocked(provider_id):
+        # AIS-756: the key waits for a re-login — no lookup that answers 401.
+        result.user_source = "waiting_reauth"
     else:
         info = fetch_suite_key_info(ep.base_url, ep.api_key, timeout=timeout)
         user_id = str(info.get("user_id") or info.get("user") or "").strip()
@@ -882,17 +885,28 @@ def _write_flags(data: Dict[str, Any]) -> None:
         logger.debug("could not write %s: %s", path, exc)
 
 
+def _current_key_fp(canonical: str) -> str:
+    """Fingerprint of the key this process would send to *canonical* now ("" if none)."""
+    try:
+        api_key = resolve_suite_endpoint(canonical).api_key
+    except Exception:
+        api_key = ""
+    return _key_fingerprint(api_key) if api_key else ""
+
+
 def mark_suite_auth_failure(provider: str, http_status: Optional[int], message: str, *, source: str) -> bool:
     """Record that the runtime got an auth failure for a Suite environment.
 
-    ``source`` is ``"llm"`` or ``"mcp"``. Read by ``/api/status`` so the
-    desktop can switch the provider card to "needs re-auth" without polling
-    the LiteLLM endpoint itself.
+    ``source`` names the caller (``llm``, ``mcp``, ``health_check``,
+    ``model_discovery`` …). Read by ``/api/status`` so the desktop can switch
+    the provider card to "needs re-auth" without polling the LiteLLM
+    endpoint itself, and by :func:`suite_background_blocked`, which stops
+    background calls with the same key until the re-login (AIS-756).
 
     Returns True when this failure is new — the environment was not already
-    waiting for a re-login (AIS-525: support gets one case per lost login,
-    not one per day until the user signs in again). ``since`` keeps the time
-    of the first failure.
+    waiting for a re-login with this key (AIS-525: support gets one case per
+    lost login, not one per day until the user signs in again). ``since``
+    keeps the time of the first failure.
     """
     canonical = canonical_suite_provider(provider)
     if canonical is None:
@@ -900,17 +914,24 @@ def mark_suite_auth_failure(provider: str, http_status: Optional[int], message: 
     if is_model_access_denial(message):
         # AIS-747: a model the key may not use is no lost login.
         return False
+    key_fp = _current_key_fp(canonical)
     with _FLAG_LOCK:
         flags = _read_flags()
         previous = flags.get(canonical) if isinstance(flags.get(canonical), dict) else {}
-        newly = previous.get("state") != STATE_NEEDS_REAUTH
-        flags[canonical] = {
+        newly = previous.get("state") != STATE_NEEDS_REAUTH or bool(
+            key_fp and previous.get("key_fp") and previous.get("key_fp") != key_fp
+        )
+        flag = {
             "state": STATE_NEEDS_REAUTH,
             "http_status": http_status,
             "message": str(message or "")[:300],
             "source": source,
             "since": time.time() if newly else previous.get("since", time.time()),
+            "key_fp": key_fp or previous.get("key_fp") or "",
         }
+        if not newly and previous.get("last_probe_at"):
+            flag["last_probe_at"] = previous["last_probe_at"]
+        flags[canonical] = flag
         _write_flags(flags)
     logger.info(
         "suite auth failure recorded provider=%s status=%s source=%s new=%s",
@@ -925,6 +946,107 @@ def suite_reauth_pending(provider: Optional[str]) -> bool:
     if canonical is None:
         return False
     return (suite_auth_failures().get(canonical) or {}).get("state") == STATE_NEEDS_REAUTH
+
+
+#: While a re-login is pending, at most one request per environment and hour
+#: may test whether the key works again (AIS-756) — the health check's probe.
+REAUTH_PROBE_INTERVAL_SECONDS = 3600.0
+
+
+def suite_background_blocked(provider: Optional[str]) -> bool:
+    """True while background work must not call this Suite environment (AIS-756).
+
+    That is while a re-login is pending *and* the key is still the one that
+    failed. A revoked key answered every model discovery, MCP reconnect and
+    metadata lookup with a 401, night after night. A changed key (a re-login
+    in another process, a rotated ``.env``) lifts the block at once; the
+    hourly probe of :func:`check_suite_environment_health` lifts it when the
+    same key works again. Non-Suite providers are never blocked.
+    """
+    canonical = canonical_suite_provider(provider)
+    if canonical is None:
+        return False
+    flag = suite_auth_failures().get(canonical) or {}
+    if flag.get("state") != STATE_NEEDS_REAUTH:
+        return False
+    failed_fp = str(flag.get("key_fp") or "")
+    if not failed_fp:
+        return True
+    current_fp = _current_key_fp(canonical)
+    return not current_fp or current_fp == failed_fp
+
+
+def suite_url_background_blocked(url: Any) -> Optional[str]:
+    """The blocked Suite environment *url* belongs to (by host), else None."""
+    if not suite_auth_failures():
+        return None
+    try:
+        provider = suite_env_for_url(str(url or ""))
+    except Exception:
+        return None
+    return provider if provider and suite_background_blocked(provider) else None
+
+
+def suite_reauth_probe_due(provider: Optional[str], *, now: Optional[float] = None) -> bool:
+    """Whether the hourly probe of a blocked environment may run now."""
+    canonical = canonical_suite_provider(provider)
+    flag = suite_auth_failures().get(canonical or "") or {}
+    if not flag:
+        return True
+    last = float(flag.get("last_probe_at") or flag.get("since") or 0.0)
+    return (time.time() if now is None else now) - last >= REAUTH_PROBE_INTERVAL_SECONDS
+
+
+def note_suite_reauth_probe(provider: Optional[str], *, now: Optional[float] = None) -> None:
+    """Stamp the probe time on the flag; shared by every process of this home."""
+    canonical = canonical_suite_provider(provider)
+    if canonical is None:
+        return
+    with _FLAG_LOCK:
+        flags = _read_flags()
+        flag = flags.get(canonical)
+        if not isinstance(flag, dict):
+            return
+        flag["last_probe_at"] = time.time() if now is None else now
+        _write_flags(flags)
+
+
+def note_background_suite_401(provider_or_url: Any, message: str, *, source: str) -> Optional[str]:
+    """A background call got a 401 from a Suite environment: flag it (AIS-756).
+
+    *provider_or_url* is a Suite provider id or a URL on a Suite host. Never
+    raises; returns the flagged environment. The first 401 of a night stops
+    every other background path of that environment.
+    """
+    try:
+        canonical = canonical_suite_provider(provider_or_url) or suite_env_for_url(str(provider_or_url or ""))
+        if not canonical:
+            return None
+        if mark_suite_auth_failure(canonical, 401, message, source=source):
+            logger.warning("%s rejected the key (401) in %s — background calls wait for the re-login", suite_label(canonical), source)
+        return canonical
+    except Exception as exc:
+        logger.debug("could not record a background 401: %s", exc)
+        return None
+
+
+def suite_key_hash_prefixes(*, length: int = 12) -> Dict[str, str]:
+    """``{"prod": "ffb82259e0f1", …}`` for every Suite environment with a key (AIS-756).
+
+    LiteLLM stores a virtual key as ``sha256(key).hexdigest()`` ("Key Hash
+    (Token)", ``litellm.proxy._types.hash_token``); a short prefix of it lets
+    support match a Suite event group to a client without the key leaving
+    the machine.
+    """
+    out: Dict[str, str] = {}
+    for provider_id in SUITE_ENVIRONMENTS:
+        try:
+            api_key = resolve_suite_endpoint(provider_id).api_key
+        except Exception:
+            continue
+        if api_key and _usable_secret(api_key):
+            out[provider_id.removeprefix("aimds-suite-")] = hashlib.sha256(api_key.encode()).hexdigest()[:length]
+    return out
 
 
 def suite_label(provider: Optional[str]) -> str:
@@ -1614,11 +1736,14 @@ def check_suite_environment_health(
     provider: str,
     *,
     probe_fn: Optional[Callable[[str, str], tuple[Optional[int], str]]] = None,
+    now: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Probe one Suite environment for real, self-heal, and reconcile the auth flag.
 
     Never raises. ``outcome`` is one of ``not_configured`` (no usable key,
-    skipped), ``unreachable`` (network/5xx — not an auth problem, flag
+    skipped), ``waiting_reauth`` (flagged with the same key and probed less
+    than an hour ago — no request, AIS-756), ``unreachable`` (network/5xx —
+    not an auth problem, flag
     untouched), ``newly_broken`` (401/403, just started, flag set),
     ``still_broken`` (401/403, already flagged — flag left as-is so its
     ``since`` timestamp keeps meaning "broken since"), ``recovered_self_heal``
@@ -1640,6 +1765,13 @@ def check_suite_environment_health(
             return result
 
         was_flagged = canonical in suite_auth_failures()
+        if was_flagged:
+            # AIS-756: this is the one probe per hour of an environment that
+            # waits for a re-login; a changed key is tried at once.
+            if suite_background_blocked(canonical) and not suite_reauth_probe_due(canonical, now=now):
+                result["outcome"] = "waiting_reauth"
+                return result
+            note_suite_reauth_probe(canonical, now=now)
         code, err = fn(ep.base_url, ep.api_key)
         result["http_status"], result["probe_error"] = code, err
 
@@ -1691,10 +1823,10 @@ def check_suite_environment_health(
 
 
 def run_suite_health_sweep(
-    *, probe_fn: Optional[Callable[[str, str], tuple[Optional[int], str]]] = None
+    *, probe_fn: Optional[Callable[[str, str], tuple[Optional[int], str]]] = None, now: Optional[float] = None
 ) -> List[Dict[str, Any]]:
     """One health-check pass over every configured Suite environment."""
-    return [check_suite_environment_health(provider_id, probe_fn=probe_fn) for provider_id in SUITE_ENVIRONMENTS]
+    return [check_suite_environment_health(provider_id, probe_fn=probe_fn, now=now) for provider_id in SUITE_ENVIRONMENTS]
 
 
 def maybe_run_suite_health_check(
@@ -1712,7 +1844,7 @@ def maybe_run_suite_health_check(
     last_run_at = float(state.get("last_run_at") or 0.0)
     if not force and (now - last_run_at) < suite_health_check_interval_seconds():
         return None
-    results = run_suite_health_sweep()
+    results = run_suite_health_sweep(now=now)
     _save_suite_health_check_state({"last_run_at": now})
     return results
 
@@ -1731,6 +1863,13 @@ __all__ = [
     "canonical_suite_provider",
     "clear_suite_auth_failure",
     "suite_reauth_pending",
+    "suite_background_blocked",
+    "suite_url_background_blocked",
+    "suite_reauth_probe_due",
+    "note_suite_reauth_probe",
+    "note_background_suite_401",
+    "suite_key_hash_prefixes",
+    "REAUTH_PROBE_INTERVAL_SECONDS",
     "suite_label",
     "is_suite_provider",
     "litellm_model_info_url",

@@ -2283,9 +2283,19 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                 )
 
         if api_key and base_raw:
-            live = fetch_litellm_model_info_models(api_key, base_raw)
+            from hermes_cli.iamds_suite import note_background_suite_401, suite_background_blocked
+
+            # AIS-756: a key that waits for a re-login is not asked again —
+            # the cache wrapper keeps serving its last real list.
+            if suite_background_blocked(normalized):
+                return []
+            status: dict = {}
+            live = fetch_litellm_model_info_models(api_key, base_raw, status_out=status)
             if live:
                 return live
+            if status.get("status") == 401:
+                note_background_suite_401(normalized, f"model discovery: {status.get('error') or 'http_401'}", source="model_discovery")
+                return []
             # Fallback to generic OpenAI-compatible model discovery for
             # deployments that do not expose /litellm/model/info.
             live = fetch_api_models(api_key, base_raw)
@@ -3504,6 +3514,8 @@ def fetch_litellm_model_info_models(
     api_key: Optional[str],
     base_url: Optional[str],
     timeout: float = 5.0,
+    *,
+    status_out: Optional[dict] = None,
 ) -> Optional[list[str]]:
     """Fetch LiteLLM model ids from ``/litellm/model/info``.
 
@@ -3511,6 +3523,10 @@ def fetch_litellm_model_info_models(
     - ``https://host``
     - ``https://host/litellm``
     - ``https://host/litellm/v1``
+
+    *status_out* receives ``{"status": <http status>, "error": <reason>}``
+    when the server answered with an HTTP error (AIS-756: a 401 there is a
+    lost login, not a deployment without the endpoint).
     """
     normalized = (base_url or "").strip().rstrip("/")
     if not normalized:
@@ -3537,6 +3553,10 @@ def fetch_litellm_model_info_models(
         request = urllib.request.Request(endpoint, headers=headers)
         with urllib.request.urlopen(request, timeout=timeout) as response:
             payload = json.loads(response.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as exc:
+        if status_out is not None:
+            status_out.update(status=int(exc.code), error=str(exc.reason or ""))
+        return None
     except Exception:
         return None
 

@@ -1898,6 +1898,20 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
 # Public entrypoint for the session-start hook
 # ---------------------------------------------------------------------------
 
+def _review_waits_for_suite_reauth() -> bool:
+    """The review model runs on a Suite key that waits for a re-login (AIS-756).
+
+    The pass is not started (nor counted as run) until the user signs in again.
+    """
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.iamds_suite import suite_background_blocked
+
+        return suite_background_blocked(_resolve_review_runtime(load_config() or {}).provider)
+    except Exception:
+        return False
+
+
 def maybe_run_curator(
     *,
     idle_for_seconds: Optional[float] = None,
@@ -1906,6 +1920,8 @@ def maybe_run_curator(
     """Best-effort: run a curator pass if all gates pass. Returns the result
     dict if a pass was started, else None. Never raises."""
     try:
+        if _review_waits_for_suite_reauth():
+            return None
         if not should_run_now():
             return None
         # Idle gating: only enforce when the caller provided a measurement.

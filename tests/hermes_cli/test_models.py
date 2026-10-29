@@ -927,7 +927,7 @@ class TestAimdsSuiteModelDiscovery:
 
         fetched_urls = []
 
-        def fake_fetch_info(api_key, base_raw):
+        def fake_fetch_info(api_key, base_raw, **_kwargs):
             fetched_urls.append((api_key, base_raw))
             return ["model-from-" + base_raw]
 

@@ -30,6 +30,7 @@ const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = requ
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { reportIncident: reportAutoIncident } = require('./incident-report.cjs')
 const { getInstallId, legacyClientId } = require('./install-id.cjs')
+const { suiteKeyHashPrefixes } = require('./suite-key-hash.cjs')
 const {
   SPAWN_ATTEMPTS: BACKEND_SPAWN_ATTEMPTS,
   isPortRaceText,
@@ -7615,6 +7616,8 @@ async function sendClientTelemetry(updateInfo = null) {
       commits_behind_main: commitsBehindMain,
       // AIS-476: this client installs a renamed desktop app (rename bridge).
       rename_bridge: 1,
+      // AIS-756: LiteLLM key hash prefix per Suite environment — never the key.
+      suite_key_hash_prefix: suiteKeyHashPrefixes({ hermesHome: HERMES_HOME }),
       ...updateState,
       ...(lastUpdateFailure ? { last_apply_error: lastUpdateFailure.error, last_apply_at: lastUpdateFailure.at } : {})
     }
