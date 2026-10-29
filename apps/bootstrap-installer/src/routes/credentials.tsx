@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Button } from '../components/button'
 import { ReportIssueDialog } from '../components/report-issue-dialog'
+import { PRODUCT_DISPLAY_NAME } from '../lib/product'
 import { normalizeInstallerBaseUrl, startInstall } from '../store'
 import { AlertCircle, Loader, Check, ShieldCheck, X, RefreshCw, LifeBuoy } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
@@ -610,7 +611,7 @@ export default function Credentials() {
               className="min-w-32"
               disabled={!modelsFetched}
             >
-              Hermes installieren
+              {PRODUCT_DISPLAY_NAME} installieren
             </Button>
           </div>
         </form>

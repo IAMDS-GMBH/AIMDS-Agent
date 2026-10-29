@@ -42,7 +42,10 @@ export function UpdatesOverlay() {
   const open = useStore($updateOverlayOpen)
   const target = useStore($updateOverlayTarget)
   const [reportOpen, setReportOpen] = useState(false)
-  const [reportSummary, setReportSummary] = useState('Problem beim Update')
+  const { t } = useI18n()
+  const u = t.updates
+  // AIS-755: pre-filled report summaries follow the UI language.
+  const [reportSummary, setReportSummary] = useState<null | string>(null)
 
   const clientStatus = useStore($updateStatus)
   const clientChecking = useStore($updateChecking)
@@ -104,15 +107,15 @@ export function UpdatesOverlay() {
           showCloseButton={phase !== 'applying'}
         >
           {phase === 'applying' && (
-            <ApplyingView apply={apply} isBackend={isBackend} onReportIssue={() => handleReportIssue('Update hängt / abgebrochen')} />
+            <ApplyingView apply={apply} isBackend={isBackend} onReportIssue={() => handleReportIssue(u.reportSummary.stuck)} />
           )}
 
           {phase === 'manual' && (
-            <ManualView command={apply.command ?? 'hermes update'} onDone={() => handleClose(false)} onReportIssue={() => handleReportIssue('Manuelles Update fehlgeschlagen')} />
+            <ManualView command={apply.command ?? 'hermes update'} onDone={() => handleClose(false)} onReportIssue={() => handleReportIssue(u.reportSummary.manualFailed)} />
           )}
 
           {phase === 'error' && (
-            <ErrorView message={apply.message} offline={apply.error === 'offline'} onDismiss={() => handleClose(false)} onReportIssue={() => handleReportIssue(`Update-Fehler: ${apply.message || 'Unbekannt'}`)} onRetry={handleInstall} />
+            <ErrorView message={apply.message} offline={apply.error === 'offline'} onDismiss={() => handleClose(false)} onReportIssue={() => handleReportIssue(u.reportSummary.failed(apply.message))} onRetry={handleInstall} />
           )}
 
           {phase === 'idle' && (
@@ -133,7 +136,7 @@ export function UpdatesOverlay() {
       <ReportIssueDialog
         contextType="update_error"
         defaultCategory="installation_update"
-        defaultSummary={reportSummary}
+        defaultSummary={reportSummary ?? u.reportSummary.generic}
         installType="update"
         onOpenChange={setReportOpen}
         open={reportOpen}
@@ -186,7 +189,7 @@ export function IdleView({
             <Button onClick={onRetryCheck} size="sm">
               {u.tryAgain}
             </Button>
-            <Button onClick={() => onReportIssue('Update-Prüfung fehlgeschlagen')} size="sm" variant="outline">
+            <Button onClick={() => onReportIssue(u.reportSummary.checkFailed)} size="sm" variant="outline">
               {t.reportIssue.title}
             </Button>
           </div>
@@ -215,7 +218,7 @@ export function IdleView({
             <Button disabled={checking} onClick={onRetryCheck} size="sm">
               {u.tryAgain}
             </Button>
-            <Button onClick={() => onReportIssue('Verbindungsfehler bei Update-Prüfung')} size="sm" variant="outline">
+            <Button onClick={() => onReportIssue(u.reportSummary.checkUnreachable)} size="sm" variant="outline">
               {t.reportIssue.title}
             </Button>
           </div>
@@ -329,7 +332,7 @@ export function IdleView({
           <Button className="font-medium" onClick={onLater} type="button" variant="text">
             {u.maybeLater}
           </Button>
-          <Button onClick={() => onReportIssue('Problem beim Update')} size="xs" type="button" variant="text">
+          <Button onClick={() => onReportIssue(u.reportSummary.generic)} size="xs" type="button" variant="text">
             {t.reportIssue.title}
           </Button>
         </div>

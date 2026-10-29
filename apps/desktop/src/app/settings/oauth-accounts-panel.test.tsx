@@ -15,9 +15,12 @@ const disconnectOAuthProvider = vi.fn()
 const startManualProviderOAuth = vi.fn()
 const startManualApiKeyEntry = vi.fn()
 
+const getMicrosoftAdminConsentUrl = vi.fn()
+
 vi.mock('@/hermes', () => ({
   listOAuthProviders: () => listOAuthProviders(),
-  disconnectOAuthProvider: (id: string) => disconnectOAuthProvider(id)
+  disconnectOAuthProvider: (id: string) => disconnectOAuthProvider(id),
+  getMicrosoftAdminConsentUrl: () => getMicrosoftAdminConsentUrl()
 }))
 
 vi.mock('@/store/notifications', () => ({
@@ -142,5 +145,46 @@ describe('OAuthAccountsPanel', () => {
     const available = within(screen.getByTestId('available-providers'))
     expect(available.queryByText('Google Gemini (OAuth)')).toBeNull()
     expect(available.getByText('Anthropic (OAuth)')).toBeTruthy()
+  })
+
+  // AIS-755: a tenant that approved before the channels tier (AIS-737) showed
+  // a green "Organization approved" while posting to channels still failed.
+  it.each([
+    ['admin', 'Partly approved', 'Your organization still has to approve reading and posting in Teams channels.', true],
+    ['channels', 'Organization approved', null, false],
+    ['self', 'Mail, calendar and files only', 'reading and posting in Teams channels', true]
+  ] as const)('shows the Microsoft 365 consent for the %s tier', async (tier, label, hint, grantButton) => {
+    listOAuthProviders.mockResolvedValue({
+      providers: [makeProvider({ id: 'microsoft', name: 'Microsoft 365 (OAuth)', status: { logged_in: true, source_label: 'me@example.com' } })]
+    })
+    getMicrosoftAdminConsentUrl.mockResolvedValue({
+      client_id: 'c',
+      granted_tier: tier,
+      org_consent_scopes: [],
+      org_consented: tier !== 'self',
+      scopes: [],
+      self_consent_scopes: [],
+      tenant_id: 'organizations',
+      url: 'https://login.example/consent'
+    })
+
+    renderPanel()
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('m365-consent-pill')).toBeTruthy()
+    })
+
+    const row = within(screen.getByTestId('account-row-microsoft'))
+    expect(row.getByTestId('m365-consent-pill').textContent).toBe(label)
+
+    if (hint) {
+      expect(row.getByTestId('m365-consent-hint').textContent).toContain(hint)
+    } else {
+      expect(row.queryByTestId('m365-consent-hint')).toBeNull()
+    }
+
+    expect(Boolean(row.queryByRole('button', { name: 'Grant for organization' }))).toBe(grantButton)
+    // End-user text only: no permission (scope) names.
+    expect(screen.getByTestId('account-row-microsoft').textContent).not.toMatch(/ChannelMessage|\.Read|\.Send|scope/i)
   })
 })

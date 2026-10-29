@@ -30,6 +30,7 @@ import {
 } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertCircle, Check, ChevronRight, ExternalLink, KeyRound, Loader2, ShieldCheck } from '@/lib/icons'
+import { m365ConsentPill, m365ConsentView } from '@/lib/m365-consent'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding, startManualApiKeyEntry, startManualProviderOAuth } from '@/store/onboarding'
@@ -859,15 +860,29 @@ function M365TenantConsentControl({ loggedIn }: { loggedIn: boolean }) {
     }
   }
 
+  // AIS-755: the pill follows the granted tier, not `org_consented` — a tenant
+  // approved before the channels tier existed is only partly approved.
+  const view = info ? m365ConsentView(info) : null
+  const pill = view ? m365ConsentPill(view, m) : null
+
   return (
-    <div className="flex items-center gap-2">
-      {info && loggedIn && (
-        <Pill tone={info.org_consented ? 'primary' : 'muted'}>{info.org_consented ? m.orgApproved : m.selfOnly}</Pill>
-      )}
-      {!info?.org_consented && (
-        <Button disabled={busy} onClick={() => void openConsent()} size="xs" title={m.grantForOrgHint} variant="outline">
-          {busy ? <Loader2 className="size-3.5 animate-spin" /> : m.grantForOrg}
-        </Button>
+    <div className="flex flex-col items-end gap-1">
+      <div className="flex items-center gap-2">
+        {pill && loggedIn && (
+          <span data-testid="m365-consent-pill" title={pill.hint ?? undefined}>
+            <Pill tone={pill.tone}>{pill.label}</Pill>
+          </span>
+        )}
+        {view?.state !== 'full' && (
+          <Button disabled={busy} onClick={() => void openConsent()} size="xs" title={m.grantForOrgHint} variant="outline">
+            {busy ? <Loader2 className="size-3.5 animate-spin" /> : m.grantForOrg}
+          </Button>
+        )}
+      </div>
+      {pill?.hint && loggedIn && (
+        <p className="max-w-72 text-right text-[0.7rem] leading-4 text-muted-foreground" data-testid="m365-consent-hint">
+          {pill.hint}
+        </p>
       )}
     </div>
   )

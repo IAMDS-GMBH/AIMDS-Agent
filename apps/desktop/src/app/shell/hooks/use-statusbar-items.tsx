@@ -24,8 +24,10 @@ import {
 } from '@/lib/icons'
 import { getMcpServerToolCount } from '@/lib/mcp-helpers'
 import { formatModelStatusLabel } from '@/lib/model-status-label'
+import { PRODUCT_DISPLAY_NAME } from '@/lib/product'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
+import { type ReleaseUpdateIndicator, resolveReleaseUpdateIndicator } from '@/lib/update-notes'
 import { cn } from '@/lib/utils'
 import { setGlobalYolo, setSessionYolo } from '@/lib/yolo-session'
 import { $desktopActionTasks } from '@/store/activity'
@@ -96,7 +98,7 @@ export function useStatusbarItems({
   statusSnapshot,
   toggleCommandCenter
 }: StatusbarItemsOptions) {
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
   const copy = t.shell.statusbar
   const activeSessionId = useStore($activeSessionId)
   const terminalTakeover = useStore($terminalTakeover)
@@ -276,18 +278,18 @@ export function useStatusbarItems({
     // version pill, tooltip explains why the channel shows nothing (AIS-299).
     const headTag = updateStatus?.headTag ?? null
     const newerThanTarget = !applying && behind === 0 && updateStatus?.newerThanTarget === true && !!headTag && !!targetTag
-    // Release-managed install (archive updates, AIS-312): the offer is a
-    // whole release version, not a commit count.
-    const targetVersion = updateStatus?.targetVersion ?? null
-    const releaseUpdate = !applying && behind > 0 && updateStatus?.source === 'release' && !!targetVersion
+    // Release channel (stable / preview) or release-managed install (archive
+    // updates, AIS-312): the offer is a version with curated notes, like the
+    // update dialog — never the branch or a commit count (AIS-755).
+    const release = applying ? null : resolveReleaseUpdateIndicator({ copy: t.updates, locale, status: updateStatus })
 
     const version = appVersion ? `v${appVersion}` : (sha ?? copy.unknown)
     const base = remote ? copy.clientLabel(appVersion ?? sha ?? copy.unknown) : version
 
     const label = applying
       ? `${base} · ${updateApply.stage === 'restart' ? copy.restart : copy.update}`
-      : releaseUpdate
-        ? `${base} · ✨ v${targetVersion}`
+      : release
+        ? `${base} · ✨ ${release.label}`
         : !applying && behind > 0
           ? `${base} · ✨ Update (+${behind})`
           : offChannel
@@ -296,13 +298,13 @@ export function useStatusbarItems({
 
     const tooltip = [
       applying ? updateApply.message || copy.updateInProgress : null,
-      releaseUpdate && copy.releaseAvailable(`v${targetVersion}`),
-      !applying && behind > 0 && !releaseUpdate && copy.commitsBehind(behind, updateStatus?.branch ?? '...'),
+      release && release.heading,
+      !applying && behind > 0 && !release && copy.commitsBehind(behind, updateStatus?.branch ?? '...'),
       offChannel && copy.aheadOfRelease(updateStatus?.aheadOfTarget ?? 0, targetTag),
       newerThanTarget && copy.newerRelease(headTag, targetTag, updateStatus?.branch ?? 'stable'),
       appVersion && copy.desktopVersion(appVersion),
-      sha && copy.commit(sha),
-      updateStatus?.branch && copy.branch(updateStatus.branch)
+      !release && sha && copy.commit(sha),
+      !release && updateStatus?.branch && copy.branch(updateStatus.branch)
     ]
       .filter(Boolean)
       .join(' · ')
@@ -327,26 +329,10 @@ export function useStatusbarItems({
       label,
       onSelect: () => openUpdateOverlayFor('client'),
       title: tooltip || undefined,
+      tooltip: release ? <ReleaseUpdateTooltip release={release} /> : undefined,
       variant: 'action'
     }
-  }, [
-    desktopVersion?.appVersion,
-    connection?.mode,
-    copy,
-    updateApply.applying,
-    updateApply.message,
-    updateApply.stage,
-    updateStatus?.aheadOfTarget,
-    updateStatus?.behind,
-    updateStatus?.branch,
-    updateStatus?.currentSha,
-    updateStatus?.headTag,
-    updateStatus?.newerThanTarget,
-    updateStatus?.offChannel,
-    updateStatus?.source,
-    updateStatus?.targetTag,
-    updateStatus?.targetVersion
-  ])
+  }, [desktopVersion?.appVersion, connection?.mode, copy, locale, t.updates, updateApply.applying, updateApply.message, updateApply.stage, updateStatus])
 
   const backendVersionItem = useMemo<StatusbarItem | null>(() => {
     if (connection?.mode !== 'remote') {
@@ -597,4 +583,28 @@ export function useStatusbarItems({
   )
 
   return { leftStatusbarItems, statusbarItems }
+}
+
+// AIS-755: hover card of the version pill on a release channel — the target
+// version and the curated notes, the same content the update dialog lists.
+export function ReleaseUpdateTooltip({ release }: { release: ReleaseUpdateIndicator }) {
+  return (
+    <div className="grid gap-1.5" data-testid="release-update-tooltip">
+      <div>
+        <p className="font-semibold">{PRODUCT_DISPLAY_NAME} · {release.heading}</p>
+        {release.installedLine && <p className="opacity-70">{release.installedLine}</p>}
+      </div>
+      {release.groups.map(group => (
+        <div key={group.id}>
+          <p className="text-[10px] font-semibold uppercase tracking-wide opacity-70">{group.label}</p>
+          <ul className="list-disc pl-3.5">
+            {group.items.map(item => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      ))}
+      {release.more && <p className="opacity-70">{release.more}</p>}
+    </div>
+  )
 }

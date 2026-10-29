@@ -1,4 +1,5 @@
 import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
+import { PRODUCT_DISPLAY_NAME } from '@/lib/product'
 
 import type { Translations } from './types'
 
@@ -192,11 +193,11 @@ export const en: Translations = {
     backendOutOfDateTitle: 'Backend out of date',
     backendOutOfDateMessage:
       'Your Hermes backend is older than this desktop build and may not work correctly. Update to align them.',
-    updateHermes: 'Update Hermes',
+    updateHermes: `Update ${PRODUCT_DISPLAY_NAME}`,
     updateReadyTitle: 'Update ready',
     updateReadyMessage: count => `${count} new change${count === 1 ? '' : 's'} available.`,
-    updateVersionMessage: (target, current) => `Hermes ${target} is available – you are on ${current}.`,
-    updateOutdatedTitle: 'Hermes is out of date',
+    updateVersionMessage: (target, current) => `${PRODUCT_DISPLAY_NAME} ${target} is available – you are on ${current}.`,
+    updateOutdatedTitle: `${PRODUCT_DISPLAY_NAME} is out of date`,
     updateOutdatedMessage: (target, current) =>
       `You are on ${current}, the current version is ${target}. Please install the update – newer versions fix known problems.`,
     seeWhatsNew: "See what's new",
@@ -461,7 +462,7 @@ export const en: Translations = {
       cantReach: "We couldn't reach the update server.",
       tapCheck: 'Tap "Check now" to look for updates.',
       updateReady: count => `A new update is ready (${count} change${count === 1 ? '' : 's'} included).`,
-      updateReadyVersion: (target, current) => `Hermes ${target} is available (installed: ${current}).`,
+      updateReadyVersion: (target, current) => `${PRODUCT_DISPLAY_NAME} ${target} is available (installed: ${current}).`,
       lastChecked: age => `Last checked ${age}`,
       justNowSuffix: ' · just now',
       automaticUpdates: 'Automatic updates',
@@ -772,6 +773,15 @@ export const en: Translations = {
         grantForOrgHint: 'Tenant admin: approve Teams chat, presence, shared mailboxes and To Do once for everyone',
         orgApproved: 'Organization approved',
         selfOnly: 'Mail, calendar and files only',
+        partlyApproved: 'Partly approved',
+        capabilities: {
+          org: 'Teams chats, shared mailboxes and tasks',
+          groups: 'group calendars',
+          directory: 'the company directory and SharePoint sites',
+          channels: 'reading and posting in Teams channels'
+        },
+        stillNeedsApproval: capabilities => `Your organization still has to approve ${capabilities}.`,
+        listJoin: items => new Intl.ListFormat('en', { type: 'conjunction' }).format(items),
         copied: 'Consent link copied',
         openedAndCopied: 'Consent link opened in the browser and copied. Only a tenant administrator can accept it.',
         loadFailed: 'Could not build the admin consent link'
@@ -1475,7 +1485,7 @@ export const en: Translations = {
       fetch: 'Downloading…',
       pull: 'Almost there…',
       pydeps: 'Finishing up…',
-      restart: 'Restarting Hermes…',
+      restart: `Restarting ${PRODUCT_DISPLAY_NAME}…`,
       manual: 'Update from your terminal',
       error: 'Update paused'
     },
@@ -1483,7 +1493,7 @@ export const en: Translations = {
     checkFailedTitle: 'Couldn’t check for updates',
     tryAgain: 'Try again',
     notAvailableTitle: 'Update not available',
-    unsupportedMessage: 'This version of Hermes can’t update itself from inside the app.',
+    unsupportedMessage: `This version of ${PRODUCT_DISPLAY_NAME} can’t update itself from inside the app.`,
     connectionRetry: 'Check your connection and try again.',
     latestBody: 'You’re running the latest version.',
     latestBodyBackend: 'The backend is running the latest version.',
@@ -1491,7 +1501,7 @@ export const en: Translations = {
     availableTitle: 'New update available',
     availableBody: 'A new version is ready to install.',
     availableTitleBackend: 'Backend update available',
-    availableBodyBackend: 'A newer version of the connected Hermes backend is ready to install.',
+    availableBodyBackend: 'A newer version of the connected backend is ready to install.',
     availableBodyNoChangelog: 'A newer version is ready. Release notes aren’t available for this install type.',
     updateNow: 'Update now',
     maybeLater: 'Maybe later',
@@ -1508,19 +1518,27 @@ export const en: Translations = {
     devBuild: 'development build',
     changeCount: count => `+${count} ${count === 1 ? 'commit' : 'commits'}`,
     manualTitle: 'Update from your terminal',
-    manualBody: 'You installed Hermes from the command line, so updates run there too. Paste this into your terminal:',
-    manualPickedUp: 'Hermes will pick up the new version next time you launch it.',
+    manualBody: `You installed ${PRODUCT_DISPLAY_NAME} from the command line, so updates run there too. Paste this into your terminal:`,
+    manualPickedUp: `${PRODUCT_DISPLAY_NAME} will pick up the new version next time you launch it.`,
     copy: 'Copy',
     copied: 'Copied',
     done: 'Done',
-    applyingBody: 'The Hermes updater will take over in its own window and reopen Hermes when it’s done.',
-    applyingBodyBackend: 'The remote backend is applying the update and will restart. Hermes reconnects automatically when it’s back.',
-    applyingClose: 'Hermes will close to apply the update.',
+    applyingBody: `The ${PRODUCT_DISPLAY_NAME} updater will take over in its own window and reopen ${PRODUCT_DISPLAY_NAME} when it’s done.`,
+    applyingBodyBackend: `The remote backend is applying the update and will restart. ${PRODUCT_DISPLAY_NAME} reconnects automatically when it’s back.`,
+    applyingClose: `${PRODUCT_DISPLAY_NAME} will close to apply the update.`,
     errorTitle: 'Update didn’t finish',
     errorBody: 'No worries — nothing was lost. You can try again now.',
     offlineTitle: 'No internet connection',
     offlineBody: 'Nothing was changed. I will retry the update automatically as soon as you are back online.',
     notNow: 'Not now',
+    reportSummary: {
+      generic: 'Problem with the update',
+      checkFailed: 'Update check failed',
+      checkUnreachable: 'Update check could not reach the server',
+      stuck: 'Update is stuck or was cancelled',
+      manualFailed: 'Manual update failed',
+      failed: message => `Update failed: ${message || 'unknown error'}`
+    },
     applyStatus: {
       preparing: 'Updating backend…',
       pulling: 'Backend updating…',
@@ -1539,7 +1557,7 @@ export const en: Translations = {
       skipped: 'Skipped',
       failed: 'Failed'
     },
-    oneTimeTitle: 'Hermes needs a one-time install',
+    oneTimeTitle: `${PRODUCT_DISPLAY_NAME} needs a one-time install`,
     unsupportedDesc: platform =>
       `Automated first-launch install isn’t available on ${platform} yet. Open Terminal and run the command below, then relaunch this app. Subsequent launches will skip this step.`,
     installCommand: 'Install command',
@@ -1548,12 +1566,12 @@ export const en: Translations = {
     installTo: 'Will install to',
     retryAfterRun: 'I’ve run it -- retry',
     failedTitle: 'Installation failed',
-    settingUpTitle: 'Setting up Hermes Agent',
+    settingUpTitle: `Setting up ${PRODUCT_DISPLAY_NAME}`,
     finishingTitle: 'Finishing up',
     failedDesc:
-      'One of the install steps failed. On Windows, this can happen if another Hermes CLI or desktop instance is running. Stop any running Hermes instances, then retry. Check the details below or the desktop log for the full transcript.',
+      `One of the install steps failed. On Windows, this can happen if ${PRODUCT_DISPLAY_NAME} is still running in another window. Close every ${PRODUCT_DISPLAY_NAME} window, then retry. Check the details below or the desktop log for the full transcript.`,
     activeDesc:
-      'This is a one-time setup. The Hermes installer is downloading dependencies and configuring your machine. Subsequent launches will skip this step.',
+      `This is a one-time setup. The ${PRODUCT_DISPLAY_NAME} installer is downloading dependencies and configuring your machine. Subsequent launches will skip this step.`,
     progress: (completed, total) => `${completed} of ${total} steps complete`,
     currentStage: stage => ` -- now: ${stage}`,
     fetchingManifest: 'Fetching installer manifest...',
@@ -1567,14 +1585,15 @@ export const en: Translations = {
     transcriptSaved: 'Full transcript saved to',
     copiedOutput: 'Copied!',
     copyOutput: 'Copy output',
-    reloadRetry: 'Reload and retry'
+    reloadRetry: 'Reload and retry',
+    reportSummary: error => `Installation failed: ${error || 'unknown error'}`
   },
 
   onboarding: {
-    headerTitle: "Let's get you setup with Hermes Agent",
+    headerTitle: `Let's get you set up with ${PRODUCT_DISPLAY_NAME}`,
     headerDesc: 'Connect a model provider to start chatting. Most options take one click.',
-    preparingInstall: 'Hermes is finishing install. This usually takes under a minute on first run.',
-    starting: 'Starting Hermes…',
+    preparingInstall: `${PRODUCT_DISPLAY_NAME} is finishing install. This usually takes under a minute on first run.`,
+    starting: `Starting ${PRODUCT_DISPLAY_NAME}…`,
     lookingUpProviders: 'Looking up providers...',
     collapse: 'Collapse',
     otherProviders: 'Other providers',
@@ -1722,7 +1741,7 @@ export const en: Translations = {
       releaseAvailable: tag => `release ${tag} available`,
       aheadOfRelease: (count, tag) => `development checkout: ${count} commit${count === 1 ? '' : 's'} ahead of ${tag}`,
       newerRelease: (headTag, targetTag, channel) => `${headTag} is newer than the ${channel} release ${targetTag}`,
-      desktopVersion: version => `Hermes Desktop v${version}`,
+      desktopVersion: version => `${PRODUCT_DISPLAY_NAME} v${version}`,
       backendVersion: version => `Backend v${version}`,
       clientLabel: version => `client v${version}`,
       backendLabel: version => `backend v${version}`,

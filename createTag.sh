@@ -106,6 +106,17 @@ bump_version() {
 
 tag_commit() { git rev-list -n 1 "$1"; }
 
+# warn_missing_release_notes <X.Y.Z> <commit> — the update dialog and the
+# status bar show release-notes/<X.Y.Z>.json (AIS-750); without it release
+# channels get one generic line. A warning, not a stop (AIS-755): the notes can
+# follow with the next candidate. Checked in the tagged commit, not the tree.
+warn_missing_release_notes() {
+  local version="$1" commit="$2" notes="release-notes/${1}.json"
+  git cat-file -e "${commit}:${notes}" 2>/dev/null && return 0
+  echo "⚠️  ${notes} is missing in ${commit:0:7} — users see only a generic line instead of the release notes for v${version}." >&2
+  echo "   Write the de/en notes (docs/RELEASE.md, \"End-user release notes\"), merge them to main and cut the next candidate." >&2
+}
+
 # version_gt <a> <b> — true when semver a > b (both X.Y.Z).
 version_gt() {
   [[ "$1" != "$2" ]] && [[ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" == "$1" ]]
@@ -217,6 +228,7 @@ if [[ "$MODE" == "bump" ]]; then
   fi
   tag="v${target}-rc.${next_rc}"
   echo "📦 Release candidate: ${tag} (highest stable: ${STABLE:-none}) on ${HEAD_SHA:0:7}"
+  warn_missing_release_notes "$target" "$HEAD_SHA"
   create_and_push_tag "$tag" "$HEAD_SHA" "Release candidate ${tag} (from main ${HEAD_SHA:0:7})"
   exit 0
 fi
@@ -237,4 +249,5 @@ if [[ "$target_commit" != "$HEAD_SHA" ]]; then
 fi
 tag="v${cand_version}"
 echo "🏷  Promote ${CANDIDATE} → ${tag} on ${target_commit:0:7}"
+warn_missing_release_notes "$cand_version" "$target_commit"
 create_and_push_tag "$tag" "$target_commit" "Stable release ${tag} (promoted from ${CANDIDATE})"

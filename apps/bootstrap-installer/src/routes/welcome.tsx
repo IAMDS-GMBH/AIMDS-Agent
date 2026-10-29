@@ -1,5 +1,6 @@
 import { type CSSProperties } from 'react'
 import { Button } from '../components/button'
+import { PRODUCT_DISPLAY_NAME } from '../lib/product'
 import { $route } from '../store'
 import { ArrowRight } from 'lucide-react'
 
@@ -31,9 +32,9 @@ export default function Welcome() {
           }
         >
           <span>
-            <span>HERMES AGENT</span>
+            <span>{PRODUCT_DISPLAY_NAME.toUpperCase()}</span>
           </span>
-          <span aria-hidden="true">HERMES AGENT</span>
+          <span aria-hidden="true">{PRODUCT_DISPLAY_NAME.toUpperCase()}</span>
         </p>
 
         <p className="m-0 text-center text-base leading-normal tracking-tight text-muted-foreground">
@@ -47,7 +48,7 @@ export default function Welcome() {
         size="lg"
         className="group inline-flex items-center gap-2 px-6"
       >
-        Install Hermes
+        Install {PRODUCT_DISPLAY_NAME}
         <ArrowRight
           size={18}
           className="transition-transform group-hover:translate-x-0.5"

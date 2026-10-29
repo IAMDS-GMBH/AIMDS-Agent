@@ -123,7 +123,7 @@ pub fn run() {
             tauri::http::Response::builder()
                 .status(200)
                 .header("Content-Type", "text/html; charset=utf-8")
-                .body(b"<html><head><title>Hermes</title></head><body>\
+                .body(b"<html><head><title>AIMDS Suite Agent</title></head><body>\
                        <p style=\"font-family:system-ui;text-align:center;margin-top:2rem\">\
                        \xe2\x9c\x93 Signed in \xe2\x80\x94 you can close this window.</p>\
                        </body></html>".to_vec())

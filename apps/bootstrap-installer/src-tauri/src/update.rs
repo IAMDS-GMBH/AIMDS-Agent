@@ -75,7 +75,7 @@ pub async fn start_update(app: AppHandle) -> Result<(), String> {
             None
         };
         let mut stages = vec![
-            stage_info("update", "Updating Hermes"),
+            stage_info("update", "Updating AIMDS Suite Agent"),
             stage_info("rebuild", "Rebuilding the desktop app"),
         ];
         if cfg!(target_os = "macos") && target_app.is_some() {
@@ -181,7 +181,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
 
     // Synthetic manifest so the existing progress UI renders our two stages.
     let mut stages = vec![
-        stage_info("update", "Updating Hermes"),
+        stage_info("update", "Updating AIMDS Suite Agent"),
         stage_info("rebuild", "Rebuilding the desktop app"),
     ];
     if cfg!(target_os = "macos") && target_app.is_some() {
@@ -290,8 +290,9 @@ async fn run_update(app: AppHandle) -> Result<()> {
             emit_stage(&app, "update", StageState::Succeeded, Some(update_ms), None);
         }
         Some(code) if code == UPDATE_EXIT_CONCURRENT => {
-            let msg = "Hermes is still running. Close all Hermes windows and try \
-                       the update again."
+            // Visible text names the product (AIS-755); the process stays "Hermes".
+            let msg = "AIMDS Suite Agent is still running. Close all of its windows \
+                       and try the update again."
                 .to_string();
             emit_stage(
                 &app,

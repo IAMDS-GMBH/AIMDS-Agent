@@ -658,6 +658,12 @@ export interface Translations {
         grantForOrgHint: string
         orgApproved: string
         selfOnly: string
+        /** AIS-755: some, not all features approved by the organization. */
+        partlyApproved: string
+        /** End-user names of what a missing approval would unlock (no scope names). */
+        capabilities: Record<'channels' | 'directory' | 'groups' | 'org', string>
+        stillNeedsApproval: (capabilities: string) => string
+        listJoin: (items: string[]) => string
         copied: string
         openedAndCopied: string
         loadFailed: string
@@ -1287,6 +1293,15 @@ export interface Translations {
     offlineTitle: string
     offlineBody: string
     notNow: string
+    /** Pre-filled summaries of a problem report from the update dialog (AIS-755). */
+    reportSummary: {
+      generic: string
+      checkFailed: string
+      checkUnreachable: string
+      stuck: string
+      manualFailed: string
+      failed: (message?: null | string) => string
+    }
     applyStatus: {
       preparing: string
       pulling: string
@@ -1325,6 +1340,8 @@ export interface Translations {
     copiedOutput: string
     copyOutput: string
     reloadRetry: string
+    /** Pre-filled summary of a problem report from the install screen (AIS-755). */
+    reportSummary: (error?: null | string) => string
   }
 
   onboarding: {

@@ -4,7 +4,14 @@ import type { DesktopReleaseNote, DesktopUpdateStatus } from '@/global'
 import { de } from '@/i18n/de'
 import { en } from '@/i18n/en'
 
-import { buildReleaseNoteGroups, formatVersionLabel, isReleaseUpdate, resolveUpdateHeader, resolveUpdateNotes } from './update-notes'
+import {
+  buildReleaseNoteGroups,
+  formatVersionLabel,
+  isReleaseUpdate,
+  resolveReleaseUpdateIndicator,
+  resolveUpdateHeader,
+  resolveUpdateNotes
+} from './update-notes'
 
 // AIS-750: what Johannes saw on v0.7.13-rc.1 → the header and list now.
 const previewStatus: DesktopUpdateStatus = {
@@ -115,5 +122,61 @@ describe('update notes', () => {
     expect(result.curated).toBe(false)
     expect(result.commitItems).toBe(1)
     expect(result.groups).toEqual([{ id: 'new', items: ['Adopt OpenProject MCP 0.6'], label: 'Neuerungen' }])
+  })
+})
+
+// AIS-755: the status-bar version pill said "✨ Update (+12)" and "12 commits
+// behind preview" while the dialog already showed the version and the notes.
+describe('status-bar update indicator', () => {
+  const status = { ...previewStatus, releaseNotes: notes }
+
+  it('shows the target version and the curated notes in the UI language', () => {
+    const indicator = resolveReleaseUpdateIndicator({ copy: en.updates, locale: 'en', status })
+
+    expect(indicator).toEqual({
+      groups: [
+        { id: 'new', items: ['Read Microsoft Teams channels and post to them'], label: "What's new" },
+        { id: 'improved', items: ['Long conversations stay responsive'], label: 'Improved' },
+        {
+          id: 'fixed',
+          items: ['Pending approvals now show at the end of the answer', 'Nur auf Deutsch', 'English only'],
+          label: 'Fixed'
+        }
+      ],
+      heading: 'Version 0.7.13 – preview',
+      installedLine: 'Installed: Version 0.7.12',
+      label: 'v0.7.13',
+      more: null
+    })
+
+    const german = resolveReleaseUpdateIndicator({ copy: de.updates, locale: 'de', status })
+
+    expect(german?.heading).toBe('Version 0.7.13 – Vorabversion')
+    expect(german?.groups[0].items).toEqual(['Kanäle in Microsoft Teams lesen und dorthin posten'])
+    expect(JSON.stringify([german, resolveReleaseUpdateIndicator({ copy: en.updates, locale: 'en', status })])).not.toMatch(
+      /preview·|\+12|commits?|Commit|rc\.3|branch/
+    )
+  })
+
+  it('cuts long notes and says how many more there are', () => {
+    const indicator = resolveReleaseUpdateIndicator({ copy: en.updates, locale: 'en', maxItems: 2, status })
+
+    expect(indicator?.groups.flatMap(group => group.items)).toHaveLength(2)
+    expect(indicator?.more).toBe('+ 3 more changes included.')
+  })
+
+  it('falls back to the neutral line without notes and stays out of the developer view', () => {
+    expect(resolveReleaseUpdateIndicator({ copy: de.updates, locale: 'de', status: previewStatus })?.groups).toEqual([
+      { id: 'other', items: ['Fehlerbehebungen und Verbesserungen'], label: 'In diesem Update' }
+    ])
+    expect(resolveReleaseUpdateIndicator({ copy: en.updates, locale: 'en', status: { behind: 4, branch: 'main', supported: true } })).toBeNull()
+    expect(resolveReleaseUpdateIndicator({ copy: en.updates, locale: 'en', status: { ...status, behind: 0 } })).toBeNull()
+    expect(
+      resolveReleaseUpdateIndicator({
+        copy: en.updates,
+        locale: 'en',
+        status: { behind: 1, branch: 'stable', source: 'release', supported: true, targetVersion: '0.7.14' }
+      })?.label
+    ).toBe('v0.7.14')
   })
 })

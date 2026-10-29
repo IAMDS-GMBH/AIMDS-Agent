@@ -86,3 +86,22 @@ def test_guards_branch_sync_and_dry_run(repo):
     assert code == 0 and "highest stable:    v0.7.4" in out and "HEAD tag:" in out
     code, out = _tag(repo, "promote", "stable")
     assert code != 0 and "No release candidate" in out
+
+
+def test_missing_release_notes_warn_but_do_not_stop(repo):
+    """AIS-755: a candidate or promotion without release-notes/<X.Y.Z>.json
+    warns (users would only see a generic line) but still tags."""
+    code, out = _tag(repo, "patch", "--dry-run")
+    assert code == 0 and "(dry-run) would run" in out
+    assert "release-notes/0.7.5.json is missing" in out
+    code, out = _tag(repo, "patch")
+    assert code == 0 and "release-notes/0.7.5.json is missing" in out
+    assert "v0.7.5-rc.1" in _git(repo, "tag", "-l")
+
+    (repo / "release-notes").mkdir()
+    (repo / "release-notes" / "0.7.5.json").write_text('{"version": "0.7.5", "notes": []}\n')
+    _git(repo, "add", "."); _git(repo, "commit", "-qm", "notes"); _git(repo, "push", "-q", "origin", "main")
+    code, out = _tag(repo, "patch")
+    assert code == 0 and "v0.7.5-rc.2" in out and "is missing" not in out
+    code, out = _tag(repo, "promote", "stable")
+    assert code == 0 and "is missing" not in out  # checked in the candidate's commit (rc.2 has the notes)

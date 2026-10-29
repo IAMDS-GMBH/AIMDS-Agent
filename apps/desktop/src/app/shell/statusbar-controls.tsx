@@ -2,6 +2,7 @@ import type { ComponentProps, ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { Tip } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 
 // Shared chrome styling for interactive statusbar items (button / link / menu
@@ -37,6 +38,9 @@ export interface StatusbarItem {
   menuItems?: readonly StatusbarMenuItem[]
   onSelect?: (modifiers: StatusbarSelectModifiers) => void
   title?: string
+  /** Hover card for an action item (AIS-755: the update notes behind the
+   *  version pill). `title` stays unrendered, see the Tip note in b94b3622b. */
+  tooltip?: ReactNode
   to?: string
   variant?: 'action' | 'link' | 'menu' | 'text'
 }
@@ -171,19 +175,25 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
   }
 
   return (
-    <button
-      className={cn(STATUSBAR_ACTION_CLASS, item.className)}
-      disabled={item.disabled}
-      onClick={event => {
-        if (item.to) {
-          navigate(item.to)
-        }
-
-        item.onSelect?.({ shiftKey: event.shiftKey })
-      }}
-      type="button"
+    <Tip
+      className="max-w-xs px-2.5 py-2 text-left text-[11px] font-normal leading-snug"
+      label={item.tooltip}
+      side="top"
     >
-      {content}
-    </button>
+      <button
+        className={cn(STATUSBAR_ACTION_CLASS, item.className)}
+        disabled={item.disabled}
+        onClick={event => {
+          if (item.to) {
+            navigate(item.to)
+          }
+
+          item.onSelect?.({ shiftKey: event.shiftKey })
+        }}
+        type="button"
+      >
+        {content}
+      </button>
+    </Tip>
   )
 }
