@@ -1942,24 +1942,26 @@ def build_workspace_prompt(valid_tool_names: "set[str] | None" = None) -> str:
     obsidian_vault_path = os.environ.get("OBSIDIAN_VAULT_PATH") or os.path.expanduser("~/Documents/AIMDS-Suite-Vault")
     lookup_tools = [t for t in ("search_files", "read_file", "search_tool") if t in names] or ["search_files", "read_file"]
     lookup = "/".join(f"`{t}`" for t in lookup_tools)
+    # AIS-757: rules only — the vault path is named once, the folder list stays
+    # (it is what keeps the model from inventing folders).
     return (
         "# Workspace (Obsidian vault)\n"
-        f"The active user execution directory / CWD is `{workspace_path}`. Use {lookup} on that path to look things up; "
-        "never invent or guess paths (e.g. `.brain`) that were not returned by a tool.\n"
-        f"The canonical Obsidian Vault root for markdown notes, templates, knowledge, and documents is `{obsidian_vault_path}` "
-        "(contains `_inbox/`, `_templates/`, `contacts/`, `decisions/`, `documents/`, `ideas/`, `journal/`, `knowledge/`, "
-        "`meetings/`, `notes/`, `projects/`, `reports/`, `security/`, `tasks/`, `users/`; every folder has a `_hub.md` — read it before filing).\n"
-        "DEFAULT RULE FOR DOCUMENT/NOTE CREATION & VAULT HYGIENE:\n"
-        f"1. Save all created or generated markdown files, notes, specs, summaries, and meeting records inside `{obsidian_vault_path}/<subfolder>/` "
-        "unless the user explicitly specifies a different custom path or target directory.\n"
-        f"2. CRITICAL DEDUPLICATION RULE: Before creating a new file in the vault, ALWAYS search existing notes (with {lookup} or memory search) "
-        "to check if a canonical note, Hub document (e.g. `[[hub-...]]`), or existing tracking file for the topic already exists. "
-        "If an existing note exists, UPDATE or append to that canonical note instead of creating duplicate/fragmented files with slight name variations (`_neu.md`, `_v2.md`).\n"
-        "3. Structure long-running topics and hubs under `projects/` or `knowledge/`, people under `users/<user>/`, and link related notes via Obsidian wikilinks `[[note-title]]`. "
-        "Use `tasks/` only for short-lived checklists. Frontmatter is YAML per `_conventions.md`: `type` (closed vocabulary), `title`, "
-        "`created` and `updated` as YYYY-MM-DD, `tags` as a list, `related_to` with `[[path/links]]` — never a JSON block, never timestamps.\n"
-        "4. Generated data reports (target hours, budgets, rollups) go to `reports/<topic>/` from `_templates/report.md` — one canonical file per "
-        "topic and period, overwritten on rerun (bump `updated:`), no `_v2`/`FINAL` copies, no emoji in headings; `journal/` is for retrospectives only.\n"
+        f"Working directory: `{workspace_path}`. Look things up there with {lookup}; never invent or guess paths "
+        "(e.g. `.brain`) that no tool returned.\n"
+        f"Vault root: `{obsidian_vault_path}` (`_inbox/`, `_templates/`, `contacts/`, `decisions/`, `documents/`, `ideas/`, "
+        "`journal/`, `knowledge/`, `meetings/`, `notes/`, `projects/`, `reports/`, `security/`, `tasks/`, `users/`; every "
+        "folder has a `_hub.md` — read it before filing).\n"
+        "- Markdown files you create (notes, specs, summaries, meeting records) go into a vault subfolder unless the user "
+        "names another path.\n"
+        f"- Search before creating ({lookup} or memory search): when a canonical note, hub (`[[hub-...]]`) or tracking file "
+        "exists, UPDATE it instead of adding variants (`_neu.md`, `_v2.md`).\n"
+        "- Long-running topics and hubs under `projects/` or `knowledge/`, people under `users/<user>/`, short-lived "
+        "checklists in `tasks/`; link notes with `[[note-title]]`. Frontmatter is YAML per `_conventions.md`: `type` (closed "
+        "vocabulary), `title`, `created`/`updated` as YYYY-MM-DD, `tags` as a list, `related_to` with `[[path/links]]` — "
+        "never a JSON block, never timestamps.\n"
+        "- Generated data reports (target hours, budgets, rollups) go to `reports/<topic>/` from `_templates/report.md`: "
+        "one file per topic and period, overwritten on rerun (bump `updated:`), no `_v2`/`FINAL` copies, no emoji in "
+        "headings; `journal/` is for retrospectives only.\n"
     )
 
 
@@ -1977,29 +1979,28 @@ def build_remote_mcp_memory_prompt(valid_tool_names: "set[str] | None" = None) -
     workspace_path = workspace_line  # truthiness only — see the log line below
 
     onboarding_hint = (
-        f"If onboarding hints mention an init/onboarding skill or suggested skills, use `{skill_read_tool_name}` "
-        "(the MCP memory skill tool), not local `skill_view`.\n"
+        f"An init/onboarding skill or suggested skill named in its hints loads with `{skill_read_tool_name}` "
+        "(the MCP memory skill tool), not local `skill_view`. "
         if skill_read_tool_name
-        else "If onboarding hints mention an init/onboarding skill but no MCP memory skill tool is available, "
-        "do not call local `skill_view` for init; continue with direct onboarding questions instead.\n"
+        else "An init/onboarding skill named in its hints has no MCP memory skill tool here: do not call local "
+        "`skill_view` for init; ask the onboarding questions directly. "
     )
     onboarding_flow_hint = (
-        "When the memory tool result includes `onboarding_init_auto_started=true`, first provide one brief plain-language context sentence "
-        "(for example: profile was empty and onboarding is now starting). "
-        "If `onboarding_question_flow_required=true`, in that SAME response immediately call `clarify` with exactly one onboarding question "
-        "(prefer `onboarding_first_question`, else the first item from `onboarding_questions`) and wait for the user's answer before asking the next question. "
-        "Do NOT output a multi-question plain-text list.\n"
+        "With `onboarding_init_auto_started=true`, open with one brief plain-language sentence (e.g. the profile was "
+        "empty and onboarding starts now). With `onboarding_question_flow_required=true`, in that SAME response "
+        "immediately call `clarify` with exactly one onboarding question (`onboarding_first_question`, else the first of "
+        "`onboarding_questions`) and wait for the answer before the next. Do NOT output a multi-question plain-text list. "
         if has_clarify
-        else "When the memory tool result includes `onboarding_init_auto_started=true`, first provide one brief plain-language context sentence "
-        "(for example: profile was empty and onboarding is now starting), then continue with onboarding questions one at a time in plain chat.\n"
+        else "With `onboarding_init_auto_started=true`, open with one brief plain-language sentence (e.g. the profile was "
+        "empty and onboarding starts now), then ask the onboarding questions one at a time in plain chat. "
     )
     onboarding_save_hint = (
-        f"When onboarding confirms durable profile facts (name/role/preferences/work style), persist them via `{memory_save_tool_name}` before concluding onboarding.\n"
+        f"Persist confirmed profile facts (name/role/preferences/work style) via `{memory_save_tool_name}` before concluding onboarding.\n"
         if memory_save_tool_name
         else (
-            "When onboarding confirms durable profile facts (name/role/preferences/work style) and no MCP memory_save tool is available, "
-            + ("persist them via local `memory` with target=\"user\".\n" if "memory" in names
-               else "write them to the vault profile note (`users/<user>/profile.md`).\n")
+            "Persist confirmed profile facts (name/role/preferences/work style) "
+            + ("via local `memory` with target=\"user\".\n" if "memory" in names
+               else "in the vault profile note (`users/<user>/profile.md`).\n")
         )
     )
     logger.debug(
@@ -2012,7 +2013,7 @@ def build_remote_mcp_memory_prompt(valid_tool_names: "set[str] | None" = None) -
 
     close_hint = (
         f"SESSION CLOSE: when the work is done or the topic changes, call `{summarize_tool_name}` with a short summary, "
-        "the decisions taken and tags — the runtime also does this at session end as a safety net, but you know the outcome best.\n"
+        "the decisions taken and tags — the runtime's call at session end is only a safety net.\n"
         if summarize_tool_name else ""
     )
     save_hint = (
@@ -2020,37 +2021,37 @@ def build_remote_mcp_memory_prompt(valid_tool_names: "set[str] | None" = None) -
         if memory_save_tool_name
         else "persist them in the vault profile note (`users/<user>/profile.md`)"
     )
+    # AIS-757: one statement per rule; the rationale sentences and the
+    # "use read/list/search for retrieval" line (the tools say so) are gone.
     return (
         "# Memory vault & storage strategy\n"
-        f"- **Memory vault (`{tool_name}` and its sibling memory tools)**: the primary store for durable facts — standing rules, the user profile, "
-        "topic hubs, decisions, session summaries, and what you learn about tools. It is synchronized across devices.\n"
-        f"{workspace_line}"
-        "- **Vault files** (the Obsidian workspace above): notes, documents, artifacts, drafts — anything a person opens as a file.\n"
-        "Nothing else is a memory store: the transcript is not, and scratch files are not.\n"
-        f"SESSION START: call `{tool_name}` exactly ONCE, before the first substantive tool call of the session, and apply what it returns. This SHRINKS the conversation — rules and hubs you already hold replace re-deriving them from the filesystem, and a hub answers in one read what a directory scan costs in twenty. Do NOT repeat it every turn; one load per session is enough.\n"
-        f"BEFORE DERIVING: when a task touches a topic the vault may already document (a repo, a client, a recurring workflow, a past decision), search memory first rather than reconstructing it. A stale hit is still a starting point; an unsearched vault is wasted context.\n"
-        "WHAT LIVES WHERE: durable facts, standing rules, preferences, contacts, decisions and cross-device context belong in the vault; "
-        "files, notes and documents belong in the workspace folders. Do not push working files into the vault and do not keep facts only in a file.\n"
-        f"When the user shares or confirms durable preferences, rules, instructions, or contacts, {save_hint} so the vault stays up to date.\n"
-        "Use memory read/list/search tools for explicit retrieval or editing tasks.\n"
-        f"PERSONAL QUESTIONS, ANY LANGUAGE OR PHRASING: when the user asks about themselves — who they are, what you know "
-        "about them, their role, work hours, preferences, or history, in any language, dialect, or phrasing — and what "
-        f"`{tool_name}` already loaded does not answer it, call the memory search tool with a targeted query before answering. "
-        "Do not answer a personal question from the generic context blob alone just because no more specific trigger recognized "
-        "the wording; you understand intent regardless of dialect even when a keyword-based safety net does not.\n"
-        f"MEMORY HYGIENE: when `{tool_name}` reports maintenance hints — no active_contexts configured (its "
-        "context_hint), stale memories, or duplicates — surface that ONCE to the user and offer to fix it: "
-        "setting `profile.hints.active_contexts` shrinks every future session's rules payload (tag genuinely "
-        "global rules `always` FIRST so they survive the filter), and stale/duplicate entries can be cleaned "
-        "with the memory manage tools. Only act after the user confirms; never silently filter or delete.\n"
+        f"- **Memory vault** (`{tool_name}` and its sibling memory tools, synchronized across devices): the primary store "
+        "for durable facts, standing rules, preferences, contacts, the user profile, topic hubs, decisions, session "
+        "summaries and what you learn about tools.\n"
+        "- **Vault files** (the workspace below): notes, documents, artifacts, drafts — anything a person opens as a file. "
+        "Do not push working files into the memory vault and do not keep facts only in a file.\n"
+        "Nothing else is a memory store: not the transcript, not scratch files.\n"
+        f"SESSION START: load the context with `{tool_name}` exactly ONCE, before the first substantive tool call, and "
+        "apply what it returns; do NOT repeat it every turn. When a task touches a topic the vault may already document (a repo, a "
+        "client, a recurring workflow, a past decision), search memory before re-deriving it.\n"
+        f"When the user shares or confirms durable preferences, rules, instructions or contacts, {save_hint}.\n"
+        "PERSONAL QUESTIONS: when the user asks about themselves (who they are, their role, work hours, preferences, "
+        "history) in any language, dialect or phrasing and the loaded context does not answer it, call the memory "
+        "search tool with a targeted query before answering — never answer from the generic context alone.\n"
+        "MEMORY HYGIENE: when the context load reports maintenance hints (active_contexts unset per its context_hint, "
+        "stale memories, duplicates), surface them ONCE and offer to fix them: setting `profile.hints.active_contexts` "
+        "shrinks every future session's rules payload (tag genuinely global rules `always` FIRST so they survive the "
+        "filter), and the memory manage tools clean stale/duplicate entries. Act only after the user confirms; never "
+        "silently filter or delete.\n"
         f"{close_hint}"
+        "ONBOARDING: if the context load returns onboarding steps, complete that flow before other work; do not ask "
+        "the user to start init manually. "
         f"{onboarding_hint}"
-        f"If `{tool_name}` returns onboarding steps, complete that flow before other work. "
         f"{onboarding_flow_hint}"
         f"{onboarding_save_hint}"
-        "Do not ask the user to manually start init in that case.\n"
-        f"If `{tool_name}` fails, continue the task but explicitly note that user context could not be loaded."
-    )
+        "If the context load fails, continue the task but say that user context could not be loaded.\n"
+        f"{workspace_line}"
+    ).rstrip()
 
 
 def build_outlook_memory_guidance(valid_tool_names: "set[str] | None" = None) -> str:
@@ -2305,23 +2306,22 @@ def build_teams_send_guidance(valid_tool_names: "set[str] | None" = None) -> str
     memory_tool = _resolve_memory_save_tool_name(names)
     # AIS-737: "LBBW" was a meeting chat and the channel #LBBW; the release
     # notes landed in the chat. Chats and team channels are different targets.
+    # AIS-757: what each tool's own description already says (index contents,
+    # download folder, channel preview, accepted attachment paths, candidate
+    # fields) is left to the tool; this block keeps the rules.
     channel_line = (
         f"\nTeam channels are not chats: a post into a team's channel (\"#name\", \"the channel …\", a "
-        f"teams.microsoft.com/l/channel/… link) goes through `{channel_tool}`, which resolves the channel among "
-        f"the user's teams and previews team and channel before it posts. If `{send_tool}` answers "
+        f"teams.microsoft.com/l/channel/… link) goes through `{channel_tool}`. If `{send_tool}` answers "
         "`ambiguous_target` (a chat and a channel share the name), show both and ask which one is meant."
         if channel_tool
         else ""
     )
     index_line = (
-        f"\nVague references: when the user points at a chat, message, mail or person without an id or exact "
-        f"name (\"the chat about the move plan\", \"the mail from Martin about the offer\", \"Fischi\"), call "
-        f"`{index_tool}(query=<words>, kind=chat|chat_message|mail|contact|any)` first — it searches the local "
-        "index of metadata and snippets that the list/find tools fill as a side effect, and every hit carries "
-        "the ids plus a `next` hint. An empty index is filled once with `m365_index_refresh(scope='all')`."
+        f"\nVague references (a chat, message, mail or person without an id or exact name, e.g. \"the mail from "
+        f"Martin about the offer\", a nickname): call `{index_tool}(query=<words>, kind=chat|chat_message|mail|contact|any)` "
+        "first; an empty index is filled once with `m365_index_refresh(scope='all')`."
         + (f" `{contact_tool}(query)` resolves names, nicknames and learned aliases to email, Teams user id and "
-           "1:1 chat id without directory rights; nicknames that resolved a chat and greeting names from mail "
-           "are learned automatically." if contact_tool else "")
+           "1:1 chat id." if contact_tool else "")
         if index_tool
         else ""
     )
@@ -2336,68 +2336,54 @@ def build_teams_send_guidance(valid_tool_names: "set[str] | None" = None) -> str
     )
 
     resolve_line = (
-        f"Resolve the recipient with `{find_tool}(query=<name|nickname|email|topic>)` or simply pass "
-        f"`to=<name>` to `{send_tool}` — it resolves the chat itself."
+        f"pass `to=<name|nickname|email|topic>` to `{send_tool}` (or resolve first with `{find_tool}`) — the "
+        "tool resolves the chat."
         if find_tool
-        else f"Pass `to=<name|nickname|email|topic>` to `{send_tool}` — it resolves the chat itself."
+        else f"pass `to=<name|nickname|email|topic>` to `{send_tool}` — the tool resolves the chat."
     )
     none_line = (
-        f" If the result is `none` and you have an email or full name, use `{direct_tool}`; otherwise "
-        "ask for the person's full name or email."
+        f" On `none`: with an email or full name use `{direct_tool}`, otherwise ask for one."
         if direct_tool
-        else " If the result is `none`, ask for the person's full name or email."
+        else " On `none`, ask for the person's full name or email."
     )
     style_line = ""
     if style_tool:
         memory_bit = (
-            f" Look for a memory `person` note titled 'Teams style with <Name>' first; if none exists, "
-            f"call `{style_tool}(to=<name>)` and save the returned profile there via `{memory_tool}` "
-            "so it is not re-derived next time."
+            f" — read the memory `person` note 'Teams style with <Name>'; without one, call "
+            f"`{style_tool}(to=<name>)` and save its profile there via `{memory_tool}`."
             if memory_tool
-            else f" Call `{style_tool}(to=<name>)` first."
+            else f" — call `{style_tool}(to=<name>)` first."
         )
         style_line = (
-            f"Register: match how the user actually writes to this person.{memory_bit} Without history "
-            "use the Teams defaults: short, first-name or no greeting, 'du' unless the profile says 'Sie', "
-            "no closing formula, no signature, no attribution line, no technical detail about how you got "
-            "the information, and nothing the recipient cannot verify.\n"
+            f"Register: match how the user writes to this person{memory_bit} Without history: short, "
+            "first name or no greeting, 'du' unless the profile says 'Sie', no closing formula, no signature, "
+            "no attribution line, no technical detail about how you got the information, nothing the "
+            "recipient cannot verify.\n"
         )
     return (
         "# Teams: send to a person without guessing\n"
-        f"When asked to send something to a person or group via Teams: {resolve_line} Never take a "
-        "chat_id from memory, an earlier session or a guess, never call the joined-teams/channel tools "
-        "to find a person, and never ask the user for a chat URL or id. If the resolution is "
-        f"`ambiguous`, show the candidates (members, topic, last message) and ask which one — do not "
-        f"pick silently.{none_line}\n"
+        f"Recipient: {resolve_line} Never take a chat_id from memory, an earlier session or a guess, never "
+        "search people via the joined-teams/channel tools, never ask the user for a chat URL or id. On "
+        f"`ambiguous`, show the candidates and ask — never pick silently.{none_line}\n"
         f"{style_line}"
-        "Draft: show the exact message in the chat as normal Markdown (bold, lists, links; no code "
-        "block) in the recipient's language, wait for approval, then send the identical Markdown as "
-        f"`content` — `{send_tool}` renders it to the HTML Teams displays, so the preview equals what "
-        "arrives. Do not hand-write HTML unless the user asked for specific markup.\n"
-        "Confirm from the tool result (`recipient`, `plain_text`), not from assumption. If `sent` is "
-        "false, say why (ambiguous / not found) and resolve again."
+        "Draft: show the exact message as normal Markdown (no code block) in the recipient's language, wait "
+        f"for approval, then send the identical Markdown as `content` — `{send_tool}` renders it to the HTML "
+        "Teams displays. No hand-written HTML unless the user asked for specific markup. Confirm from the "
+        "result (`recipient`, `plain_text`); if `sent` is false, say why and resolve again."
         + channel_line
         + (
             f"\nLinks and files: a pasted Teams link (https://teams.microsoft.com/l/chat/… or /l/message/…) "
-            f"is a valid `chat_id` for every chat tool — never ask the user to extract the id. For \"the "
-            f"document/file from the chat\" call `{files_tool}(chat_id=<link or id> | to=<name>, last=5)`; it "
-            "downloads the shared files into the Vault and returns `saved_path` per file — work with those "
-            "paths, do not describe the file from the chat preview. To read a downloaded document call "
-            "`read_file(saved_path)`: Office files (docx/xlsx/pptx) and PDFs come back as Markdown "
-            "(converted by the AIMDS-Suite Docling when reachable, locally otherwise) — never parse a "
-            "document with terminal commands. A SharePoint/OneDrive URL seen in a chat "
-            "message is NOT a drive item id and never an attachment id"
-            + (f"; if you only have such a URL, pass it as `file_id` to `{drive_tool}`" if drive_tool else "")
+            f"is a valid `chat_id` for every chat tool. \"The file from the chat\": `{files_tool}(chat_id=<link "
+            "or id> | to=<name>)`, then work with the returned `saved_path` — `read_file(saved_path)` returns "
+            "Office files and PDFs as Markdown; never describe a file from the chat preview, never parse a "
+            "document with terminal commands. A SharePoint/OneDrive URL in a message is NOT a drive item id "
+            "and never an attachment id"
+            + (f"; pass it as `file_id` to `{drive_tool}`" if drive_tool else "")
             + "; never fetch it with curl or a script."
-            + (
-                f" For the attachments of an email use `{mail_files_tool}(message_id=…)` the same way."
-                if mail_files_tool
-                else ""
-            )
+            + (f" Email attachments: `{mail_files_tool}(message_id=…)`." if mail_files_tool else "")
             + f" To SEND a file, pass its path in `attachments=[…]` of `{send_tool}`"
             + (f" (Teams) or `{mail_tool}` (email)" if mail_tool else "")
-            + " — Vault-relative paths and paths returned by the download tools are accepted; the file is "
-            "uploaded and linked, never pasted as text."
+            + "; it is uploaded and linked, never pasted as text."
             if files_tool
             else ""
         )
@@ -2432,47 +2418,40 @@ def build_sharepoint_guidance(valid_tool_names: "set[str] | None" = None) -> str
     folder_tool = _resolve_m365_tool_name(names, "m365_create_sharepoint_folder")
     download_tool = _resolve_m365_tool_name(names, "m365_download_drive_file")
 
+    # AIS-757: the upload/folder tools describe their id resolution and the
+    # rename default themselves; this block keeps the order and the approvals.
     resolve_bits = [f"`{sites_tool}(search=<name>)`"]
     if drives_tool:
-        resolve_bits.append(f"`{drives_tool}(site_id)` (omit `drive_id` downstream to use the site's default document library)")
+        resolve_bits.append(f"`{drives_tool}(site_id)` (no `drive_id` downstream = the default library)")
     if files_tool or search_tool:
         list_or_search = " / ".join(f"`{t}`" for t in (files_tool, search_tool) if t)
         resolve_bits.append(list_or_search)
     resolve_line = (
         "Never guess a `site_id`, `drive_id` or `folder_id`, and never ask the user for one: "
         + " -> ".join(resolve_bits)
-        + ". A SharePoint site URL the user pastes is a valid `site_id` — it resolves automatically.\n"
+        + ". A SharePoint site URL the user pastes is a valid `site_id`.\n"
     )
 
     write_line = ""
     if upload_tool:
         write_line = (
-            f"Author in Markdown first: draft with `write_file`, get approval on the Markdown itself "
-            f"(that is what gets shown and reviewed), then convert — `office_word(action=from_markdown, "
-            f"source_path=<the .md>, output_path=<name>.docx)` for a document-library item (the default "
-            "for guides/documentation: it round-trips cleanly back through `read_file` later, unlike raw "
-            "HTML), or `office_word(action=convert, path=<the .md>, format=html)` only when the user "
-            f"specifically wants a web page. Keep the `.md` as the editable source and say where it is "
-            f"kept. Upload with `{upload_tool}` — it defaults to `conflict_behavior=\"rename\"` (never "
-            "silently overwrites); show the target site/library/folder and the file, get approval, then "
-            "upload, and only pass `conflict_behavior=\"replace\"` when the user explicitly asked to "
-            "overwrite an existing file."
-            + (
-                f" To create a new folder structure first, use `{folder_tool}`."
-                if folder_tool
-                else ""
-            )
-            + " Revising a document already in SharePoint: download it, `read_file` it back as Markdown, "
-            "edit the Markdown, reconvert and re-upload with `conflict_behavior=\"replace\"` — never "
-            "hand-edit the binary.\n"
+            "Author in Markdown first: draft with `write_file` and get approval on the Markdown, then convert "
+            "with `office_word(action=from_markdown, source_path=<the .md>, output_path=<name>.docx)` (the "
+            "default for a document library) or `office_word(action=convert, path=<the .md>, format=html)` only "
+            "when the user wants a web page. Keep the `.md` as the editable source and say where it is. Show "
+            f"the target site/library/folder and the file, get approval, then upload with `{upload_tool}` "
+            "(default `conflict_behavior=\"rename\"`; pass `conflict_behavior=\"replace\"` only when the user "
+            "explicitly asked to overwrite)."
+            + (f" New folders: `{folder_tool}`." if folder_tool else "")
+            + " To revise a document already in SharePoint: download, `read_file` it as Markdown, edit, "
+            "reconvert and re-upload with `conflict_behavior=\"replace\"` — never hand-edit the binary.\n"
         )
 
     read_line = ""
     if download_tool:
         read_line = (
-            f"Reading what you found: `{download_tool}(file_id=<webUrl or item id>)` saves it locally, "
-            "then `read_file(saved_path)` returns it as Markdown (Office files/PDF via Docling, same as "
-            "any other document source) — read it once with a sensible range, do not re-read it.\n"
+            f"Reading what you found: `{download_tool}(file_id=<webUrl or item id>)`, then "
+            "`read_file(saved_path)` returns it as Markdown — read it once with a sensible range.\n"
         )
 
     deferred_line = (
@@ -2489,10 +2468,9 @@ def build_sharepoint_guidance(valid_tool_names: "set[str] | None" = None) -> str
         + write_line
         + read_line
         + "If a SharePoint call fails, say which call failed and what it returned — do not narrate a plan "
-        "in prose instead of calling the tool. SharePoint needs the admin consent tier: on a permission "
-        "error the tool result already contains the fix (a consent URL and/or "
-        "`m365_initiate_login(scope_tier='admin')`) — relay it and stop, do not retry blindly or "
-        "substitute a workaround with credentials found elsewhere."
+        "in prose instead of calling the tool. SharePoint needs the admin consent tier: a permission error "
+        "carries the fix (a consent URL and/or `m365_initiate_login(scope_tier='admin')`) — relay it and "
+        "stop; no blind retries, no workaround with credentials found elsewhere."
         + deferred_line
     )
 
