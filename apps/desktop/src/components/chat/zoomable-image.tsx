@@ -2,7 +2,7 @@
 
 import { type ComponentProps, useState } from 'react'
 
-import { Dialog, DialogContent } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { useI18n } from '@/i18n'
 import { Download } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -107,9 +107,13 @@ export function ZoomableImage({ className, containerClassName, src, alt, slot, .
   const lightbox = src ? (
     <Dialog onOpenChange={setLightboxOpen} open={lightboxOpen}>
       <DialogContent
+        aria-describedby={undefined}
         className="block w-auto max-h-[calc(100vh-12rem)] max-w-[calc(100vw-12rem)] overflow-visible border-0 bg-transparent p-0 shadow-none"
         showCloseButton={false}
       >
+        {/* Radix needs a title for screen readers and logs a console error
+            without one (AIS-794, seen on the artifacts page). */}
+        <DialogTitle className="sr-only">{alt || imageFilename(src)}</DialogTitle>
         <div className="group/lightbox relative inline-block">
           <img
             alt={alt ?? ''}

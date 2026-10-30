@@ -1478,9 +1478,13 @@ export function DesktopController() {
           />
           <Route
             element={
-              <Suspense fallback={null}>
-                <ArtifactsView setStatusbarItemGroup={setStatusbarItemGroup} />
-              </Suspense>
+              // AIS-794: a crash on this page names itself in desktop.log
+              // instead of surfacing as the anonymous root boundary.
+              <ErrorBoundary label="artifacts">
+                <Suspense fallback={null}>
+                  <ArtifactsView setStatusbarItemGroup={setStatusbarItemGroup} />
+                </Suspense>
+              </ErrorBoundary>
             }
             path="artifacts"
           />
