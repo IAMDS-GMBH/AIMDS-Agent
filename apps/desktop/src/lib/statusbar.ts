@@ -72,6 +72,58 @@ export function contextBarLabel(usage: UsageStats): string {
   return `[${contextBar(usage.context_percent)}] ${pct}%`
 }
 
+// ─── Status bar posture (AIS-794) ───────────────────────────────────────────
+// The desktop is the co-worker posture: by default the status bar shows a
+// connection dot, the model in plain words and a small context ring. The
+// technical items come back with Settings → "Technische Details" (developer
+// view only). Items views add at runtime pass through either way.
+
+/** Shown only with "Technische Details". */
+export const TECHNICAL_STATUSBAR_ITEM_IDS: ReadonlySet<string> = new Set([
+  'agents',
+  'command-center',
+  'context-usage',
+  'cron',
+  'gateway-health',
+  'running-timer',
+  'session-timer'
+])
+
+/** The co-worker stand-ins for the technical items. */
+export const COWORKER_STATUSBAR_ITEM_IDS: ReadonlySet<string> = new Set(['connection', 'context-ring'])
+
+export function statusbarItemsForPosture<T extends { id: string }>(items: readonly T[], technical: boolean): T[] {
+  const hidden = technical ? COWORKER_STATUSBAR_ITEM_IDS : TECHNICAL_STATUSBAR_ITEM_IDS
+
+  return items.filter(item => !hidden.has(item.id))
+}
+
+export type ConnectionState = 'connecting' | 'offline' | 'ready' | 'setup'
+
+/** What the connection dot says, from the gateway state and the model check. */
+export function connectionState(gatewayState: string, inference: { ready?: boolean } | null): ConnectionState {
+  if (gatewayState === 'open') {
+    return inference?.ready ? 'ready' : inference ? 'setup' : 'connecting'
+  }
+
+  return gatewayState === 'connecting' ? 'connecting' : 'offline'
+}
+
+/** How full the conversation is, 0–100, or null when the limit is unknown. */
+export function contextPercent(usage: UsageStats): null | number {
+  if (!usage.context_max) {
+    return null
+  }
+
+  return Math.max(0, Math.min(100, Math.round(usage.context_percent ?? 0)))
+}
+
+export type ContextTone = 'calm' | 'full' | 'filling'
+
+export function contextTone(percent: number): ContextTone {
+  return percent >= 90 ? 'full' : percent >= 70 ? 'filling' : 'calm'
+}
+
 export function LiveDuration({ since }: { since: number | null | undefined }) {
   const [now, setNow] = useState(() => Date.now())
 

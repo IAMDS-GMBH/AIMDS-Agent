@@ -1806,7 +1806,16 @@ export const de
       switchModel: 'Modell wechseln',
       openModelPicker: 'Modellauswahl öffnen',
       modelTitle: (provider, model) => `Modell · ${provider}: ${model}`,
-      providerModelTitle: (provider, model) => `${provider} · ${model}`
+      providerModelTitle: (provider, model) => `${provider} · ${model}`,
+      connection: {
+        connecting: 'Verbindung wird hergestellt …',
+        offline: 'Keine Verbindung',
+        ready: 'Verbunden',
+        setup: 'Einrichtung nötig'
+      },
+      connectionSetupHint: 'Einrichtung nötig — in den Einstellungen ein Konto verbinden, dann kann es losgehen.',
+      contextRing: percent =>
+        `Dieser Chat nutzt ${percent} % seines Platzes. Ist er voll, werden ältere Teile zusammengefasst.`
     }
   },
 

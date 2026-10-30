@@ -1537,6 +1537,10 @@ export interface Translations {
       openModelPicker: string
       modelTitle: (provider: string, model: string) => string
       providerModelTitle: (provider: string, model: string) => string
+      /** Co-worker status bar (AIS-794): plain words, no tech terms. */
+      connection: Record<'connecting' | 'offline' | 'ready' | 'setup', string>
+      connectionSetupHint: string
+      contextRing: (percent: number) => string
     }
   }
 

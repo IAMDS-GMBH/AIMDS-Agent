@@ -1803,7 +1803,11 @@ export const en: Translations = {
       switchModel: 'Switch model',
       openModelPicker: 'Open model picker',
       modelTitle: (provider, model) => `Model · ${provider}: ${model}`,
-      providerModelTitle: (provider, model) => `${provider} · ${model}`
+      providerModelTitle: (provider, model) => `${provider} · ${model}`,
+      connection: { connecting: 'Connecting…', offline: 'Offline', ready: 'Connected', setup: 'Setup needed' },
+      connectionSetupHint: 'Setup needed — connect an account in Settings to start.',
+      contextRing: percent =>
+        `This chat uses ${percent}% of its space. When it is full, older parts are summarised.`
     }
   },
 

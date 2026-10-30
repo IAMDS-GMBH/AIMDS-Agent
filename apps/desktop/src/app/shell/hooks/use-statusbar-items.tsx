@@ -23,10 +23,18 @@ import {
   ZapFilled
 } from '@/lib/icons'
 import { getMcpServerToolCount } from '@/lib/mcp-helpers'
-import { formatModelStatusLabel } from '@/lib/model-status-label'
+import { formatModelPlainLabel, formatModelStatusLabel } from '@/lib/model-status-label'
 import { PRODUCT_DISPLAY_NAME } from '@/lib/product'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
-import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
+import {
+  type ConnectionState,
+  connectionState,
+  contextBarLabel,
+  contextPercent,
+  LiveDuration,
+  statusbarItemsForPosture,
+  usageContextLabel
+} from '@/lib/statusbar'
 import { type ReleaseUpdateIndicator, resolveReleaseUpdateIndicator } from '@/lib/update-notes'
 import { cn } from '@/lib/utils'
 import { setGlobalYolo, setSessionYolo } from '@/lib/yolo-session'
@@ -58,10 +66,20 @@ import {
   $updateStatus,
   openUpdateOverlayFor
 } from '@/store/updates'
+import { $technicalDetails } from '@/store/view-mode'
 import type { StatusResponse } from '@/types/hermes'
 
-import { CRON_ROUTE } from '../../routes'
+import { CRON_ROUTE, SETTINGS_ACCOUNTS_ROUTE } from '../../routes'
+import { ContextRing } from '../context-ring'
 import type { StatusbarItem, StatusbarSelectModifiers } from '../statusbar-controls'
+
+// Semantic status colours for the co-worker connection dot (AIS-794).
+const CONNECTION_DOT: Record<ConnectionState, string> = {
+  connecting: 'bg-amber-500 animate-pulse',
+  offline: 'bg-rose-500',
+  ready: 'bg-emerald-500',
+  setup: 'bg-amber-500'
+}
 
 interface StatusbarItemsOptions {
   agentsOpen: boolean
@@ -122,9 +140,13 @@ export function useStatusbarItems({
   const desktopVersion = useStore($desktopVersion)
   const connection = useStore($connection)
   const supportTickets = useStore($supportTickets)
+  // AIS-794: co-worker posture unless Settings → "Technische Details" is on
+  // (developer view only).
+  const technicalDetails = useStore($technicalDetails)
 
   const contextUsage = useMemo(() => usageContextLabel(currentUsage), [currentUsage])
   const contextBar = useMemo(() => contextBarLabel(currentUsage), [currentUsage])
+  const contextFill = useMemo(() => contextPercent(currentUsage), [currentUsage])
 
   const mcpServersQuery = useQuery({
     queryKey: ['mcp-servers'],
@@ -389,8 +411,24 @@ export function useStatusbarItems({
     copy
   ])
 
+  const connectionItem = useMemo<StatusbarItem>(() => {
+    const state = connectionState(gatewayState, inferenceStatus)
+    const label = copy.connection[state]
+
+    return {
+      // Calm when all is well: the dot alone. Any other state says so in words.
+      icon: <span aria-hidden className={cn('size-2 shrink-0 rounded-full', CONNECTION_DOT[state])} />,
+      id: 'connection',
+      label: state === 'ready' ? undefined : label,
+      title: label,
+      tooltip: state === 'setup' ? copy.connectionSetupHint : label,
+      ...(state === 'setup' ? { to: SETTINGS_ACCOUNTS_ROUTE, variant: 'action' as const } : { variant: 'text' as const })
+    }
+  }, [copy, gatewayState, inferenceStatus])
+
   const coreLeftStatusbarItems = useMemo<readonly StatusbarItem[]>(
     () => [
+      connectionItem,
       {
         className: `w-7 justify-center px-0${commandCenterOpen ? ' bg-accent/55 text-foreground' : ''}`,
         icon: <Command className="size-3.5" />,
@@ -451,6 +489,7 @@ export function useStatusbarItems({
       bgFailed,
       bgRunning,
       commandCenterOpen,
+      connectionItem,
       copy,
       gatewayMenuContent,
       gatewayClassName,
@@ -483,6 +522,14 @@ export function useStatusbarItems({
         variant: 'text'
       },
       {
+        hidden: contextFill === null,
+        icon: contextFill === null ? undefined : <ContextRing percent={contextFill} />,
+        id: 'context-ring',
+        title: contextFill === null ? undefined : copy.contextRing(contextFill),
+        tooltip: contextFill === null ? undefined : copy.contextRing(contextFill),
+        variant: 'text'
+      },
+      {
         detail: <LiveDuration since={sessionStartedAt} />,
         hidden: !sessionStartedAt,
         id: 'session-timer',
@@ -508,12 +555,14 @@ export function useStatusbarItems({
         label: (
           <span className="inline-flex min-w-0 items-center gap-0.5">
             <span className="truncate">
-              {formatModelStatusLabel(currentModel, {
-                fastMode: currentFastMode,
-                reasoningEffort: currentReasoningEffort,
-                provider: currentProvider,
-                toolsCount: totalMcpTools
-              })}
+              {technicalDetails
+                ? formatModelStatusLabel(currentModel, {
+                    fastMode: currentFastMode,
+                    reasoningEffort: currentReasoningEffort,
+                    provider: currentProvider,
+                    toolsCount: totalMcpTools
+                  })
+                : formatModelPlainLabel(currentModel) || copy.modelNone}
             </span>
             <ChevronDown className="size-2.5 shrink-0 opacity-50" />
           </span>
@@ -553,8 +602,10 @@ export function useStatusbarItems({
       busy,
       chatOpen,
       contextBar,
+      contextFill,
       contextUsage,
       copy,
+      technicalDetails,
       currentFastMode,
       currentModel,
       currentProvider,
@@ -572,14 +623,16 @@ export function useStatusbarItems({
     ]
   )
 
+  // AIS-794: the co-worker posture keeps the calm items; the technical ones
+  // need "Technische Details". Items views add pass through unchanged.
   const leftStatusbarItems = useMemo(
-    () => [...coreLeftStatusbarItems, ...extraLeftItems],
-    [coreLeftStatusbarItems, extraLeftItems]
+    () => [...statusbarItemsForPosture(coreLeftStatusbarItems, technicalDetails), ...extraLeftItems],
+    [coreLeftStatusbarItems, extraLeftItems, technicalDetails]
   )
 
   const statusbarItems = useMemo(
-    () => [...extraRightItems, ...coreRightStatusbarItems],
-    [coreRightStatusbarItems, extraRightItems]
+    () => [...extraRightItems, ...statusbarItemsForPosture(coreRightStatusbarItems, technicalDetails)],
+    [coreRightStatusbarItems, extraRightItems, technicalDetails]
   )
 
   return { leftStatusbarItems, statusbarItems }

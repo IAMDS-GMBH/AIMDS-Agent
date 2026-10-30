@@ -96,6 +96,12 @@ export function formatAimdsProviderLabel(provider: string): string | null {
   return AIMDS_PROVIDER_NAMES[norm] ?? null
 }
 
+/** Co-worker status bar (AIS-794): just the model's name — no environment,
+ *  effort, speed or tool count. Empty when no model is set. */
+export function formatModelPlainLabel(model: string): string {
+  return model.trim() ? displayModelName(model) : ''
+}
+
 /** Status bar trigger label — model name plus the live session state (effort/fast). */
 export function formatModelStatusLabel(
   model: string,
