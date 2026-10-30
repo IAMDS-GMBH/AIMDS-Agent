@@ -31,14 +31,14 @@ class JiraAdapter(SourceAdapter):
     name = "jira"
     server = SERVER
     required_tools = (SEARCH,)
-    kinds = ("morning-brief", "weekly-review")
+    kinds = ("morning-brief", "weekly-review", "workspace")
 
     def fetch(self, window: Window, ctx: SourceContext) -> List[BriefItem]:
         tool = resolve_tool(ctx.tool_names, SERVER, SEARCH)
         jcfg = ((ctx.cfg.get("cron") or {}).get("brief_collector") or {}).get("jira") or {}
         assignee = str(jcfg.get("assignee") or "").strip()
         me = f'assignee = "{assignee}"' if assignee else "assignee = currentUser()"
-        horizon = "endOfWeek()" if window.kind == "morning-brief" else "endOfWeek(1)"
+        horizon = "endOfWeek(1)" if window.kind == "weekly-review" else "endOfWeek()"
         jql = (
             f"{me} AND statusCategory != Done AND "
             f"(updated >= -7d OR duedate <= {horizon} OR sprint in openSprints()) "

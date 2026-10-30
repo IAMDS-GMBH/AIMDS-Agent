@@ -29,6 +29,11 @@ logger = logging.getLogger(__name__)
 COLLECTOR_FIELD = "collector"
 ACCOUNTS_HINT_MARK = "hint=accounts"  # recorded in brief_runs.sources once the hint was given
 KINDS = ("morning-brief", "weekly-review", "mail-check", "teams-check")
+# The work feed (AIS-797, cron.workspace_feed): not a cron job kind, never
+# composed by a model — the items are the result.
+FEED_KIND = "workspace"
+# Item kinds whose stored rows are the mail/teams check's "already seen" mark.
+WATERMARK_KINDS = ("mail", "chat")
 _SEED_KEY_TO_KIND = {
     "morning-brief": "morning-brief",
     "weekly-review": "weekly-review",
@@ -44,6 +49,7 @@ DEFAULT_CFG = {
     "source_timeout_seconds": 45,  # one tool call
     "source_budget_seconds": 90,  # every call of one source together (AIS-711)
     "compose_max_iterations": 3,
+    "feed_ttl_seconds": 300,  # how long GET /api/workspace/feed serves its cache (AIS-797)
 }
 
 # Deterministic headings so the journal title and the "preview" section can be
@@ -420,6 +426,19 @@ def collect(
         result.has_new = bool(new_items)
         result.items = new_items
         result.text = _render_poll(kind, new_items, window, result) if new_items else ""
+    elif kind == FEED_KIND:
+        # Status history for the feed; mail and chat stay out of the store —
+        # showing them in the feed is no notification, so they must not
+        # count as seen for the mail/teams check.
+        if store is not None:
+            try:
+                store.upsert_items([i for i in items if i.kind not in WATERMARK_KINDS], now)
+                known = store.history(i.id for i in items)
+                for item in items:
+                    if item.id in known:
+                        item.prev_status, item.status_changed_at, item.first_seen_at = known[item.id]
+            except Exception as exc:
+                logger.warning("brief store upsert failed: %s", exc)
     else:
         changed: List[BriefItem] = []
         if store is not None:
@@ -438,11 +457,13 @@ def collect(
         result.text = _render_brief(kind, items, changed, window, lang, result, int(ccfg.get("char_budget") or 5000))
 
     if store is not None:
-        try:
-            store.record_run(job.get("id", ""), kind, result.sources_line(), result.counts, now,
-                             session_id=str(job.get("_session_id") or ""))
-        except Exception as exc:
-            logger.debug("brief store record_run failed: %s", exc)
+        # The feed refreshes every few minutes; its reads are not brief runs.
+        if kind != FEED_KIND:
+            try:
+                store.record_run(job.get("id", ""), kind, result.sources_line(), result.counts, now,
+                                 session_id=str(job.get("_session_id") or ""))
+            except Exception as exc:
+                logger.debug("brief store record_run failed: %s", exc)
         if own_store and not result.pending_items:
             store.close()
     result.elapsed_s = round(time.monotonic() - t0, 2)

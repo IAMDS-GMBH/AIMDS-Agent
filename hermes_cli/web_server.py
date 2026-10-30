@@ -8236,6 +8236,16 @@ async def get_session_ledger(session_id: str, after: int = 0, profile: Optional[
         db.close()
 
 
+@app.get("/api/workspace/feed")
+async def get_workspace_feed(refresh: bool = False):
+    """The user's work across every active source (AIS-797): the
+    ``WorkspaceFeed`` contract, LLM-free and cached (``cron.workspace_feed``).
+    Collecting calls the MCP servers, so it runs off the event loop."""
+    from cron.workspace_feed import get_feed
+
+    return await asyncio.to_thread(get_feed, refresh=refresh)
+
+
 @app.delete("/api/sessions/{session_id}")
 async def delete_session_endpoint(session_id: str, profile: Optional[str] = None):
     # ``profile`` deletes a session belonging to another (local) profile by

@@ -48,7 +48,7 @@ def _read(path: Path, limit: int = 20000) -> Optional[str]:
 class WorkspaceAdapter(SourceAdapter):
     name = "workspace"
     server = None
-    kinds = ("morning-brief", "weekly-review")
+    kinds = ("morning-brief", "weekly-review", "workspace")
 
     def availability(self, ctx: SourceContext) -> Optional[SourceStatus]:
         if ctx.vault_root is None or not Path(ctx.vault_root).is_dir():
@@ -87,6 +87,8 @@ class WorkspaceAdapter(SourceAdapter):
                                        extra={"file": "_findings.md"}))
             self.parts.append("findings")
 
+        if window.kind == "workspace":
+            return items
         prev = root / "journal" / f"{window.last_working_day.isoformat()}-morning-brief.md"
         text = _read(prev)
         if text:

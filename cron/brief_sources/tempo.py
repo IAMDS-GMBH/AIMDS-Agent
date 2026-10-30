@@ -21,11 +21,13 @@ class TempoAdapter(SourceAdapter):
     name = "tempo"
     server = SERVER
     required_tools = (RETRIEVE,)
-    kinds = ("morning-brief", "weekly-review")
+    kinds = ("morning-brief", "weekly-review", "workspace")
 
     def fetch(self, window: Window, ctx: SourceContext) -> List[BriefItem]:
         tool = resolve_tool(ctx.tool_names, SERVER, RETRIEVE)
-        if window.kind == "morning-brief":
+        if window.kind == "workspace":
+            start = end = window.today
+        elif window.kind == "morning-brief":
             start = end = window.last_working_day
         else:
             start, end = window.week_start, min(window.week_end, window.today)

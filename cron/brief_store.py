@@ -110,6 +110,20 @@ class BriefStore:
             found.update(r["id"] for r in rows)
         return found
 
+    def history(self, ids: Iterable[str]) -> Dict[str, tuple]:
+        """``{id: (prev_status, status_changed_at, first_seen_at)}`` for stored items."""
+        ids = list(dict.fromkeys(ids))
+        out: Dict[str, tuple] = {}
+        for i in range(0, len(ids), 400):
+            chunk = ids[i:i + 400]
+            marks = ",".join("?" for _ in chunk)
+            rows = self._conn.execute(
+                f"SELECT id, prev_status, status_changed_at, first_seen_at FROM brief_items WHERE id IN ({marks})",
+                chunk,
+            ).fetchall()
+            out.update({r["id"]: (r["prev_status"], r["status_changed_at"], r["first_seen_at"]) for r in rows})
+        return out
+
     def upsert_items(self, items: Sequence[BriefItem], seen_at: datetime) -> Dict[str, Any]:
         """Insert or update ``items``; returns ``{"new": [...], "changed": [(item, prev_status)]}``."""
         now = _iso(seen_at)
