@@ -4,6 +4,7 @@ import asyncio
 import datetime as dt
 import importlib.util
 import json
+import threading
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -1253,6 +1254,11 @@ def test_unknown_arguments_are_rejected_before_any_request(op):
 #   │  └─ AIS-703 Task
 #   ├─ AIS-702 Wochenziel (not enabled in PRO)
 #   └─ AIS-704 Task, already in PRO
+#
+# Like OpenProject (go-mcp-openproject 0.7.1, AIS-780), a PATCH that moves a
+# work package takes its subtree along, gives every moved one a PRO key, and
+# on the children resets a type PRO does not enable to Task and clears
+# categories and unshared versions.
 
 
 def _tree_wp(wid, type_id, type_name, project, parent=0, **links):
@@ -1282,6 +1288,23 @@ class MoveFake(FakeOpenProject):
         )}
         self.fail_status = set()  # work package ids whose PATCH the target workflow refuses
         self.keep_project = set()  # work package ids OpenProject saves without moving them
+        self.hold = None  # a threading.Event the epic's PATCH waits for (a slow move)
+        self.lock = threading.Lock()
+
+    def move_along(self, parent):
+        """OpenProject's descendant handling on a project change."""
+        for wid, wp in self.tree.items():
+            if wp["_links"]["parent"].get("href") != f"/api/v3/work_packages/{parent}":
+                continue
+            links = wp["_links"]
+            links["project"] = {"href": "/api/v3/projects/46", "title": "Projektmanagement"}
+            wp["displayId"] = f"PRO-{wid - 200}"
+            if _href_num(links["type"]) not in (1, 3, 6):
+                links["type"] = {"href": "/api/v3/types/1", "title": "Task"}
+            links["category"] = {"href": None}
+            if _href_num(links["version"]) != 11:
+                links["version"] = {"href": None}
+            self.move_along(wid)
 
     def __call__(self, request):
         url = urlparse(str(request.url))
@@ -1310,16 +1333,23 @@ class MoveFake(FakeOpenProject):
             ref = path.split("/", 1)[1]
             wp = self.tree.get(int(ref)) if ref.isdigit() else by_key.get(ref)
             if wp is not None:
-                if method == "PATCH":
-                    if wp["id"] in self.fail_status:
-                        return self._log(request, {"_type": "Error", "message": "Status is invalid.",
-                                                   "_embedded": {"details": {"attribute": "status"}}}, 422)
-                    links = dict(body.get("_links") or {})
-                    if wp["id"] in self.keep_project:
-                        links.pop("project", None)
-                    wp["_links"].update(links)
-                    wp["lockVersion"] += 1
-                return self._log(request, wp)
+                if method == "PATCH" and wp["id"] == 300 and self.hold is not None:
+                    assert self.hold.wait(10)
+                with self.lock:
+                    if method == "PATCH":
+                        if wp["id"] in self.fail_status:
+                            return self._log(request, {"_type": "Error", "message": "Status is invalid.",
+                                                       "_embedded": {"details": {"attribute": "status"}}}, 422)
+                        links = dict(body.get("_links") or {})
+                        if wp["id"] in self.keep_project:
+                            links.pop("project", None)
+                        before = self.project_of(wp["id"])
+                        wp["_links"].update(links)
+                        wp["lockVersion"] += 1
+                        if self.project_of(wp["id"]) == 46 and before != 46:
+                            wp["displayId"] = f"PRO-{wp['id'] - 200}"
+                            self.move_along(wp["id"])
+                    return self._log(request, json.loads(json.dumps(wp)))
         return super().__call__(request)
 
     def _log(self, request, payload, status=200):
@@ -1330,7 +1360,15 @@ class MoveFake(FakeOpenProject):
         return httpx.Response(status, json=payload)
 
     def project_of(self, wid):
-        return int(self.tree[wid]["_links"]["project"]["href"].rsplit("/", 1)[-1])
+        return _href_num(self.tree[wid]["_links"]["project"])
+
+    def patches(self):
+        return [c for c in self.calls if c[0] == "PATCH"]
+
+
+def _href_num(link):
+    href = (link or {}).get("href")
+    return int(href.rsplit("/", 1)[-1]) if href else 0
 
 
 @pytest.fixture
@@ -1340,92 +1378,196 @@ def move(monkeypatch):
     client = httpx.Client(transport=httpx.MockTransport(fake), base_url="https://op.example.com/api/v3/")
     monkeypatch.setattr(server, "_http", lambda: client)
     monkeypatch.setattr(server.time, "sleep", lambda _s: None)
-    return server, fake
+    yield server, fake
+    if fake.hold is not None:
+        fake.hold.set()  # never leave a move thread waiting
 
 
-def test_move_preview_names_conflicts_and_patches_nothing(move):
+def test_move_preview_counts_the_whole_subtree(move):
+    """go-mcp-openproject 0.7.1 (AIS-780): no flag needed — OpenProject moves
+    the children anyway, so the preview counts them (a prod preview said
+    to_move 1 while 195 moved)."""
     server, fake = move
-    out = ok(server, "pm_update_work_package", id="AIS-700", project="PRO", include_descendants=True)
-    assert not requests(fake, "PATCH", "work_packages/300") and not [c for c in fake.calls if c[0] == "PATCH"]
+    out = ok(server, "pm_update_work_package", id="AIS-700", project="PRO")
+    assert not fake.patches()
     assert (out["dry_run"], out["ready"], out["to_move"], out["skipped"]) == (True, False, 4, 1)
     assert out["keys"] == ["AIS-700", "AIS-701", "AIS-702", "AIS-703"]  # top-down: epic first, grandchild last
     assert out["conflicts"] == [{"type": "Wochenziel", "count": 1, "allowed": ["Task", "Epic", "Milestone"]}]
     assert out["clears"] == {"category": 1, "version": 1}  # the epic's; the shared 2.17.11 stays
     assert out["by_type"] == {"Epic": 1, "Task": 2, "Wochenziel": 1} and out["project"] == "Projektmanagement"
-    assert out["next_step"].startswith("Ask the user which type")
+    assert out["next_step"].startswith("Ask the user which type") and "batches" not in out
     child = ok(server, "pm_update_work_package", id="AIS-701", project="PRO")
-    assert child["parent_kept"] == ["AIS-701"] and "parent_note" in child and child["ready"] is True
+    assert (child["to_move"], child["keys"], child["ready"]) == (2, ["AIS-701", "AIS-703"], True)
+    assert child["parent_kept"] == ["AIS-701"] and 'parent="none"' in child["parent_note"]
+    # include_descendants left the schema (0.7.1) but is still taken and changes nothing.
+    assert ok(server, "pm_update_work_package", id="AIS-700", project="PRO", include_descendants=False) == out
 
 
 def test_move_apply_refuses_open_conflicts(move):
     server, fake = move
-    text = fail(server, "pm_update_work_package", id="AIS-700", project="PRO", include_descendants=True, dry_run=False)
+    text = fail(server, "pm_update_work_package", id="AIS-700", project="PRO", dry_run=False)
     assert text.startswith('Not moved: type "Wochenziel" (1×) is not enabled. Map them with type_map')
-    assert not [c for c in fake.calls if c[0] == "PATCH"]
+    assert not fake.patches()
 
 
-def test_move_apply_top_down_with_type_map_and_clears(move):
+def test_move_apply_patches_the_top_then_fixes_children(move):
     server, fake = move
-    fake.fail_status = {303}
-    out = ok(server, "pm_update_work_package", id="AIS-700", project="PRO", include_descendants=True,
-             type_map={"wochenziel": "milestone"}, dry_run=False)
-    assert (out["moved"], out["failed"], out["skipped"]) == (3, 1, 1) and "continue" not in out
-    patches = [c for c in fake.calls if c[0] == "PATCH"]
-    assert [c[1] for c in patches] == ["work_packages/300", "work_packages/301", "work_packages/302", "work_packages/303"]
+    out = ok(server, "pm_update_work_package", id="AIS-700", project="PRO", type_map={"wochenziel": "milestone"},
+             dry_run=False)
+    patches = fake.patches()
+    # Only the epic is moved (OpenProject takes the subtree), then AIS-702 gets its mapped type.
+    assert [c[1] for c in patches] == ["work_packages/300", "work_packages/302"]
     assert patches[0][3]["_links"] == {"project": {"href": "/api/v3/projects/46"}, "category": {"href": None},
                                        "version": {"href": None}}
-    assert "version" not in patches[1][3]["_links"]  # the shared 2.17.11 stays
-    assert patches[2][3]["_links"]["type"] == {"href": "/api/v3/types/6"}
-    assert out["results"][0]["cleared"] == ["category Docs", "version 2.17.10"] and out["results"][2]["type"] == "Milestone"
-    assert out["results"][3]["key"] == "AIS-703" and "change the status first" in out["results"][3]["error"]
-    assert [fake.project_of(i) for i in (300, 301, 302, 303)] == [46, 46, 46, 107]
+    assert patches[1][3]["_links"] == {"type": {"href": "/api/v3/types/6"}}  # no project, no clears
+    assert out["results"] == [{"from": "AIS-700", "key": "PRO-100", "cleared": ["category Docs", "version 2.17.10"],
+                               "with_children": 3}]
+    assert (out["in_target"], out["total"]) == (5, 5) and "not_moved" not in out and "continue" not in out
+    assert out["renamed"]["AIS-700"] == "PRO-100" and out["renamed"]["AIS-702"] == "PRO-102"
+    assert _href_num(fake.tree[302]["_links"]["type"]) == 6  # Milestone, not OpenProject's default type
+    assert _href_num(fake.tree[301]["_links"]["version"]) == 11  # the shared version stays
+    assert not server._moves  # a delivered result is forgotten
+
+
+def test_move_with_an_explicit_version_patches_every_child(move):
+    server, fake = move
+    out = ok(server, "pm_update_work_package", id="AIS-701", project="PRO", version="2.17.11", dry_run=False)
+    patches = fake.patches()
+    assert [c[1] for c in patches] == ["work_packages/301", "work_packages/303"]
+    assert patches[1][3]["_links"] == {"version": {"href": "/api/v3/versions/11"}}
+    assert out["results"][0]["with_children"] == 1 and out["in_target"] == 2
+
+
+def test_move_reports_a_failed_top(move):
+    server, fake = move
+    fake.fail_status = {300}
+    out = ok(server, "pm_update_work_package", id="AIS-700", project="PRO", type_map={"Wochenziel": "Milestone"},
+             dry_run=False)
+    row = out["results"][0]
+    assert row["key"] == row["from"] == "AIS-700" and "change the status first" in row["error"]
+    # No follow-ups for a subtree that did not move; verification shows what stayed.
+    assert len(fake.patches()) == 1
+    assert (out["in_target"], out["total"]) == (1, 5)
+    assert out["not_moved"] == ["AIS-700", "AIS-701", "AIS-702", "AIS-703"]
+
+
+def test_slow_move_answers_in_progress_and_joins(move, monkeypatch):
+    """AIS-782: a slow move answers in_progress instead of running into the
+    MCP call's timeout, and calling again joins the same move instead of
+    starting it anew."""
+    server, fake = move
+    monkeypatch.setattr(server, "_MOVE_WAIT_S", 0.05)
+    fake.hold = threading.Event()
+    args = {"id": "AIS-700", "project": "PRO", "type_map": {"Wochenziel": "Milestone"}, "dry_run": False}
+    first = ok(server, "pm_update_work_package", **args)
+    assert first["in_progress"] is True and first["project"] == "PRO" and first["running_for_s"] >= 0
+    assert first["continue"] == {"project": "PRO", "dry_run": False, "id": "AIS-700",
+                                 "type_map": {"Wochenziel": "Milestone"}}
+    assert "joins this move" in first["next_step"]
+    assert ok(server, "pm_update_work_package", **first["continue"])["in_progress"] is True
+    fake.hold.set()
+    monkeypatch.setattr(server, "_MOVE_WAIT_S", 5.0)
+    out = ok(server, "pm_update_work_package", **first["continue"])
+    assert "in_progress" not in out and out["in_target"] == 5
+    # The joined calls get the one move's result: epic + one follow-up, nothing twice.
+    assert [c[1] for c in fake.patches()] == ["work_packages/300", "work_packages/302"]
+    assert not server._moves
+
+
+def test_an_unfetched_move_result_is_kept_for_a_while(move, monkeypatch):
+    server, fake = move
+    monkeypatch.setattr(server, "_MOVE_WAIT_S", 0.01)
+    fake.hold = threading.Event()
+    args = {"id": "AIS-700", "project": "PRO", "type_map": {"Wochenziel": "Task"}, "dry_run": False}
+    assert ok(server, "pm_update_work_package", **args)["in_progress"] is True
+    fake.hold.set()  # nobody asks again: the result waits
+    (key,) = server._moves
+    assert server._moves[key].done.wait(5)
+    assert server._move_job(key) is not None  # kept for the caller that asks again
+    monkeypatch.setattr(server, "_MOVE_JOB_KEEP_S", 0.0)
+    assert server._move_job(key) is None and not server._moves
+
+
+def test_move_job_requests_get_the_slow_timeout_and_a_deadline(move, monkeypatch):
+    server, fake = move
+    seen = []
+    real = server._request
+
+    def spy(method, path, **kwargs):
+        if method == "PATCH":
+            seen.append((getattr(server._move_context, "request_timeout", None),
+                         getattr(server._move_context, "deadline", 0.0) > 0))
+        return real(method, path, **kwargs)
+
+    monkeypatch.setattr(server, "_request", spy)
+    ok(server, "pm_update_work_package", id="AIS-701", project="PRO", dry_run=False)
+    assert seen == [(server._MOVE_REQUEST_TIMEOUT_S, True)]
+    assert not getattr(server._move_context, "deadline", 0.0)  # the caller's thread has no deadline
+    # Past the job's deadline a request fails instead of running on.
+    server._move_context.deadline = 1.0
+    try:
+        with pytest.raises(server.RequestFailed, match="longer than 15 minutes"):
+            real("GET", "work_packages/301")
+    finally:
+        server._move_context.deadline = 0.0
 
 
 def test_move_takes_no_other_fields(move):
     server, fake = move
-    text = fail(server, "pm_update_work_package", id="AIS-700", project="PRO", status="Done", comment="x")
-    assert text == ("A move takes only project, include_descendants, type_map, version, category and dry_run; "
-                    "change comment, status in a separate call.")
+    text = fail(server, "pm_update_work_package", id="AIS-700", project="PRO", status="Done", comment="x", parent="none")
+    assert text == ("A move takes only project, type_map, version, category and dry_run; "
+                    "change comment, parent, status in a separate call.")
     assert not fake.calls
-
-
-def test_move_continues_without_skipping_work_packages(move):
-    """A batch is 50; continue resumes after the work packages that failed so
-    far. The Suite's offset (end of the batch) would skip as many as were
-    moved, because moved ones are in the target on the next call."""
-    server, fake = move
-    for wid in range(400, 460):  # 60 more children of the epic: 64 to move
-        fake.tree[wid] = _tree_wp(wid, 1, "Task", 107, 300)
-    fake.fail_status = {410}
-    args = {"id": "AIS-700", "project": "PRO", "include_descendants": True, "type_map": {"Wochenziel": "Milestone"}}
-    first = ok(server, "pm_update_work_package", dry_run=False, **args)
-    assert (first["moved"], first["failed"], first["remaining"]) == (49, 1, 14)
-    assert first["continue"] == {"project": "PRO", "dry_run": False, "move_offset": 1, "id": "AIS-700",
-                                 "include_descendants": True, "type_map": {"Wochenziel": "Milestone"}}
-    second = ok(server, "pm_update_work_package", **first["continue"])
-    assert (second["moved"], second["failed"], second["skipped"]) == (14, 0, 50) and "continue" not in second
-    assert [w for w in fake.tree if fake.project_of(w) != 46] == [410]  # only the refused one stays behind
+    # The 0.7.0 continue argument is gone with the batches.
+    assert fail(server, "pm_update_work_package", id="AIS-700", project="PRO", move_offset=50).startswith(
+        "pm_update_work_package does not take move_offset.")
 
 
 def test_move_is_bounded_and_honours_the_write_list(move, monkeypatch):
     server, fake = move
-    monkeypatch.setattr(server, "_MAX_MOVE_COLLECT", 3)
-    assert fail(server, "pm_update_work_package", id="AIS-700", project="PRO", include_descendants=True).startswith(
-        "More than 3 work packages; move part of the tree per call")
+    for wid in range(400, 896):  # 496 more children of the epic: 501 in the tree
+        fake.tree[wid] = _tree_wp(wid, 1, "Task", 107, 300)
+    assert fail(server, "pm_update_work_package", id="AIS-700", project="PRO").startswith(
+        "More than 500 work packages; move part of the tree per call")
+    del fake.tree[895]  # exactly 500
+    assert ok(server, "pm_update_work_package", id="AIS-700", project="PRO")["to_move"] == 499
+    assert not fake.patches()
     monkeypatch.setenv("OPENPROJECT_WRITE_PROJECTS", "AIS")
-    assert "Writes are disabled for project PRO" in fail(server, "pm_update_work_package", id="AIS-701", project="PRO")
+    assert "Writes are disabled for project PRO" in fail(server, "pm_update_work_package", id="AIS-702", project="PRO")
 
 
 def test_move_without_permission_is_reported_per_work_package(move):
     server, fake = move
     fake.errors[("PATCH", "work_packages/301")] = (403, {"message": "You are not authorized"})
-    out = ok(server, "pm_update_work_package", ids=["AIS-701", "AIS-703"], project="PRO", dry_run=False)
-    assert (out["moved"], out["failed"]) == (1, 1)
+    out = ok(server, "pm_update_work_package", ids=["AIS-701", "AIS-702"], project="PRO",
+             type_map={"Wochenziel": "Task"}, dry_run=False)
+    assert out["results"][0]["key"] == "AIS-701"
     assert out["results"][0]["error"].endswith('Moving needs the permission "Move work packages" in both projects.')
-    # A PATCH that OpenProject accepts but that keeps the project is no move either.
+    assert out["results"][1] == {"from": "AIS-702", "key": "PRO-102", "type": "Task"}
+    assert (out["in_target"], out["total"], out["not_moved"]) == (1, 3, ["AIS-701", "AIS-703"])
+
+
+def test_a_move_openproject_saves_in_place_is_not_reported_as_moved(move):
+    server, fake = move
     fake.keep_project = {302}
     out = ok(server, "pm_update_work_package", id="AIS-702", project="PRO", type_map={"Wochenziel": "Task"}, dry_run=False)
-    assert out["moved"] == 0 and "kept it in its project" in out["results"][0]["error"]
+    assert "kept it in its project" in out["results"][0]["error"] and out["not_moved"] == ["AIS-702"]
+
+
+def test_update_sets_and_removes_parent(move):
+    """go-mcp-openproject 0.7.1 (AIS-780): parent is part of the contract."""
+    server, fake = move
+    out = ok(server, "pm_update_work_package", id="AIS-703", parent="AIS-700")
+    assert fake.patches()[-1][3]["_links"] == {"parent": {"href": "/api/v3/work_packages/300"}}
+    assert out["parent_id"] == 300 and "warnings" not in out
+    out = ok(server, "pm_update_work_package", id="AIS-703", parent="none")
+    assert fake.patches()[-1][3]["_links"] == {"parent": {"href": None}} and out["parent_id"] == 0
+    assert fail(server, "pm_update_work_package", id="AIS-703", parent=True) == \
+        'parent must be a work package key or id, or "none" to remove it'
+    # A refused parent (e.g. a milestone) names the milestone rule.
+    fake.errors[("PATCH", "work_packages/303")] = (422, {"message": "Parent is invalid",
+                                                         "_embedded": {"details": {"attribute": "parent"}}})
+    assert "cannot be a parent" in fail(server, "pm_update_work_package", id="AIS-703", parent="AIS-702")
 
 
 def test_comment_and_delete(op):

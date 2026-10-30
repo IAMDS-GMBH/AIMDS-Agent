@@ -1,6 +1,6 @@
 {
   "source": "IAMDS-GMBH/AIMDS-Suite container/go-mcp-openproject",
-  "commit": "a67e8619",
+  "commit": "4459fa0d",
   "tools": [
     {
       "description": "Only to replace an existing link or token: returns a one-time link_url (10 min) where the user enters a new personal access token. Give the user exactly that URL — never build one or send them to the API. No arguments.",
@@ -381,7 +381,7 @@
       "name": "pm_create_work_package"
     },
     {
-      "description": "Update, comment, relate or move work packages: id, or ids (max 25) for the same change. responsible/version/category \"none\" clears; milestones take date. Unapplied fields → warnings. A status change returns next_statuses; a refused one answers updated=false with retry — pass it as the next call's arguments. project moves them (include_descendants: whole subtree): the first call previews; after the user confirms, repeat with dry_run=false, then pass continue while it comes back.",
+      "description": "Update, comment, relate or move work packages: id, or ids (max 25). responsible/version/category \"none\" clears; milestones take date. Unapplied fields → warnings. A refused status change answers updated=false with retry — pass it as the next call's arguments. project moves them with their subtree: the first call previews; once the user confirms, repeat with dry_run=false, then pass continue while it comes back.",
       "inputSchema": {
         "properties": {
           "add_relations": {
@@ -467,14 +467,22 @@
             },
             "type": "array"
           },
-          "include_descendants": {
-            "type": "boolean"
-          },
           "lock_version": {
             "type": "integer"
           },
           "notify": {
             "type": "boolean"
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "description": "Parent key/id; \"none\" removes it."
           },
           "priority": {
             "type": "string"
