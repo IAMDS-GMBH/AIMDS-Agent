@@ -327,9 +327,36 @@ def compress_context(
     agent._emit_status(
         "🗜️ Compacting context — summarizing earlier conversation so I can continue..."
     )
+    # The desktop shows "summarizing the conversation so far" for the whole
+    # pass, also mid-turn after output, and clears it when the pass ends —
+    # however it ends (AIS-460, AIS-786).
     _emit_phase = getattr(agent, "_emit_turn_phase", None)
     if callable(_emit_phase):
         _emit_phase("compressing", messages=_pre_msg_count)
+    try:
+        return _compress_and_rotate(
+            agent, messages, system_message,
+            approx_tokens=approx_tokens, task_id=task_id,
+            focus_topic=focus_topic, force=force, pre_msg_count=_pre_msg_count,
+        )
+    finally:
+        if callable(_emit_phase):
+            _emit_phase("compressed")
+
+
+def _compress_and_rotate(
+    agent: Any,
+    messages: list,
+    system_message: str,
+    *,
+    approx_tokens: Optional[int],
+    task_id: str,
+    focus_topic: Optional[str],
+    force: bool,
+    pre_msg_count: int,
+) -> Tuple[list, str]:
+    """Lock, compress and rotate the session — the body of :func:`compress_context`."""
+    _pre_msg_count = pre_msg_count
 
     # ── Compression lock ────────────────────────────────────────────────
     # Atomic, state.db-backed lock per session_id.  Without this, two

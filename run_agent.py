@@ -846,7 +846,7 @@ class AIAgent:
         """Tell the driver what the turn is doing before any output exists.
 
         Structured on purpose (``waiting`` / ``retrying`` / ``compressing`` /
-        ``switching_model`` plus counts): the desktop turns it into a plain
+        ``compressed`` / ``switching_model`` plus counts): the desktop turns it into a plain
         sentence for end users in their language (AIS-460). Separate from
         ``status_callback``, whose free text other drivers print verbatim.
         Never raises.
