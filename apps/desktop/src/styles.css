@@ -61,6 +61,13 @@
   --radius-2xl: calc(var(--radius-scalar) * 1.5rem);
   --radius-3xl: calc(var(--radius-scalar) * 2rem);
   --radius-4xl: calc(var(--radius-scalar) * 2.5rem);
+  /* AIS-794: the AIMDS Suite shapes, fixed (not scaled): `rounded-control`
+     for buttons, inputs and menus, `rounded-control-sm` for small icon
+     buttons and menu rows, `rounded-card` for cards, dialogs and overlay
+     cards. Pills stay `rounded-full`. */
+  --radius-control: var(--dt-radius-control);
+  --radius-control-sm: var(--dt-radius-control-sm);
+  --radius-card: var(--dt-radius-card);
 
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
@@ -293,6 +300,21 @@
 
     --radius: 0.75rem;
     --radius-scalar: 0.6;
+    /* AIMDS Suite radii (AIS-794): buttons 8px, small controls 6px, cards 14px. */
+    --dt-radius-control: 0.5rem;
+    --dt-radius-control-sm: 0.375rem;
+    --dt-radius-card: 0.875rem;
+
+    /* AIMDS Suite brand gradient (AIS-794) — the BrandMark tile and brand
+       moments. Fixed across skins and modes, like the mark itself. */
+    --brand-gradient-from: #4d7cff;
+    --brand-gradient-to: #8b5cf6;
+    --brand-gradient: linear-gradient(135deg, var(--brand-gradient-from), var(--brand-gradient-to));
+
+    /* Soft top-left glow behind the chat (AIS-794). `--theme-glow` comes from
+       the skin (`colors.glow`); skins without one paint no glow. */
+    --theme-glow: transparent;
+    --ui-backdrop-glow: radial-gradient(75rem 37.5rem at 20% -10%, var(--theme-glow) 0%, transparent 60%);
 
     /* Space under last message vs overlay composer — driven by the measured composer height (see composer/index.tsx). */
     --thread-last-message-clearance: calc(var(--composer-measured-height) + 2rem);

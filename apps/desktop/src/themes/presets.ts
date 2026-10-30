@@ -26,70 +26,80 @@ const UI_MONO = `${BUNDLED_MONO_FAMILY}, ui-monospace, monospace, ${EMOJI_FALLBA
 
 export const DEFAULT_TYPOGRAPHY: DesktopThemeTypography = { fontSans: UI_SANS, fontMono: UI_MONO }
 
-const NOUS_BLUE = '#6366F1'
-const NOUS_INDIGO_LIGHT = '#4F46E5'
+// AIMDS Suite accents (AIS-794): the Suite's blue, its stronger hover/focus
+// step, and the darker step light surfaces need for readable white text.
+const SUITE_ACCENT = '#4D7CFF'
+const SUITE_ACCENT_STRONG = '#6C95FF'
+const SUITE_ACCENT_ON_LIGHT = '#3A68F5'
 
 /**
- * Nous — canonical AIMDS Suite identity. Matches the sleek AIMDS Suite
- * midnight navy design with indigo accents (#0B0F19 background, #151B2E card).
+ * Nous — canonical AIMDS Suite identity (AIS-794): the Suite's navy page
+ * (#0B1020) under a soft top-left blue glow, #161D3D cards on #232C54
+ * hairlines, #E7ECFF text with #98A2C8 muted copy and the #4D7CFF accent.
+ * The light variant keeps the same hues on a pale blue-white page. The
+ * palette is painted as given (`exactPalette`): no neutral grey mixed into
+ * the surfaces, so the desktop matches the Suite pixel for pixel.
  */
 export const nousTheme: DesktopTheme = {
   name: 'nous',
   label: 'AIMDS Suite',
-  description: 'AIMDS Suite midnight navy with indigo accents',
+  description: 'AIMDS Suite navy with a blue glow and blue accents',
+  exactPalette: true,
   colors: {
-    background: '#F8FAFC',
-    foreground: '#0F172A',
+    background: '#F5F7FF',
+    foreground: '#0F1633',
     card: '#FFFFFF',
-    cardForeground: '#0F172A',
-    muted: '#F1F5F9',
-    mutedForeground: '#64748B',
+    cardForeground: '#0F1633',
+    muted: '#EEF1FB',
+    mutedForeground: '#5C668F',
     popover: '#FFFFFF',
-    popoverForeground: '#0F172A',
-    primary: NOUS_INDIGO_LIGHT,
+    popoverForeground: '#0F1633',
+    primary: SUITE_ACCENT_ON_LIGHT,
     primaryForeground: '#FFFFFF',
-    secondary: '#EEF2FF',
-    secondaryForeground: '#312E81',
-    accent: '#E0E7FF',
-    accentForeground: '#1E1B4B',
-    border: '#E2E8F0',
-    input: '#CBD5E1',
-    ring: NOUS_INDIGO_LIGHT,
-    midground: NOUS_INDIGO_LIGHT,
-    composerRing: NOUS_INDIGO_LIGHT,
-    destructive: '#EF4444',
+    secondary: '#E8EEFF',
+    secondaryForeground: '#1D2A66',
+    accent: '#E1E9FF',
+    accentForeground: '#0F1633',
+    border: '#DDE3F4',
+    input: '#CAD3EE',
+    ring: SUITE_ACCENT,
+    midground: SUITE_ACCENT_ON_LIGHT,
+    composerRing: SUITE_ACCENT_ON_LIGHT,
+    destructive: '#E11D48',
     destructiveForeground: '#FFFFFF',
-    sidebarBackground: '#F1F5F9',
-    sidebarBorder: '#E2E8F0',
-    userBubble: '#EEF2FF',
-    userBubbleBorder: '#C7D2FE'
+    sidebarBackground: '#EEF2FD',
+    sidebarBorder: '#DDE3F4',
+    userBubble: '#E8EEFF',
+    userBubbleBorder: '#CFDBFF',
+    glow: '#DCE5FF'
   },
   darkColors: {
-    background: '#0B0F19',
-    foreground: '#F8FAFC',
-    card: '#151B2E',
-    cardForeground: '#F8FAFC',
-    muted: '#1E2742',
-    mutedForeground: '#94A3B8',
-    popover: '#151B2E',
-    popoverForeground: '#F8FAFC',
-    primary: NOUS_BLUE,
+    background: '#0B1020',
+    foreground: '#E7ECFF',
+    card: '#161D3D',
+    cardForeground: '#E7ECFF',
+    muted: '#121937',
+    mutedForeground: '#98A2C8',
+    popover: '#161D3D',
+    popoverForeground: '#E7ECFF',
+    primary: SUITE_ACCENT,
     primaryForeground: '#FFFFFF',
-    secondary: '#1E2742',
-    secondaryForeground: '#E2E8F0',
-    accent: '#242F52',
-    accentForeground: '#F1F5F9',
-    border: '#232D4A',
-    input: '#2A3858',
-    ring: NOUS_BLUE,
-    midground: NOUS_BLUE,
-    composerRing: NOUS_BLUE,
+    secondary: '#1B2450',
+    secondaryForeground: '#E7ECFF',
+    accent: '#1E2A5E',
+    accentForeground: '#E7ECFF',
+    border: '#232C54',
+    input: '#2C3766',
+    ring: SUITE_ACCENT_STRONG,
+    midground: SUITE_ACCENT,
+    composerRing: SUITE_ACCENT,
     destructive: '#F43F5E',
     destructiveForeground: '#FFFFFF',
-    sidebarBackground: '#080C16',
-    sidebarBorder: '#1E2742',
-    userBubble: '#1E2640',
-    userBubbleBorder: '#334166'
+    sidebarBackground: '#0D1328',
+    sidebarBorder: '#232C54',
+    userBubble: '#161D3D',
+    userBubbleBorder: '#232C54',
+    glow: '#1B2761'
   },
   typography: DEFAULT_TYPOGRAPHY
 }
