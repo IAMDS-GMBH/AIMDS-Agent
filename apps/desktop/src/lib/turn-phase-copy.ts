@@ -356,3 +356,17 @@ export function turnPhaseLine(phase: TurnPhase | undefined, options: TurnPhaseCo
 
   return { hint: longHistory ? copy.slowLongHistory : copy.slow, line }
 }
+
+/**
+ * The sentence for a phase that interrupts a turn after it already showed
+ * output (AIS-786): a context summary, a retry or a model switch between two
+ * steps. Empty for plain waiting — the activity line already says what the
+ * turn works on. Business wording only; the line sits inside the transcript.
+ */
+export function midTurnPhaseLine(phase: TurnPhase | undefined, locale: string): string {
+  if (!phase || phase.name === 'waiting') {
+    return ''
+  }
+
+  return turnPhaseLine(phase, { elapsed: 0, locale, nerdy: false }).line
+}

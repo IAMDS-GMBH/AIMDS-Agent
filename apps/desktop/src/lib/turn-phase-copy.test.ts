@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
-import { parseTurnPhase } from '@/store/turn-phase'
+import { $turnPhaseBySession, applyTurnPhaseEvent, parseTurnPhase } from '@/store/turn-phase'
 
-import { rotatingPick, turnPhaseLine } from './turn-phase-copy'
+import { midTurnPhaseLine, rotatingPick, turnPhaseLine } from './turn-phase-copy'
 
 const business = { elapsed: 5, locale: 'de', nerdy: false }
 
@@ -100,5 +100,34 @@ describe('turn phase copy (AIS-460)', () => {
   it('ignores unknown phases', () => {
     expect(parseTurnPhase({ phase: 'hacking' })).toBeNull()
     expect(parseTurnPhase(null)).toBeNull()
+  })
+})
+
+describe('mid-turn phases (AIS-786)', () => {
+  it('says in plain words that the conversation is being summarized', () => {
+    const compressing = parseTurnPhase({ phase: 'compressing', messages: 56 })!
+
+    expect(midTurnPhaseLine(compressing, 'de')).toBe(
+      'Ich fasse den bisherigen Verlauf zusammen, damit wir weitermachen können …'
+    )
+    expect(midTurnPhaseLine(compressing, 'en')).toBe('I am summarizing the conversation so far so we can keep going …')
+  })
+
+  it('leaves plain waiting to the activity line', () => {
+    expect(midTurnPhaseLine(parseTurnPhase({ phase: 'waiting', attempt: 1 })!, 'de')).toBe('')
+    expect(midTurnPhaseLine(undefined, 'de')).toBe('')
+  })
+
+  it('clears the summary sentence when the agent reports it done', () => {
+    applyTurnPhaseEvent('sess-786', { phase: 'compressing', messages: 56 })
+    expect($turnPhaseBySession.get()['sess-786']?.name).toBe('compressing')
+
+    applyTurnPhaseEvent('sess-786', { phase: 'compressed' })
+    expect($turnPhaseBySession.get()['sess-786']).toBeUndefined()
+
+    // A later phase is not cleared by a stray end event.
+    applyTurnPhaseEvent('sess-786', { phase: 'retrying', attempt: 2, reason: 'busy' })
+    applyTurnPhaseEvent('sess-786', { phase: 'compressed' })
+    expect($turnPhaseBySession.get()['sess-786']?.name).toBe('retrying')
   })
 })

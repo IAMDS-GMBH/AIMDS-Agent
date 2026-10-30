@@ -64,6 +64,8 @@ interface ToolMeta {
 
 export interface MessageRunningStateSlice {
   message: {
+    isLast?: boolean
+    role?: string
     status?: {
       type?: string
     }
@@ -117,8 +119,15 @@ const INLINE_CODE_SPLIT_RE = /(`[^`\n]+`)/g
 const CITATION_MARKER_RE = /(?<=[\p{L}\p{N})\].,!?:;"'”’])\[(?:\d+(?:\s*,\s*\d+)*)\](?!\()/gu
 const BACKTICK_NOISE_RE = /`{3,}/g
 
+/**
+ * Whether this message belongs to the turn that is running. The turn (the
+ * thread's busy state) decides, not only the message's own status: a view
+ * merge or a store hydration can settle the live message while the agent is
+ * still working (AIS-786), and the running turn's message is the last one.
+ */
 export const selectMessageRunning = (state: MessageRunningStateSlice) =>
-  state.thread.isRunning && state.message.status?.type === 'running'
+  state.thread.isRunning &&
+  (state.message.status?.type === 'running' || (state.message.isLast === true && state.message.role === 'assistant'))
 
 function titleForTool(name: string): string {
   const normalized = name.replace(/^browser_/, '').replace(/^web_/, '')
@@ -583,34 +592,18 @@ export function isGroupableToolName(name: string): boolean {
   return !UNGROUPED_TOOLS.has(name)
 }
 
-/** Groupable tool parts of a message, in order — independent of how
- *  assistant-ui slices the content into ranges. */
-export function groupableToolParts(content: readonly unknown[]): ToolPart[] {
-  const parts: ToolPart[] = []
-
-  for (const entry of content) {
-    if (!isRecord(entry) || entry.type !== 'tool-call' || typeof entry.toolName !== 'string') {
-      continue
-    }
-
-    if (!isGroupableToolName(entry.toolName)) {
-      continue
-    }
-
-    parts.push({
-      args: entry.args,
-      isError: entry.isError === true,
-      result: entry.result,
-      toolCallId: typeof entry.toolCallId === 'string' ? entry.toolCallId : undefined,
-      toolName: entry.toolName,
-      type: 'tool-call'
-    })
+function toToolPart(entry: Record<string, unknown>): ToolPart {
+  return {
+    args: entry.args,
+    isError: entry.isError === true,
+    result: entry.result,
+    toolCallId: typeof entry.toolCallId === 'string' ? entry.toolCallId : undefined,
+    toolName: String(entry.toolName),
+    type: 'tool-call'
   }
-
-  return parts
 }
 
-function isGroupedStep(entry: unknown): boolean {
+function isGroupedStep(entry: unknown): entry is Record<string, unknown> {
   return isRecord(entry) && entry.type === 'tool-call' && typeof entry.toolName === 'string' && isGroupableToolName(entry.toolName)
 }
 
@@ -618,23 +611,69 @@ function isBlankText(entry: unknown): boolean {
   return isRecord(entry) && entry.type === 'text' && (typeof entry.text !== 'string' || !entry.text.trim())
 }
 
-/** Whether the message's running tool step is rendered at its bottom (AIS-746).
- *  Two or more grouped steps render as one block at the position of the first,
- *  so a running grouped step only shows at the bottom when nothing but grouped
- *  steps follows that position — a later file-edit row or text pushes the
- *  block, and its live line, up and out of view. */
-export function runningStepAtEnd(content: readonly unknown[]): boolean {
-  const last = content.at(-1)
+// Reasoning and whitespace-only text neither show between steps nor end a run.
+function isQuiet(entry: unknown): boolean {
+  return isBlankText(entry) || (isRecord(entry) && entry.type === 'reasoning')
+}
 
-  if (!isRecord(last) || last.type !== 'tool-call' || last.result !== undefined) {
+/** Consecutive groupable tool steps of a message (AIS-786). */
+export interface ToolStepRun {
+  /** Nothing but whitespace or reasoning follows the run: it is the tail. */
+  atEnd: boolean
+  parts: ToolPart[]
+}
+
+/**
+ * The message's tool steps, cut into runs at every visible text part or
+ * ungrouped tool row (AIS-786). A run of two or more steps renders as one
+ * activity block where its first step is, so a long turn reads top to bottom
+ * — text, its steps, the next text, the next steps — and the run that is
+ * still growing is the last thing in the message. Built from the whole
+ * content, not from the assistant-ui range a part is rendered in, so a
+ * fragmented live stream and the settled message cut the same runs.
+ */
+export function toolStepRuns(content: readonly unknown[]): ToolStepRun[] {
+  const runs: ToolStepRun[] = []
+  let open: ToolStepRun | null = null
+
+  for (const entry of content) {
+    if (isGroupedStep(entry)) {
+      if (!open) {
+        open = { atEnd: false, parts: [] }
+        runs.push(open)
+      }
+
+      open.parts.push(toToolPart(entry))
+    } else if (!isQuiet(entry)) {
+      open = null
+    }
+  }
+
+  if (open) {
+    open.atEnd = true
+  }
+
+  return runs
+}
+
+/** Whether the message ends with a tool step that shows its own live line
+ *  (AIS-746/786): a running step's row, or the activity block of the last run,
+ *  which keeps saying what it works on between steps. Text or a finished
+ *  single row at the end leaves the live signal to the stall indicator. */
+export function liveStepLineAtEnd(content: readonly unknown[]): boolean {
+  const tail = content.filter(entry => !isQuiet(entry)).at(-1)
+
+  if (!isRecord(tail) || tail.type !== 'tool-call') {
     return false
   }
 
-  if (!isGroupedStep(last) || content.filter(isGroupedStep).length < 2) {
+  if (tail.result === undefined) {
     return true
   }
 
-  return content.slice(content.findIndex(isGroupedStep)).every(entry => isGroupedStep(entry) || isBlankText(entry))
+  const last = toolStepRuns(content).at(-1)
+
+  return Boolean(last?.atEnd && last.parts.length > 1)
 }
 
 export interface ActivitySummary {

@@ -957,7 +957,12 @@ export function preserveLocalAssistantErrors(
       ...message,
       parts,
       ...(error && { error }),
-      pending: false
+      // The incoming copy decides: stored history is never pending, while the
+      // live session state flushed into the view is pending until the turn
+      // completes. Forcing false here settled the streaming message in the
+      // view after its first update, so every running step and activity line
+      // looked finished while the agent kept working (AIS-786).
+      pending: Boolean(message.pending) && !error
     }
   })
 

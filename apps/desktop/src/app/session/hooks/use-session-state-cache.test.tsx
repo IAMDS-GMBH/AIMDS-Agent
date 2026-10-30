@@ -2,12 +2,14 @@ import { act, cleanup, render } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { ChatMessage } from '@/lib/chat-messages'
 import {
   $currentFastMode,
   $currentModel,
   $currentProvider,
   $currentReasoningEffort,
   $currentServiceTier,
+  $messages,
   $turnStartedAt,
   setCurrentFastMode,
   setCurrentModel,
@@ -214,5 +216,77 @@ describe('useSessionStateCache — per-session turn timer', () => {
     expect($currentReasoningEffort.get()).toBe('')
     expect($currentServiceTier.get()).toBe('')
     expect($currentFastMode.get()).toBe(false)
+  })
+})
+
+// AIS-786: the view flush merged the live state into the shown transcript with
+// every assistant message settled, so from its second update on the running
+// turn's message looked finished — steps lost their live line while the agent
+// kept working for minutes.
+describe('useSessionStateCache — live message in the view', () => {
+  beforeEach(() => {
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb: FrameRequestCallback) => {
+      cb(0)
+
+      return null as unknown as number
+    })
+    $messages.set([])
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    $messages.set([])
+  })
+
+  function ViewHarness({ onReady }: { onReady: (cache: Cache) => void }) {
+    const busyRef: MutableRefObject<boolean> = { current: false }
+
+    onReady(
+      useSessionStateCache({
+        activeSessionId: 'fg-runtime',
+        busyRef,
+        selectedStoredSessionId: 'fg-stored',
+        setAwaitingResponse: () => undefined,
+        setBusy: () => undefined,
+        setMessages: messages => $messages.set(messages)
+      })
+    )
+
+    return null
+  }
+
+  const streaming = (text: string, pending = true): ChatMessage => ({
+    id: 'assistant-stream-1',
+    parts: [{ text, type: 'text' }],
+    pending,
+    role: 'assistant'
+  })
+
+  it('keeps the streaming message pending across flushes while the turn runs', () => {
+    let cache!: Cache
+    render(<ViewHarness onReady={c => (cache = c)} />)
+
+    for (const text of ['Ich schaue', 'Ich schaue nach', 'Ich schaue nach dem Board']) {
+      act(() => {
+        cache.updateSessionState('fg-runtime', state => ({ ...state, busy: true, messages: [streaming(text)] }), 'fg-stored')
+      })
+
+      expect($messages.get().map(message => message.pending)).toEqual([true])
+    }
+  })
+
+  it('settles it once the session is idle', () => {
+    let cache!: Cache
+    render(<ViewHarness onReady={c => (cache = c)} />)
+
+    act(() => {
+      cache.updateSessionState('fg-runtime', state => ({ ...state, busy: true, messages: [streaming('a')] }), 'fg-stored')
+    })
+    act(() => {
+      cache.updateSessionState('fg-runtime', state => ({ ...state, busy: false, messages: [streaming('ab')] }))
+    })
+
+    expect($messages.get().map(message => message.pending)).toEqual([false])
   })
 })
