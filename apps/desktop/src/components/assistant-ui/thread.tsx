@@ -61,7 +61,14 @@ import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/mar
 import { VirtualizedThread } from '@/components/assistant-ui/thread-virtualizer'
 import { HoistedTodoPanel, todosFromMessageContent } from '@/components/assistant-ui/todo-tool'
 import { PendingApprovalNotice } from '@/components/assistant-ui/tool-approval'
-import { ToolFallback, ToolGroupSlot, useMidTurnPhaseLine } from '@/components/assistant-ui/tool-fallback'
+import {
+  TOOL_HEADER_DURATION_CLASS,
+  TOOL_HEADER_SUBTITLE_CLASS,
+  TOOL_HEADER_TITLE_CLASS,
+  ToolFallback,
+  ToolGroupSlot,
+  useMidTurnPhaseLine
+} from '@/components/assistant-ui/tool-fallback'
 import { liveStepLineAtEnd, selectMessageRunning } from '@/components/assistant-ui/tool-fallback-model'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
 import { UserMessageText } from '@/components/assistant-ui/user-message-text'
@@ -296,7 +303,7 @@ const StatusRow: FC<{ children: ReactNode; label: string } & React.ComponentProp
   <div
     aria-label={label}
     aria-live="polite"
-    className={cn('flex max-w-full items-center gap-2 self-start text-sm text-muted-foreground/70', className)}
+    className={cn('flex max-w-full items-center gap-2 self-start text-(--ui-text-tertiary)', className)}
     role="status"
     {...rest}
   >
@@ -323,10 +330,11 @@ const ResponseLoadingIndicator: FC<{ sessionId?: null | string }> = ({ sessionId
     <StatusRow data-slot="aui_response-loading" label={t.assistant.thread.loadingResponse}>
       <span aria-hidden="true" className="dither inline-block size-3 shrink-0 rounded-[2px] text-midground/80 animate-pulse" />
       <span className="flex min-w-0 flex-col">
-        <span className="min-w-0">
-          {line} <ActivityTimerText seconds={elapsed} />
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span className={cn(TOOL_HEADER_TITLE_CLASS, 'text-(--ui-text-tertiary)')}>{line}</span>
+          <ActivityTimerText className={TOOL_HEADER_DURATION_CLASS} seconds={elapsed} />
         </span>
-        {hint && <span className="text-xs text-muted-foreground/60">{hint}</span>}
+        {hint && <span className={TOOL_HEADER_SUBTITLE_CLASS}>{hint}</span>}
       </span>
     </StatusRow>
   )
@@ -369,8 +377,9 @@ const StreamStallIndicator: FC<{ activity: string }> = ({ activity }) => {
   return (
     <StatusRow className="mt-1.5" data-slot="aui_stream-stall" label={phaseLine || t.assistant.tool.activity.working}>
       <span aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80 animate-pulse" />
-      <span className="min-w-0">
-        {line} <ActivityTimerText seconds={elapsed} />
+      <span className="flex min-w-0 items-center gap-1.5">
+        <span className={cn(TOOL_HEADER_TITLE_CLASS, 'text-(--ui-text-tertiary)')}>{line}</span>
+        <ActivityTimerText className={TOOL_HEADER_DURATION_CLASS} seconds={elapsed} />
       </span>
     </StatusRow>
   )

@@ -9,6 +9,7 @@ import {
   mergeStoredIntoBusyTranscript,
   preserveLocalAssistantErrors,
   renderMediaTags,
+  settleAssistantTextParts,
   toChatMessages,
   upsertToolPart
 } from './chat-messages'
@@ -1103,5 +1104,44 @@ describe('mergeStoredIntoBusyTranscript', () => {
       'second answer, stored in full with more detail',
       'third'
     ])
+  })
+})
+
+describe('settleAssistantTextParts', () => {
+  const text = (value: string): ChatMessagePart => ({ type: 'text', text: value })
+  const step = (id: string, toolName = 'clarify'): ChatMessagePart =>
+    ({ type: 'tool-call', toolCallId: id, toolName, args: {}, result: {} }) as ChatMessagePart
+  const texts = (parts: ChatMessagePart[]) =>
+    parts.filter(part => part.type === 'text').map(part => (part as { text: string }).text)
+
+  it('keeps an answer written before a question when the turn ends (AIS-788)', () => {
+    const parts = [
+      step('a', 'mcp_board'),
+      text('| Board | Spalten |\n|---|---|\n| LBBW | 7 |'),
+      step('b'),
+      step('c', 'memory_summarize_session'),
+      text('Der Vergleich ist abgeschlossen.')
+    ]
+
+    expect(texts(settleAssistantTextParts(parts, 'Der Vergleich ist abgeschlossen.'))).toEqual([
+      '| Board | Spalten |\n|---|---|\n| LBBW | 7 |',
+      'Der Vergleich ist abgeschlossen.'
+    ])
+  })
+
+  it('replaces only the streamed text after the last step', () => {
+    const parts = [text('Ich prüfe das.'), step('a'), text('Fertig, alles'), text(' gut.')]
+
+    expect(texts(settleAssistantTextParts(parts, 'Fertig, alles gut.'))).toEqual(['Ich prüfe das.', 'Fertig, alles gut.'])
+  })
+
+  it('drops earlier text that repeats the final text', () => {
+    const parts = [text('Fertig.'), step('a')]
+
+    expect(texts(settleAssistantTextParts(parts, 'Fertig.'))).toEqual(['Fertig.'])
+  })
+
+  it('replaces all text of a message without steps, as before', () => {
+    expect(texts(settleAssistantTextParts([text('Hal'), text('lo')], 'Hallo'))).toEqual(['Hallo'])
   })
 })

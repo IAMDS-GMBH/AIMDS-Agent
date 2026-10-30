@@ -56,12 +56,13 @@ const ToolEmbedContext = createContext(false)
 // Shared header chrome for tool rows. Both the single-tool DisclosureRow
 // and the multi-tool group header pass through these constants so a
 // "Patch" row and a "Tool actions · 2 steps" row are visually identical.
-const TOOL_HEADER_TITLE_CLASS =
+// The thread's wait and stall lines use them too (AIS-787).
+export const TOOL_HEADER_TITLE_CLASS =
   'text-[length:var(--conversation-tool-font-size)] font-medium leading-(--conversation-line-height) text-(--ui-text-secondary)'
 
-const TOOL_HEADER_DURATION_CLASS = 'shrink-0 text-[0.625rem] tabular-nums text-(--ui-text-tertiary)'
+export const TOOL_HEADER_DURATION_CLASS = 'shrink-0 text-[0.625rem] tabular-nums text-(--ui-text-tertiary)'
 
-const TOOL_HEADER_SUBTITLE_CLASS =
+export const TOOL_HEADER_SUBTITLE_CLASS =
   'text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)'
 
 const TOOL_HEADER_GLYPH_WRAP_CLASS = 'grid size-3.5 shrink-0 place-items-center self-center'
