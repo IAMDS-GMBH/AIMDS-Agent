@@ -132,7 +132,10 @@ const longAnswerMessages = [
   {
     content: 'Compare the three rollout options for the new billing pipeline and recommend one.',
     role: 'user',
-    timestamp: NOW_S - 900
+    timestamp: NOW_S - 900,
+    // AIS-789: what the model understood, stored on the user message.
+    understood:
+      'You want the three rollout options for the new billing pipeline compared, with their trade-offs, and one of them recommended for a team of eight.'
   },
   { content: LONG_ANSWER, role: 'assistant', timestamp: NOW_S - 880 }
 ]
