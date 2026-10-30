@@ -208,6 +208,5 @@ export const FIXTURES: FakeDesktopFixtures = {
       running: false,
       session_id: 'runtime-long-answer'
     }
-  },
-  seed: 798
+  }
 }

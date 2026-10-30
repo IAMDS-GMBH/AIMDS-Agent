@@ -17,8 +17,6 @@ export interface FakeDesktopFixtures {
   api: Record<string, unknown>
   /** JSON-RPC results by method; unknown methods answer `{}`. */
   rpc: Record<string, unknown>
-  /** Seed for the deterministic Math.random. */
-  seed: number
 }
 
 export function installFakeDesktop(fixtures: FakeDesktopFixtures) {
@@ -26,17 +24,16 @@ export function installFakeDesktop(fixtures: FakeDesktopFixtures) {
 
   ;(window as unknown as { __fakeDesktopCalls: string[] }).__fakeDesktopCalls = calls
 
-  // Deterministic randomness (greetings, tips, loaders): mulberry32.
-  let seed = fixtures.seed >>> 0
+  // Deterministic randomness. A seeded sequence is not enough: boot
+  // animations draw a varying number of values first, so a component that
+  // draws once at mount (tip of the day, composer placeholder, loader phase)
+  // got a different value per run. Every draw is 0.5 plus a vanishing step —
+  // the same pick for any `floor(random() * n)`, still distinct values. Ids
+  // built from Math.random (Date.now() is frozen as well) are not unique; a
+  // view that creates several needs its own handling.
+  let draws = 0
 
-  Math.random = () => {
-    seed = (seed + 0x6d2b79f5) >>> 0
-    let t = seed
-    t = Math.imul(t ^ (t >>> 15), t | 1)
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
-
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-  }
+  Math.random = () => 0.5 + (draws++ % 1_000_000) * 1e-12
 
   const clone = <T>(value: T): T => (value === undefined ? value : JSON.parse(JSON.stringify(value)))
 

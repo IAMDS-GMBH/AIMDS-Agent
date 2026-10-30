@@ -6,7 +6,14 @@ import { type ScreenshotView, VIEWS } from './views'
 
 // Bundled faces only (AIS-798): the screenshot must never depend on which
 // system fonts the runner happens to have.
-const BUNDLED_FACES = ['13px "Inter Variable"', '600 13px "Inter Variable"', '13px "JetBrains Mono Variable"']
+const BUNDLED_FACES = [
+  '13px "Inter Variable"',
+  '600 13px "Inter Variable"',
+  '13px "JetBrains Mono Variable"',
+  // The brand wordmark on the new-chat screen.
+  '700 16px "Collapse"'
+]
+
 const DEBUG = Boolean(process.env.SCREENSHOTS_DEBUG)
 const READY_TIMEOUT_MS = 20_000
 // The app has settled once the fake desktop saw no new call for this long.
