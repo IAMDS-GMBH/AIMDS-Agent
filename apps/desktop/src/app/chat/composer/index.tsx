@@ -14,6 +14,7 @@ import {
 } from 'react'
 
 import { hermesDirectiveFormatter, type SlashChipKind } from '@/components/assistant-ui/directive-text'
+import { QuestionCard } from '@/components/assistant-ui/question-card'
 import { Button } from '@/components/ui/button'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
@@ -1718,6 +1719,7 @@ export function ChatBar({
             className="pointer-events-none absolute inset-0 rounded-[inherit]"
             style={{ background: COMPOSER_FADE_BACKGROUND }}
           />
+          <QuestionCard />
           <div className="relative w-full rounded-[inherit]">
             <div
               className={cn(

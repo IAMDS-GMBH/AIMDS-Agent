@@ -1960,11 +1960,10 @@ export const de
       gatewayDisconnected: 'Hermes-Gateway ist nicht verbunden',
       sendFailed: 'Klärungsantwort konnte nicht gesendet werden',
       loadingQuestion: 'Frage wird geladen…',
-      other: 'Andere (Antwort eingeben)',
+      other: 'Eigene Antwort',
       placeholder: 'Antwort eingeben…',
       shortcut: combo => `${combo} zum Senden`,
       back: 'Zurück',
-      skip: 'Überspringen',
       send: 'Senden',
       // AIS-333: clarify-Frist / Timeout (SUP-20260914-092956)
       timeRemaining: (mmss: string) => `Zeit zum Antworten: ${mmss}`,
@@ -1972,7 +1971,23 @@ export const de
       timedOutTitle: 'Zeit abgelaufen',
       timedOutBody: (seconds: number) =>
         `Innerhalb von ${seconds} s kam keine Antwort, der Agent hat ohne deine Eingabe weitergemacht. Antworte im Chat, wenn du es noch beantworten willst.`,
-      timedOutQuestion: 'Frage'
+      timedOutQuestion: 'Frage',
+      // AIS-793: Fragenkarte am Eingabefeld
+      title: (count: number) => (count === 1 ? 'Rückfrage' : `${count} Fragen`),
+      later: 'Später',
+      apply: 'Übernehmen',
+      change: 'Ändern',
+      minimize: 'Minimieren',
+      progress: (done: number, total: number) => `${done} von ${total} beantwortet`,
+      sendAnswers: 'Antworten senden',
+      sendRestLater: (open: number) => (open === 1 ? 'Senden, 1 Frage später' : `Senden, ${open} Fragen später`),
+      openQuestions: (count: number) => (count === 1 ? '1 offene Frage' : `${count} offene Fragen`),
+      asked: (count: number) => (count === 1 ? 'Rückfrage gestellt' : `${count} Fragen gestellt`),
+      showQuestions: (count: number) => (count === 1 ? 'Zur Frage' : 'Zu den Fragen'),
+      answerLater: 'Später',
+      answerEmpty: 'Keine Antwort',
+      answerTimeout: 'Zeit abgelaufen',
+      answerUndelivered: 'Nicht angekommen'
     },
     tool: {
       code: 'Code',

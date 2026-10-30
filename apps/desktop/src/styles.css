@@ -1109,7 +1109,10 @@ canvas {
   background: transparent !important;
 }
 
-[data-slot='aui_assistant-message-content'] > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure']) {
+/* AIS-793: an answered question is the user's own decision, not scaffolding —
+   it stays at full strength. */
+[data-slot='aui_assistant-message-content']
+  > :is([data-slot='tool-block']:not([data-tool='clarify']), [data-slot='aui_thinking-disclosure']) {
   opacity: 0.67;
   transition: opacity 120ms ease-out;
 }

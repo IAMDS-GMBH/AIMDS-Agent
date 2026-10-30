@@ -110,7 +110,10 @@ const DETAIL_KEYS = [
   'id',
   'ids',
   'url',
-  'path'
+  'path',
+  // AIS-793: a question row says what was asked.
+  'question',
+  'questions'
 ]
 
 // Arguments that do not change a field of the item an update touches: ids,
@@ -211,6 +214,18 @@ function idsField(value: unknown): string {
   const shown = keys.slice(0, 2).join(', ')
 
   return keys.length > 2 ? `${shown} (+${keys.length - 2})` : shown
+}
+
+/** "QS-38 (+2)" for several clarify questions: the first topic or question (AIS-793). */
+function questionsField(value: unknown): string {
+  if (!Array.isArray(value)) {
+    return ''
+  }
+
+  const items = value.filter(item => item && typeof item === 'object') as Record<string, unknown>[]
+  const first = items[0] ? stringField(items[0], 'topic') || stringField(items[0], 'question') : ''
+
+  return first && items.length > 1 ? `${first} (+${items.length - 1})` : first
 }
 
 function tokens(value: string): string[] {
@@ -331,7 +346,12 @@ export function toolDetail(rawArgs?: unknown, useContext = true): string {
 
   if (!detail) {
     for (const key of DETAIL_KEYS) {
-      detail = key === 'ids' ? idsField(args.ids) : stringField(args, key)
+      detail =
+        key === 'ids'
+          ? idsField(args.ids)
+          : key === 'questions'
+            ? questionsField(args.questions)
+            : stringField(args, key)
 
       if (detail) {
         break

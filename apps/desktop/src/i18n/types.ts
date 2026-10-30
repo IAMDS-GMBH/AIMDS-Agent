@@ -1696,7 +1696,6 @@ export interface Translations {
       /** `combo` is the send shortcut for this OS (⌘↵ / Ctrl+↵). */
       shortcut: (combo: string) => string
       back: string
-      skip: string
       send: string
       // AIS-333: clarify deadline / timeout
       timeRemaining: (mmss: string) => string
@@ -1704,6 +1703,28 @@ export interface Translations {
       timedOutTitle: string
       timedOutBody: (seconds: number) => string
       timedOutQuestion: string
+      // AIS-793: question card at the composer, anchor in the thread, answered row
+      /** Card / answered-row heading: one question or `count` questions. */
+      title: (count: number) => string
+      /** Defers a question: the agent continues, the question stays open. */
+      later: string
+      apply: string
+      change: string
+      minimize: string
+      progress: (done: number, total: number) => string
+      sendAnswers: string
+      /** Send with `open` questions still unanswered — they count as later. */
+      sendRestLater: (open: number) => string
+      /** Composer chip while the card is minimised. */
+      openQuestions: (count: number) => string
+      /** The thread's anchor while the card waits at the composer. */
+      asked: (count: number) => string
+      showQuestions: (count: number) => string
+      /** Answered row: what came back per question. */
+      answerLater: string
+      answerEmpty: string
+      answerTimeout: string
+      answerUndelivered: string
     }
     tool: {
       code: string

@@ -63,6 +63,8 @@ export type GatewayEventPayload = {
   request_id?: string
   question?: string
   choices?: string[] | null
+  // AIS-793: several questions in one clarify.request
+  questions?: unknown
   // clarify.request deadline / clarify.timeout (AIS-333)
   deadline_at?: number
   timeout_seconds?: number
