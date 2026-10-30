@@ -3077,13 +3077,8 @@ def _agent_cbs(sid: str) -> dict:
             {"text": text, **({"verbose": True} if _session_verbose(sid) else {})},
         )
 
-    def _clarify_cb(q, c):
-        question = str(q or "").strip()
-        logger.info(
-            "[ONBOARDING] clarify.request question=%r choices=%d",
-            question,
-            len(c or []),
-        )
+    def _ask_clarify(payload: dict, label: str):
+        """Emit one clarify.request and block on it: ``(answer, timeout_or_None)``."""
         # One resolution for every surface (AIS-333): clarify.timeout →
         # agent.clarify_timeout → 600 s. _block's own 300s default stays for
         # approval/sudo/secret prompts only (AIS-275).
@@ -3101,32 +3096,71 @@ def _agent_cbs(sid: str) -> dict:
             "clarify.request",
             sid,
             {
-                "question": q,
-                "choices": c,
+                **payload,
                 "timeout_seconds": int(clarify_timeout),
                 "deadline_at": deadline_at,
             },
             timeout=clarify_timeout,
         )
-        if timed_out:
-            logger.info(
-                "[ONBOARDING] clarify.timeout question=%r after %ds",
-                question,
-                int(clarify_timeout),
-            )
-            _emit(
-                "clarify.timeout",
-                sid,
-                {"request_id": rid, "timeout_seconds": int(clarify_timeout)},
-            )
-            return {
-                "user_response": "",
-                "response_state": "timeout",
-                "resolved": False,
-                "reason_code": "clarify_timeout",
-                "timeout_seconds": int(clarify_timeout),
-            }
+        if not timed_out:
+            return answer, None
+        logger.info(
+            "[ONBOARDING] clarify.timeout question=%r after %ds",
+            label,
+            int(clarify_timeout),
+        )
+        _emit(
+            "clarify.timeout",
+            sid,
+            {"request_id": rid, "timeout_seconds": int(clarify_timeout)},
+        )
+        return answer, {
+            "user_response": "",
+            "response_state": "timeout",
+            "resolved": False,
+            "reason_code": "clarify_timeout",
+            "timeout_seconds": int(clarify_timeout),
+        }
+
+    def _clarify_cb(q, c):
+        question = str(q or "").strip()
+        logger.info(
+            "[ONBOARDING] clarify.request question=%r choices=%d",
+            question,
+            len(c or []),
+        )
+        answer, timed_out = _ask_clarify({"question": q, "choices": c}, question)
+        if timed_out is not None:
+            return timed_out
+        # AIS-793: the question card answers with ``answers`` (it can defer
+        # the question: state "skipped").
+        if isinstance(answer, dict):
+            answers = answer.get("answers") or [{}]
+            return answers[0] if isinstance(answers[0], dict) else str(answers[0])
         return answer
+
+    def _clarify_questions_cb(questions):
+        # AIS-793: several questions in one request — the desktop question
+        # card and the TUI answer them together via clarify.respond `answers`.
+        logger.info("[ONBOARDING] clarify.request questions=%d", len(questions))
+        first = questions[0] if questions else {}
+        answer, timed_out = _ask_clarify(
+            {
+                "question": str(first.get("question") or ""),
+                "choices": first.get("choices"),
+                "questions": questions,
+            },
+            f"{len(questions)} questions",
+        )
+        if timed_out is not None:
+            return timed_out
+        if isinstance(answer, dict) and isinstance(answer.get("answers"), list):
+            return answer["answers"]
+        # A plain answer (older client, or a prompt released empty) is the
+        # answer to the first question.
+        return [answer]
+
+    _clarify_cb.ask_questions = _clarify_questions_cb
 
     return {
         "tool_start_callback": lambda tc_id, name, args: _on_tool_start(
@@ -7251,6 +7285,20 @@ def _respond(rid, params, key):
 
 @method("clarify.respond")
 def _(rid, params: dict) -> dict:
+    # AIS-793: the question card sends one {state, response} per question
+    # (clarify_questions contract); ``answer`` alone stays the single form.
+    answers = params.get("answers")
+    if isinstance(answers, list):
+        cleaned = [
+            {
+                "state": str(entry.get("state") or "answered"),
+                "response": str(entry.get("response") or ""),
+            }
+            if isinstance(entry, dict)
+            else {"state": "answered", "response": str(entry)}
+            for entry in answers
+        ]
+        return _respond(rid, {**params, "answer": {"answers": cleaned}}, "answer")
     return _respond(rid, params, "answer")
 
 

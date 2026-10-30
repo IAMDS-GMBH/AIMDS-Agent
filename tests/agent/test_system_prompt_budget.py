@@ -49,6 +49,9 @@ BLOCK_TOKEN_BUDGETS = {
 # AIS-757: the workdays tool schema rides along with every request (2,168
 # tokens; 2,430 before).
 WORKDAYS_SCHEMA_TOKEN_BUDGET = 2_250
+# AIS-793: so does clarify; `questions` (several per ask) took it from 320 to
+# 352 tokens.
+CLARIFY_SCHEMA_TOKEN_BUDGET = 365
 
 _M365 = "mcp_MSOffice365MCP_"
 _MEMORY = "mcp_AIMDSSuiteMCP_mcp_memory-"
@@ -179,6 +182,13 @@ def test_workdays_schema_stays_within_budget():
     assert tokens <= WORKDAYS_SCHEMA_TOKEN_BUDGET, tokens
 
 
+def test_clarify_schema_stays_within_budget():
+    from tools.clarify_tool import CLARIFY_SCHEMA
+
+    tokens = estimate_tokens_rough(str({"type": "function", "function": CLARIFY_SCHEMA}))
+    assert tokens <= CLARIFY_SCHEMA_TOKEN_BUDGET, tokens
+
+
 def test_trim_kept_the_behavioural_rules(representative):
     """The trim removed repetition and recipes, not rules: approvals, the
     user's language, safety guardrails and the hard mail, Teams and
@@ -236,6 +246,8 @@ def test_trim_kept_the_behavioural_rules(representative):
         "pick the action that answers the question in one call",
         "Never type week numbers",
         "confirm it instead of answering with incomplete numbers",
+        # AIS-793: open decisions are questions, not a prose list
+        "one `questions` entry per decision",
     ):
         assert rule in stable, rule
 

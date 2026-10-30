@@ -1958,11 +1958,10 @@ export const en: Translations = {
       gatewayDisconnected: 'Hermes gateway is not connected',
       sendFailed: 'Could not send clarify response',
       loadingQuestion: 'Loading question…',
-      other: 'Other (type your answer)',
+      other: 'Own answer',
       placeholder: 'Type your answer…',
       shortcut: combo => `${combo} to send`,
       back: 'Back',
-      skip: 'Skip',
       send: 'Send',
       // AIS-333: clarify deadline / timeout (SUP-20260914-092956)
       timeRemaining: (mmss: string) => `Time to answer: ${mmss}`,
@@ -1970,7 +1969,23 @@ export const en: Translations = {
       timedOutTitle: 'Time is up',
       timedOutBody: (seconds: number) =>
         `No answer arrived within ${seconds} s, so the agent continued without your input. Reply in the chat if you still want to answer.`,
-      timedOutQuestion: 'Question'
+      timedOutQuestion: 'Question',
+      // AIS-793: question card at the composer
+      title: (count: number) => (count === 1 ? 'Question' : `${count} questions`),
+      later: 'Later',
+      apply: 'Use answer',
+      change: 'Change',
+      minimize: 'Minimize',
+      progress: (done: number, total: number) => `${done} of ${total} answered`,
+      sendAnswers: 'Send answers',
+      sendRestLater: (open: number) => (open === 1 ? 'Send, 1 question later' : `Send, ${open} questions later`),
+      openQuestions: (count: number) => (count === 1 ? '1 open question' : `${count} open questions`),
+      asked: (count: number) => (count === 1 ? 'Asked a question' : `Asked ${count} questions`),
+      showQuestions: (count: number) => (count === 1 ? 'Go to the question' : 'Go to the questions'),
+      answerLater: 'Later',
+      answerEmpty: 'No answer',
+      answerTimeout: 'Time is up',
+      answerUndelivered: 'Did not arrive'
     },
     tool: {
       code: 'Code',

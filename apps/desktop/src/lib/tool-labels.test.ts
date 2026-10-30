@@ -130,6 +130,18 @@ describe('helpers', () => {
     expect(toolDetail({ url: 'https://example.com/a/b' })).toBe('https://example.com/a/b')
   })
 
+  // AIS-793: the question row said only "Rückfrage gestellt 7m 8s".
+  it('names what a question row asked', () => {
+    const questions = [
+      { question: 'Load test before or after the release?', topic: 'QS-38' },
+      { question: 'Who signs off?', topic: 'QS-41' }
+    ]
+
+    expect(toolTitle('clarify', { question: 'Which region?' }, false, de)).toBe('Rückfrage gestellt: „Which region?“')
+    expect(toolDetail({ questions })).toBe('QS-38 (+1)')
+    expect(toolDetail({ questions: [{ question: 'Where should the notes go?' }] })).toBe('Where should the notes go?')
+  })
+
   it('reports the area for the activity summary', () => {
     expect(toolLabel('mcp_AIMDSSuiteMCP_mcp_openproject_pm_get_work_package', {}, de)?.area).toBe('OpenProject')
     expect(toolLabel('workdays', {}, de)?.area).toBe('Arbeitszeit')

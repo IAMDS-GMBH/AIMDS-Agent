@@ -515,7 +515,10 @@ CONFIRMATION_REQUIRED_ENFORCEMENT = (
     "answer.\n"
     "The same applies whenever you end a reply by offering the user options "
     "('Variante 1 / Variante 2', 'shall I A or B?'): put them into `clarify` as "
-    "`choices` (max 4, short labels) so the user can click instead of typing a number."
+    "`choices` (max 4, short labels) so the user can click instead of typing a number.\n"
+    # AIS-793: open points used to come back as a prose "Offen:" list.
+    "Decisions you need from the user go into `clarify`, one `questions` entry "
+    "per decision, rather than into a prose list of open points."
 )
 
 # OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes

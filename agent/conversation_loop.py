@@ -1383,8 +1383,10 @@ def _enforce_single_onboarding_clarify_question(
         if not isinstance(args, dict):
             args = {}
         # Hard-enforce one onboarding question for the first step; this prevents
-        # merged multi-field prompts in a single clarify bubble.
+        # merged multi-field prompts in a single clarify bubble (and a
+        # several-question ask, AIS-793).
         args["question"] = first_question
+        args.pop("questions", None)
         fn.arguments = json.dumps(args, ensure_ascii=False)
         break
 
@@ -1631,6 +1633,7 @@ def _enforce_onboarding_clarify_question_sequence(
         if not isinstance(args, dict):
             args = {}
         args["question"] = next_question
+        args.pop("questions", None)
         fn.arguments = json.dumps(args, ensure_ascii=False)
         logger.info(
             "[ONBOARDING] Enforced clarify question sequence: next=%r",

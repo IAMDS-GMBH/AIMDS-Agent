@@ -404,3 +404,10 @@ suite_auth:
   reauth_needed: "Tá do shíniú isteach chuig {target} imithe in éag nó athshocraithe. Sínigh isteach arís: Socruithe → Cuntais → {target} → Sínigh isteach arís. Ansin cuir do cheist arís."
   endpoint_moved: "Freagraíonn {target} ag seoladh eile ({location}). Seiceáil seoladh an fhreastalaí: Socruithe → Cuntais → {target}. Ansin cuir do cheist arís."
   model_not_allowed: "Níl {model} cumasaithe do do rochtain ar {target}. Roghnaigh samhail eile (Socruithe → Samhail) nó iarr ar do riarthóir é a chumasú. Ansin cuir do cheist arís."
+
+clarify:
+  # AIS-793: several questions in one message on messaging platforms.
+  questions_intro: '{count} cheist — freagair i dteachtaireacht amháin, m.sh. "1a 2b" nó "2: do fhreagra". Le "2 {later}" freagraíonn tú ceist níos déanaí.'
+  still_open: 'Fós oscailte: {numbers}. Freagair m.sh. le "{example}" nó scríobh "{later}".'
+  # The word that defers a question ("2 later").
+  later: "ar ball"

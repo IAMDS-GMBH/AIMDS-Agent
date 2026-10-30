@@ -192,3 +192,111 @@ def test_non_onboarding_clarify_timeout_stays_unrecorded(tmp_path, monkeypatch):
     )
 
     assert not (tmp_path / "_open-questions.md").exists()
+
+
+# ── AIS-793: "later" answers land in the open questions, once ─────────────
+
+
+def _workspace(tmp_path, monkeypatch):
+    home = tmp_path / "hermes-home"
+    vault = tmp_path / "vault"
+    home.mkdir()
+    vault.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("TERMINAL_CWD", str(vault))
+    return vault
+
+
+def _deferred_lines(vault):
+    path = vault / "_open-questions.md"
+    if not path.exists():
+        return []
+    return [line for line in path.read_text(encoding="utf-8").splitlines() if line.startswith("- ts=")]
+
+
+_FOUR_OPEN_POINTS_RESULT = {
+    "v": 1,
+    "questions": [
+        {"topic": "QS-38", "question": "Should the load test run before or after the release?", "choices": ["Before", "After"]},
+        {"topic": "QS-41", "question": "Who signs off the acceptance test?"},
+        {"topic": "Release 0.7.15", "question": "Ship the desktop build with this release?"},
+        {"topic": "Docs", "question": "Where should the release notes go?"},
+    ],
+    "answers": [
+        {"state": "answered", "response": "Before"},
+        {"state": "skipped", "response": ""},
+        {"state": "timeout", "response": ""},
+        {"state": "skipped", "response": ""},
+    ],
+}
+
+
+def test_later_questions_are_recorded_with_topic_for_the_brief(tmp_path, monkeypatch):
+    from cron.brief_sources.workspace import _essence
+
+    vault = _workspace(tmp_path, monkeypatch)
+    agent = SimpleNamespace(_current_turn_id="turn-later-1", platform="desktop")
+
+    _maybe_persist_blocking_clarify_open_question(
+        agent,
+        function_name="clarify",
+        function_args={"questions": _FOUR_OPEN_POINTS_RESULT["questions"]},
+        function_result=json.dumps(_FOUR_OPEN_POINTS_RESULT, ensure_ascii=False),
+    )
+
+    lines = _deferred_lines(vault)
+    # Only the two "later" questions: the answer is resolved, the timeout is noise.
+    assert len(lines) == 2
+    assert [_essence(line[2:]) for line in lines] == [
+        "QS-41: Who signs off the acceptance test?",
+        "Docs: Where should the release notes go?",
+    ]
+    assert "source=desktop clarify" in lines[0]
+
+
+def test_later_question_is_recorded_once_across_sessions(tmp_path, monkeypatch):
+    import agent.open_questions as oq
+
+    vault = _workspace(tmp_path, monkeypatch)
+    result = json.dumps(
+        {
+            "question": "Ship the desktop build with this release?",
+            "choices_offered": None,
+            "user_response": "",
+            "response_state": "skipped",
+            "resolved": False,
+            "reason_code": "clarify_skipped",
+            "v": 1,
+            "questions": [{"question": "Ship the desktop build with this release?"}],
+            "answers": [{"state": "skipped", "response": ""}],
+        }
+    )
+    for turn in ("turn-a", "turn-b"):
+        _maybe_persist_blocking_clarify_open_question(
+            SimpleNamespace(_current_turn_id=turn, platform="tui"),
+            function_name="clarify",
+            function_args={"question": "Ship the desktop build with this release?"},
+            function_result=result,
+        )
+        # A new process (next session) forgets its in-memory dedupe keys.
+        oq._seen_dedupe_keys.clear()
+
+    lines = _deferred_lines(vault)
+    assert len(lines) == 1
+    assert "needed=Ship the desktop build with this release?" in lines[0]
+    # No second "Clarify required for" entry from the single-form path.
+    assert "Clarify required" not in (vault / "_open-questions.md").read_text(encoding="utf-8")
+
+
+def test_answered_questions_leave_no_open_question(tmp_path, monkeypatch):
+    vault = _workspace(tmp_path, monkeypatch)
+    answered = dict(_FOUR_OPEN_POINTS_RESULT, answers=[{"state": "answered", "response": "x"}] * 4)
+
+    _maybe_persist_blocking_clarify_open_question(
+        SimpleNamespace(_current_turn_id="turn-ok", platform="desktop"),
+        function_name="clarify",
+        function_args={},
+        function_result=json.dumps(answered),
+    )
+
+    assert _deferred_lines(vault) == []

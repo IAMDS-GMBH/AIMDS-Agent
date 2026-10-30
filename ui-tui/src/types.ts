@@ -107,6 +107,21 @@ export interface ClarifyReq {
   choices: string[] | null
   question: string
   requestId: string
+  // AIS-793: several questions in one request, asked one after another.
+  answers?: ClarifyAnswer[]
+  index?: number
+  questions?: ClarifyQuestion[]
+}
+
+export interface ClarifyQuestion {
+  choices?: string[] | null
+  question: string
+  topic?: string
+}
+
+export interface ClarifyAnswer {
+  response: string
+  state: 'answered' | 'empty' | 'skipped'
 }
 
 export interface Msg {

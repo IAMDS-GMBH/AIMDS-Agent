@@ -400,3 +400,10 @@ suite_auth:
   reauth_needed: "Deine Anmeldung bei {target} ist abgelaufen oder wurde zurückgesetzt. Bitte melde dich neu an: Einstellungen → Konten → {target} → Neu anmelden. Danach kannst du deine Frage einfach noch einmal stellen."
   endpoint_moved: "{target} antwortet unter einer anderen Adresse ({location}). Bitte prüfe die Server-Adresse: Einstellungen → Konten → {target}. Danach kannst du deine Frage einfach noch einmal stellen."
   model_not_allowed: "{model} ist für deinen Zugang zu {target} nicht freigegeben. Wähle ein anderes Modell (Einstellungen → Modell) oder bitte deine Administration um Freigabe. Danach kannst du deine Frage einfach noch einmal stellen."
+
+clarify:
+  # AIS-793: several questions in one message on messaging platforms.
+  questions_intro: "{count} Fragen — antworte in einer Nachricht, z. B. „1a 2b“ oder „2: deine Antwort“. Mit „2 {later}“ beantwortest du eine Frage später."
+  still_open: "Noch offen: {numbers}. Antworte z. B. mit „{example}“ oder schreib „{later}“."
+  # The word that defers a question ("2 later").
+  later: "später"

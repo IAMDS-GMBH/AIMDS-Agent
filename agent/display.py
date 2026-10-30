@@ -215,6 +215,13 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         else:
             return f"planning {len(todos_arg)} task(s)"
 
+    if tool_name == "clarify" and isinstance(args.get("questions"), list) and args["questions"]:
+        # AIS-793: several questions in one ask; one reads like the single form.
+        if len(args["questions"]) > 1:
+            return f"{len(args['questions'])} questions"
+        first = args["questions"][0]
+        args = {"question": str((first.get("question") if isinstance(first, dict) else first) or "")}
+
     if tool_name == "session_search":
         query = _oneline(args.get("query", ""))
         return f"recall: \"{query[:25]}{'...' if len(query) > 25 else ''}\""

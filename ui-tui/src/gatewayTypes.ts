@@ -570,7 +570,13 @@ export type GatewayEvent =
       type: 'tool.complete'
     }
   | {
-      payload: { choices: string[] | null; question: string; request_id: string }
+      payload: {
+        choices: string[] | null
+        question: string
+        // AIS-793: several questions in one request.
+        questions?: { choices?: string[] | null; question: string; topic?: string }[]
+        request_id: string
+      }
       session_id?: string
       type: 'clarify.request'
     }

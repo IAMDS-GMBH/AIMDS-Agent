@@ -18,6 +18,7 @@ import {
   upsertToolPart
 } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
+import { readClarifyQuestions } from '@/lib/clarify'
 import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
@@ -1042,9 +1043,11 @@ export function useMessageStream({
         // unfocused session, that session would block on `clarify.respond`
         // indefinitely and re-focusing it could never recover (the event is
         // gone). Parking it per-session lets the user answer once they switch
-        // over; the inline ClarifyTool reads the active session's entry.
+        // over; the question card at the composer reads the active session's
+        // entry (AIS-793).
         const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
-        const question = typeof payload?.question === 'string' ? payload.question : ''
+        const questions = readClarifyQuestions(payload?.questions)
+        const question = typeof payload?.question === 'string' ? payload.question : questions[0]?.question || ''
 
         if (requestId && question) {
           setClarifyRequest({
@@ -1054,7 +1057,8 @@ export function useMessageStream({
             sessionId: sessionId ?? null,
             deadlineAt: typeof payload?.deadline_at === 'number' && payload.deadline_at > 0 ? payload.deadline_at : null,
             timeoutSeconds:
-              typeof payload?.timeout_seconds === 'number' && payload.timeout_seconds > 0 ? payload.timeout_seconds : null
+              typeof payload?.timeout_seconds === 'number' && payload.timeout_seconds > 0 ? payload.timeout_seconds : null,
+            ...(questions.length ? { questions } : {})
           })
 
           // The transcript only renders the active session, so a background

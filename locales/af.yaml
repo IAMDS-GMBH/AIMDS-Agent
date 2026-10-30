@@ -400,3 +400,10 @@ suite_auth:
   reauth_needed: "Jou aanmelding by {target} het verval of is teruggestel. Meld asseblief weer aan: Instellings → Rekeninge → {target} → Meld weer aan. Vra dan net jou vraag weer."
   endpoint_moved: "{target} antwoord by 'n ander adres ({location}). Kontroleer asseblief die bedieneradres: Instellings → Rekeninge → {target}. Vra dan net jou vraag weer."
   model_not_allowed: "{model} is nie vir jou {target}-toegang geaktiveer nie. Kies ’n ander model (Instellings → Model) of vra jou administrateur om dit te aktiveer. Vra dan net weer jou vraag."
+
+clarify:
+  # AIS-793: several questions in one message on messaging platforms.
+  questions_intro: '{count} vrae — antwoord in een boodskap, bv. "1a 2b" of "2: jou antwoord". Met "2 {later}" beantwoord jy ''n vraag later.'
+  still_open: 'Nog oop: {numbers}. Antwoord bv. met "{example}" of skryf "{later}".'
+  # The word that defers a question ("2 later").
+  later: "later"

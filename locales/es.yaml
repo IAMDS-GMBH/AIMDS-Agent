@@ -400,3 +400,10 @@ suite_auth:
   reauth_needed: "Tu inicio de sesión en {target} ha caducado o se ha restablecido. Vuelve a iniciar sesión: Ajustes → Cuentas → {target} → Volver a iniciar sesión. Después, vuelve a hacer tu pregunta."
   endpoint_moved: "{target} responde en otra dirección ({location}). Revisa la dirección del servidor: Ajustes → Cuentas → {target}. Después, vuelve a hacer tu pregunta."
   model_not_allowed: "{model} no está habilitado para tu acceso a {target}. Elige otro modelo (Ajustes → Modelo) o pide a tu administrador que lo habilite. Después vuelve a hacer tu pregunta."
+
+clarify:
+  # AIS-793: several questions in one message on messaging platforms.
+  questions_intro: '{count} preguntas: responde en un solo mensaje, p. ej. "1a 2b" o "2: tu respuesta". Con "2 {later}" respondes una pregunta más tarde.'
+  still_open: 'Aún sin responder: {numbers}. Responde p. ej. con "{example}" o escribe "{later}".'
+  # The word that defers a question ("2 later").
+  later: "después"

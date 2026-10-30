@@ -4,6 +4,8 @@
  * between runs must come from the UI, not the data.
  */
 
+import { FOUR_OPEN_POINTS } from '../src/lib/clarify.fixtures'
+
 import type { FakeDesktopFixtures } from './fake-desktop'
 
 /** The frozen "now" of every screenshot (Playwright clock). */
@@ -12,6 +14,10 @@ export const FROZEN_NOW = new Date('2026-10-30T09:30:00Z')
 const NOW_S = Math.floor(FROZEN_NOW.getTime() / 1000)
 
 export const LONG_ANSWER_SESSION_ID = 'screenshot-long-answer'
+// AIS-793: four open points asked as four questions — waiting at the composer,
+// and once answered.
+export const QUESTION_CARD_SESSION_ID = 'screenshot-question-card'
+export const ANSWERED_QUESTIONS_SESSION_ID = 'screenshot-answered-questions'
 
 const LONG_ANSWER = [
   'Here is the comparison of the three rollout options, with the trade-offs that matter for a team of eight.',
@@ -104,6 +110,55 @@ const longAnswerMessages = [
   { content: LONG_ANSWER, role: 'assistant', timestamp: NOW_S - 880 }
 ]
 
+const RELEASE_REQUEST = {
+  content: 'Prepare the release checklist for 0.7.15.',
+  role: 'user',
+  timestamp: NOW_S - 300
+}
+
+const questionsAsked = {
+  content: 'Before I write the checklist, four points need your decision.',
+  role: 'assistant',
+  timestamp: NOW_S - 290,
+  tool_calls: [
+    {
+      function: { arguments: JSON.stringify({ questions: FOUR_OPEN_POINTS }), name: 'clarify' },
+      id: 'call-release-questions',
+      type: 'function'
+    }
+  ]
+}
+
+// Still waiting: no tool result yet, the request comes as a gateway event.
+const questionCardMessages = [RELEASE_REQUEST, questionsAsked]
+
+const answeredQuestionsMessages = [
+  RELEASE_REQUEST,
+  questionsAsked,
+  {
+    content: JSON.stringify({
+      answers: [
+        { response: 'After the release', state: 'answered' },
+        { response: 'Tobias', state: 'answered' },
+        { response: 'No, next week', state: 'answered' },
+        { response: '', state: 'skipped' }
+      ],
+      questions: FOUR_OPEN_POINTS,
+      v: 1
+    }),
+    name: 'clarify',
+    role: 'tool',
+    timestamp: NOW_S - 240,
+    tool_call_id: 'call-release-questions'
+  },
+  {
+    content:
+      'Thanks. The load test runs after the release, Tobias signs off the acceptance test and the desktop build ships next week. I kept the release notes question for later.',
+    role: 'assistant',
+    timestamp: NOW_S - 230
+  }
+]
+
 const config = {
   display: { language: 'en' },
   model: { default: 'suite-auto', provider: 'aimds-suite-prod' }
@@ -192,7 +247,32 @@ export const FIXTURES: FakeDesktopFixtures = {
       messages: longAnswerMessages,
       session_id: LONG_ANSWER_SESSION_ID
     },
+    [`/api/sessions/${QUESTION_CARD_SESSION_ID}/messages`]: {
+      messages: questionCardMessages,
+      session_id: QUESTION_CARD_SESSION_ID
+    },
+    [`/api/sessions/${ANSWERED_QUESTIONS_SESSION_ID}/messages`]: {
+      messages: answeredQuestionsMessages,
+      session_id: ANSWERED_QUESTIONS_SESSION_ID
+    },
     '/api/status': status
+  },
+  events: {
+    // The agent waits for the four answers (tui_gateway clarify.request).
+    [`session.resume#${QUESTION_CARD_SESSION_ID}`]: [
+      {
+        payload: {
+          choices: FOUR_OPEN_POINTS[0]!.choices,
+          deadline_at: FROZEN_NOW.getTime() + 540_000,
+          question: FOUR_OPEN_POINTS[0]!.question,
+          questions: FOUR_OPEN_POINTS,
+          request_id: 'screenshot-questions',
+          timeout_seconds: 600
+        },
+        session_id: 'runtime-question-card',
+        type: 'clarify.request'
+      }
+    ]
   },
   rpc: {
     'complete.path': { items: [] },
@@ -207,6 +287,22 @@ export const FIXTURES: FakeDesktopFixtures = {
       resumed: LONG_ANSWER_SESSION_ID,
       running: false,
       session_id: 'runtime-long-answer'
+    },
+    [`session.resume#${QUESTION_CARD_SESSION_ID}`]: {
+      info: { ...model, cwd: '/home/hermes', desktop_contract: 999 },
+      message_count: questionCardMessages.length,
+      messages: questionCardMessages,
+      resumed: QUESTION_CARD_SESSION_ID,
+      running: false,
+      session_id: 'runtime-question-card'
+    },
+    [`session.resume#${ANSWERED_QUESTIONS_SESSION_ID}`]: {
+      info: { ...model, cwd: '/home/hermes', desktop_contract: 999 },
+      message_count: answeredQuestionsMessages.length,
+      messages: answeredQuestionsMessages,
+      resumed: ANSWERED_QUESTIONS_SESSION_ID,
+      running: false,
+      session_id: 'runtime-answered-questions'
     }
   }
 }

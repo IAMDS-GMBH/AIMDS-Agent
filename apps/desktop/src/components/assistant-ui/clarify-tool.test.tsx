@@ -1,13 +1,20 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
-import { $clarifyRequests, setClarifyRequest } from '@/store/clarify'
+import { FOUR_OPEN_POINTS } from '@/lib/clarify.fixtures'
+import {
+  $clarifyRequests,
+  $questionCardFocus,
+  $questionCardMinimized,
+  setClarifyRequest,
+  setQuestionCardMinimized
+} from '@/store/clarify'
 import { $activeSessionId } from '@/store/session'
 
-import { ClarifyTool, formatCountdown, readClarifyTimeout } from './clarify-tool'
+import { ClarifyTool, readClarifyTimeout } from './clarify-tool'
 
 // Pin the locale: DEFAULT_LOCALE is 'de', the assertions below use English copy.
 const wrapper = ({ children }: { children: ReactNode }) => (
@@ -35,8 +42,9 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
-  vi.useRealTimers()
   $clarifyRequests.set({})
+  $questionCardMinimized.set({})
+  $questionCardFocus.set(null)
   $activeSessionId.set(null)
 })
 
@@ -46,7 +54,10 @@ describe('readClarifyTimeout', () => {
       timeoutSeconds: 600,
       question: 'Q'
     })
-    expect(readClarifyTimeout(JSON.stringify({ reason_code: 'clarify_timeout' }))).toEqual({ timeoutSeconds: null, question: '' })
+    expect(readClarifyTimeout(JSON.stringify({ reason_code: 'clarify_timeout' }))).toEqual({
+      timeoutSeconds: null,
+      question: ''
+    })
   })
 
   it('ignores answered results', () => {
@@ -56,49 +67,92 @@ describe('readClarifyTimeout', () => {
   })
 })
 
-describe('formatCountdown', () => {
-  it('renders mm:ss and never goes negative', () => {
-    expect(formatCountdown(600_000)).toBe('10:00')
-    expect(formatCountdown(29_400)).toBe('00:30')
-    expect(formatCountdown(-5)).toBe('00:00')
+describe('ClarifyTool while the question is open', () => {
+  it('keeps a small anchor in the thread instead of the card', () => {
+    const { container } = render(<ClarifyTool {...props({ args: { questions: FOUR_OPEN_POINTS } })} />, { wrapper })
+
+    expect(container.querySelector('[data-slot="clarify-anchor"]')).not.toBeNull()
+    expect(container.querySelector('[data-choice]')).toBeNull()
+    expect(screen.getByText('Asked 4 questions')).toBeTruthy()
+    expect(screen.getByText('QS-38 · QS-41 · Release 0.7.15 · Docs')).toBeTruthy()
+  })
+
+  it('brings the minimised card back from the anchor', () => {
+    setClarifyRequest({
+      requestId: 'rid-4',
+      question: FOUR_OPEN_POINTS[0]!.question,
+      choices: null,
+      questions: FOUR_OPEN_POINTS,
+      sessionId: 'sess-1'
+    })
+    setQuestionCardMinimized('rid-4', true)
+    render(<ClarifyTool {...props({ args: { questions: FOUR_OPEN_POINTS } })} />, { wrapper })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Go to the questions' }))
+
+    expect($questionCardMinimized.get()['rid-4']).toBe(false)
+    expect($questionCardFocus.get()?.requestId).toBe('rid-4')
+  })
+
+  it('names a single question', () => {
+    render(<ClarifyTool {...props()} />, { wrapper })
+
+    expect(screen.getByText('Asked a question')).toBeTruthy()
+    expect(screen.getByText('Which region?')).toBeTruthy()
   })
 })
 
-describe('ClarifyTool', () => {
-  it('shows the countdown from the request deadline and turns urgent in the last 30 s', () => {
-    vi.useFakeTimers()
-    vi.setSystemTime(new Date('2026-09-14T10:00:00.000Z'))
-    setClarifyRequest({
-      requestId: 'rid-1',
-      question: 'Which region?',
-      choices: ['Bavaria', 'Berlin'],
-      sessionId: 'sess-1',
-      deadlineAt: Date.now() + 65_000,
-      timeoutSeconds: 65
-    })
-
-    render(<ClarifyTool {...props()} />, { wrapper })
-
-    const countdown = screen.getByText(/Time to answer: 01:05/)
-    expect(countdown).toBeTruthy()
-    expect(countdown.closest('[data-slot="clarify-countdown"]')?.getAttribute('data-urgent')).toBeNull()
-
-    act(() => {
-      vi.advanceTimersByTime(40_000)
-    })
-
-    expect(screen.getByText(/Answer within 00:25/)).toBeTruthy()
-    expect(screen.getByText(/Answer within 00:25/).closest('[data-slot="clarify-countdown"]')?.getAttribute('data-urgent')).toBe(
-      'true'
+describe('ClarifyTool once answered', () => {
+  it('shows question → answer at full strength for several questions', () => {
+    const { container } = render(
+      <ClarifyTool
+        {...props({
+          args: { questions: FOUR_OPEN_POINTS },
+          result: JSON.stringify({
+            v: 1,
+            questions: FOUR_OPEN_POINTS,
+            answers: [
+              { state: 'answered', response: 'After the release' },
+              { state: 'answered', response: 'Tobias' },
+              { state: 'skipped', response: '' },
+              { state: 'timeout', response: '' }
+            ]
+          })
+        })}
+      />,
+      { wrapper }
     )
+
+    const block = container.querySelector('[data-slot="tool-block"]')
+    // The CSS fades tool rows to 0.67 — except clarify (data-tool).
+    expect(block?.getAttribute('data-tool')).toBe('clarify')
+    expect(container.querySelector('[data-slot="clarify-answered"]')).not.toBeNull()
+    expect(screen.getByText('4 questions')).toBeTruthy()
+    expect(screen.getByText('Should the load test run before or after the release?')).toBeTruthy()
+    expect(screen.getByText('After the release')).toBeTruthy()
+    expect(screen.getByText('Tobias')).toBeTruthy()
+    expect(screen.getByText('Later').getAttribute('data-state')).toBe('skipped')
+    expect(screen.getByText('Time is up').getAttribute('data-state')).toBe('timeout')
   })
 
-  it('renders no countdown when the request carries no deadline', () => {
-    setClarifyRequest({ requestId: 'rid-2', question: 'Which region?', choices: null, sessionId: 'sess-1' })
+  it('reads the single form (and sessions from before the contract)', () => {
+    render(
+      <ClarifyTool
+        {...props({
+          result: JSON.stringify({
+            question: 'Which region?',
+            user_response: 'Bavaria',
+            response_state: 'answered',
+            resolved: true
+          })
+        })}
+      />,
+      { wrapper }
+    )
 
-    const { container } = render(<ClarifyTool {...props({ args: { question: 'Which region?' } })} />, { wrapper })
-
-    expect(container.querySelector('[data-slot="clarify-countdown"]')).toBeNull()
+    expect(screen.getByText('Question')).toBeTruthy()
+    expect(screen.getByText('Which region?')).toBeTruthy()
+    expect(screen.getByText('Bavaria')).toBeTruthy()
   })
 
   it('keeps an expired question visible as a timed-out card instead of collapsing it', () => {

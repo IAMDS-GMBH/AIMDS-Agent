@@ -6656,7 +6656,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # command, not answer the clarify.  Leave the clarify pending
             # so the user can retry; if it times out, the agent unblocks
             # with an empty response.
-            if _raw_clarify_reply and not _raw_clarify_reply.startswith("/"):
+            if _raw_clarify_reply and not _raw_clarify_reply.startswith("/") and _pending_clarify.questions:
+                # AIS-793: several questions — the reply may answer some of
+                # them; say which are still open instead of starting a turn.
+                _still_open = _clarify_mod.submit_questions_reply(
+                    _pending_clarify.clarify_id, _raw_clarify_reply,
+                )
+                if _still_open is not None:
+                    logger.info(
+                        "Gateway intercepted clarify questions reply (session=%s, id=%s, open=%s)",
+                        _quick_key, _pending_clarify.clarify_id, _still_open,
+                    )
+                    if not _still_open:
+                        return ""
+                    return _clarify_mod.format_still_open(_still_open, _pending_clarify.questions)
+            elif _raw_clarify_reply and not _raw_clarify_reply.startswith("/"):
                 _resolved = _clarify_mod.resolve_gateway_clarify(
                     _pending_clarify.clarify_id, _raw_clarify_reply,
                 )
@@ -14299,6 +14313,64 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "reason_code": "",
                 }
 
+            # AIS-793: several questions go out as ONE message with numbered
+            # blocks; the text intercept parses replies like "1b 2a" or
+            # "2: …" per question (tools/clarify_gateway.py).
+            def _clarify_questions_sync(questions):
+                from tools import clarify_gateway as _clarify_mod
+                import uuid as _uuid
+
+                if not _status_adapter:
+                    return {
+                        "user_response": "",
+                        "response_state": "unavailable",
+                        "resolved": False,
+                        "reason_code": "clarify_callback_unavailable",
+                    }
+
+                clarify_id = _uuid.uuid4().hex[:10]
+                _clarify_mod.register(
+                    clarify_id=clarify_id,
+                    session_key=session_key or "",
+                    question=str(questions[0].get("question") or ""),
+                    choices=None,
+                    questions=questions,
+                )
+                try:
+                    _status_adapter.pause_typing_for_chat(_status_chat_id)
+                except Exception:
+                    pass
+
+                send_ok = False
+                fut = safe_schedule_threadsafe(
+                    _status_adapter.send(
+                        chat_id=_status_chat_id,
+                        content=_clarify_mod.format_questions_message(questions),
+                        metadata=_status_thread_metadata,
+                    ),
+                    _loop_for_step,
+                    logger=logger,
+                    log_message="Clarify questions send failed to schedule",
+                )
+                if fut is not None:
+                    try:
+                        result = fut.result(timeout=15)
+                        send_ok = bool(getattr(result, "success", False))
+                    except Exception as exc:
+                        logger.warning("Clarify questions send failed: %s", exc)
+                if not send_ok:
+                    _clarify_mod.clear_session(session_key or "")
+                    return {
+                        "user_response": "",
+                        "response_state": "delivery_failed",
+                        "resolved": False,
+                        "reason_code": "clarify_prompt_delivery_failed",
+                    }
+
+                timeout = _clarify_mod.get_clarify_timeout()
+                return _clarify_mod.wait_for_answers(clarify_id, timeout=float(timeout)) or []
+
+            _clarify_callback_sync.ask_questions = _clarify_questions_sync
             agent.clarify_callback = _clarify_callback_sync
 
             # Store agent reference for interrupt support

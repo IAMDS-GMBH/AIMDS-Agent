@@ -400,3 +400,10 @@ suite_auth:
   reauth_needed: "A(z) {target} bejelentkezésed lejárt vagy alaphelyzetbe állt. Jelentkezz be újra: Beállítások → Fiókok → {target} → Újbóli bejelentkezés. Utána egyszerűen tedd fel újra a kérdésed."
   endpoint_moved: "A(z) {target} egy másik címen válaszol ({location}). Ellenőrizd a szerver címét: Beállítások → Fiókok → {target}. Utána egyszerűen tedd fel újra a kérdésed."
   model_not_allowed: "A(z) {model} nincs engedélyezve a(z) {target} hozzáférésedhez. Válassz másik modellt (Beállítások → Modell), vagy kérd a rendszergazdát, hogy engedélyezze. Utána egyszerűen tedd fel újra a kérdésed."
+
+clarify:
+  # AIS-793: several questions in one message on messaging platforms.
+  questions_intro: '{count} kérdés — válaszolj egy üzenetben, pl. "1a 2b" vagy "2: a válaszod". A "2 {later}" üzenettel egy kérdésre később válaszolsz.'
+  still_open: 'Még nyitott: {numbers}. Válaszolj pl. így: "{example}", vagy írd: "{later}".'
+  # The word that defers a question ("2 later").
+  later: "később"

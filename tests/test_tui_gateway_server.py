@@ -8440,6 +8440,81 @@ def test_clarify_cb_uses_agent_clarify_timeout_when_clarify_section_absent(monke
     assert seen["payload"]["timeout_seconds"] == 480
 
 
+# ── AIS-793: several questions in one clarify.request ─────────────────────
+
+_CARD_QUESTIONS = [
+    {"topic": "QS-38", "question": "Load test before or after the release?", "choices": ["Before", "After"]},
+    {"topic": "Docs", "question": "Where should the release notes go?"},
+]
+
+
+def _answer_pending(sid: str, params: dict) -> None:
+    """Answer the next prompt of *sid* through clarify.respond, like the desktop."""
+    deadline = time.time() + 2
+    while time.time() < deadline:
+        with server._prompt_lock:
+            pending = [r for r, (owner, _ev) in server._pending.items() if owner == sid]
+        if pending:
+            server.handle_request(
+                {"id": "1", "method": "clarify.respond", "params": {"request_id": pending[0], **params}}
+            )
+            return
+        time.sleep(0.01)
+
+
+def test_clarify_questions_request_carries_every_question(monkeypatch):
+    from tools.clarify_tool import clarify_tool
+
+    emitted = []
+    monkeypatch.setattr(server, "_emit", lambda event, sid, payload=None: emitted.append((event, sid, dict(payload or {}))))
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"clarify": {"timeout": 5}})
+
+    callback = server._agent_cbs("sid-card")["clarify_callback"]
+    answers = [{"state": "answered", "response": "After"}, {"state": "skipped", "response": ""}]
+    threading.Thread(target=_answer_pending, args=("sid-card", {"answers": answers}), daemon=True).start()
+    result = json.loads(clarify_tool(questions=_CARD_QUESTIONS, callback=callback))
+
+    request = next(p for e, _s, p in emitted if e == "clarify.request")
+    assert request["questions"] == _CARD_QUESTIONS
+    # Older clients read the first question from the flat fields.
+    assert request["question"] == "Load test before or after the release?"
+    assert request["choices"] == ["Before", "After"]
+    assert request["timeout_seconds"] == 5
+    assert result["answers"] == answers
+
+
+def test_clarify_single_question_answered_later_from_the_card(monkeypatch):
+    from tools.clarify_tool import clarify_tool
+
+    monkeypatch.setattr(server, "_emit", lambda event, sid, payload=None: None)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"clarify": {"timeout": 5}})
+
+    callback = server._agent_cbs("sid-later")["clarify_callback"]
+    threading.Thread(
+        target=_answer_pending,
+        args=("sid-later", {"answer": "", "answers": [{"state": "skipped", "response": ""}]}),
+        daemon=True,
+    ).start()
+    result = json.loads(clarify_tool("Region?", callback=callback))
+
+    assert result["response_state"] == "skipped"
+    assert result["reason_code"] == "clarify_skipped"
+
+
+def test_clarify_questions_timeout_applies_to_every_question(monkeypatch):
+    from tools.clarify_tool import clarify_tool
+
+    emitted = []
+    monkeypatch.setattr(server, "_emit", lambda event, sid, payload=None: emitted.append((event, sid, dict(payload or {}))))
+    monkeypatch.setattr(server, "_block_with_outcome", lambda event, sid, payload, timeout=300: ("", True, "rid-t"))
+
+    callback = server._agent_cbs("sid-card-t")["clarify_callback"]
+    result = json.loads(clarify_tool(questions=_CARD_QUESTIONS, callback=callback))
+
+    assert [a["state"] for a in result["answers"]] == ["timeout", "timeout"]
+    assert any(e == "clarify.timeout" for e, _s, _p in emitted)
+
+
 class _RotatingCompressAgent:
     """Stand-in for AIAgent: _compress_context rotates the DB session like
     run_agent does (parent ended with 'compression', fresh child, flush cursor

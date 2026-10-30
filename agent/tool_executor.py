@@ -38,6 +38,7 @@ from agent.tool_dispatch_helpers import (
     make_tool_result_message,
 )
 from agent.open_questions import (
+    append_deferred_clarify_question,
     append_open_question_entry,
     derive_open_question_from_clarify_result,
 )
@@ -86,7 +87,48 @@ def _maybe_persist_blocking_clarify_open_question(
     if not isinstance(payload, dict):
         return
 
-    question = str(function_args.get("question") or "").strip()
+    # AIS-793: one entry per question of the ask (clarify_questions contract).
+    questions = payload.get("questions")
+    answers = payload.get("answers")
+    if isinstance(questions, list) and isinstance(answers, list) and questions:
+        turn_id = str(getattr(agent, "_current_turn_id", "") or "").strip()
+        source = f"{getattr(agent, 'platform', '') or 'agent'} clarify"
+        several = len(questions) > 1
+        handled = several
+        for item, answer in zip(questions, answers):
+            if not isinstance(item, dict) or not isinstance(answer, dict):
+                continue
+            state = str(answer.get("state") or "").strip().lower()
+            text = str(item.get("question") or "").strip()
+            if state == "skipped":
+                # "Later": the user owes this answer; the morning brief raises it.
+                handled = True
+                try:
+                    append_deferred_clarify_question(
+                        text, topic=str(item.get("topic") or ""), source=source, turn_id=turn_id,
+                    )
+                except Exception:
+                    logger.debug("Failed to persist deferred clarify question", exc_info=True)
+            elif several:
+                _persist_unresolved_clarify(
+                    agent,
+                    text,
+                    {
+                        "response_state": state,
+                        "resolved": state == "answered",
+                        "reason_code": f"clarify_{state}" if state and state != "answered" else "",
+                        "user_response": str(answer.get("response") or ""),
+                    },
+                )
+        if handled:
+            return
+
+    question = str(function_args.get("question") or payload.get("question") or "").strip()
+    _persist_unresolved_clarify(agent, question, payload)
+
+
+def _persist_unresolved_clarify(agent: Any, question: str, payload: dict) -> None:
+    """Record one unresolved clarify outcome unless it is transport noise."""
     extracted = derive_open_question_from_clarify_result(question, payload)
     if not extracted:
         return
@@ -1194,6 +1236,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     question=next_args.get("question", ""),
                     choices=next_args.get("choices"),
                     callback=agent.clarify_callback,
+                    questions=next_args.get("questions"),
                 )
             function_result, function_args = _run_agent_tool_execution_middleware(
                 agent,

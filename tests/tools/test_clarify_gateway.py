@@ -12,6 +12,8 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
+
 
 
 def _clear_clarify_state():
@@ -250,3 +252,177 @@ class TestClarifyTimeoutResolution:
 
         assert cm.get_clarify_timeout({"clarify": {"timeout": 0}, "agent": {"clarify_timeout": 90}}) == 90
         assert cm.get_clarify_timeout({"clarify": {"timeout": "soon"}}) == 600
+
+
+# AIS-793: four open points as four questions with topics.
+FOUR_OPEN_POINTS = [
+    {
+        "topic": "QS-38",
+        "question": "Should the load test run before or after the release?",
+        "choices": ["Before the release", "After the release"],
+    },
+    {
+        "topic": "QS-41",
+        "question": "Who signs off the acceptance test?",
+        "choices": ["Johannes", "Tobias", "The product team"],
+    },
+    {
+        "topic": "Release 0.7.15",
+        "question": "Ship the desktop build with this release?",
+        "choices": ["Yes", "No, next week"],
+    },
+    {"topic": "Docs", "question": "Where should the release notes go?"},
+]
+
+
+@pytest.fixture
+def english(monkeypatch):
+    from agent.i18n import reset_language_cache
+
+    monkeypatch.setenv("HERMES_LANGUAGE", "en")
+    reset_language_cache()
+    yield
+    reset_language_cache()
+
+
+class TestQuestionsReplyParsing:
+    """AIS-793: one messaging reply answers several numbered questions."""
+
+    def _parse(self, text, open_indexes=None):
+        from tools.clarify_gateway import parse_questions_reply
+
+        return parse_questions_reply(text, FOUR_OPEN_POINTS, open_indexes)
+
+    def test_number_letter_pairs(self, english):
+        assert self._parse("1b 2a 3B") == {
+            0: {"state": "answered", "response": "After the release"},
+            1: {"state": "answered", "response": "Johannes"},
+            2: {"state": "answered", "response": "No, next week"},
+        }
+
+    def test_colon_free_text_and_later(self, english):
+        found = self._parse("1: before, please\n2) The product team\n4: into the project notes, see item 2 there\n3 later")
+        assert found[0] == {"state": "answered", "response": "before, please"}
+        # Choice text is matched case-insensitively and kept as offered.
+        assert found[1] == {"state": "answered", "response": "The product team"}
+        assert found[2] == {"state": "skipped", "response": ""}
+        assert found[3] == {"state": "answered", "response": "into the project notes, see item 2 there"}
+
+    def test_line_numbers_and_a_date_inside_an_answer(self, english):
+        found = self._parse("1. a\n4. on 3. November in the wiki")
+        assert found == {
+            0: {"state": "answered", "response": "Before the release"},
+            3: {"state": "answered", "response": "on 3. November in the wiki"},
+        }
+
+    def test_choice_number_after_a_colon(self, english):
+        assert self._parse("2: 3")[1] == {"state": "answered", "response": "The product team"}
+
+    def test_plain_letters_answer_the_open_questions_in_order(self, english):
+        assert self._parse("b, a", open_indexes=[1, 2]) == {
+            1: {"state": "answered", "response": "Tobias"},
+            2: {"state": "answered", "response": "Yes"},
+        }
+
+    def test_plain_later_defers_every_open_question(self, english):
+        assert self._parse("later", open_indexes=[2, 3]) == {
+            2: {"state": "skipped", "response": ""},
+            3: {"state": "skipped", "response": ""},
+        }
+        assert self._parse("Später!", open_indexes=[3]) == {3: {"state": "skipped", "response": ""}}
+
+    def test_plain_text_answers_the_only_open_question(self, english):
+        assert self._parse("In the project notes", open_indexes=[3]) == {
+            3: {"state": "answered", "response": "In the project notes"},
+        }
+
+    def test_unrecognised_text_with_several_open_questions(self, english):
+        assert self._parse("no idea yet") == {}
+        # Numbers beyond the questions are no markers.
+        assert self._parse("7: something", open_indexes=[0, 1]) == {}
+
+    def test_localized_later_word(self, monkeypatch):
+        from agent.i18n import reset_language_cache
+        from tools.clarify_gateway import parse_questions_reply
+
+        monkeypatch.setenv("HERMES_LANGUAGE", "fr")
+        reset_language_cache()
+        try:
+            assert parse_questions_reply("2 plus tard", FOUR_OPEN_POINTS)[1] == {"state": "skipped", "response": ""}
+        finally:
+            reset_language_cache()
+
+
+class TestQuestionsAsk:
+    """AIS-793: register several questions, answer them over one or more replies."""
+
+    def setup_method(self):
+        _clear_clarify_state()
+
+    def test_message_has_numbered_blocks_with_lettered_choices(self, english):
+        from tools.clarify_gateway import format_questions_message
+
+        text = format_questions_message(FOUR_OPEN_POINTS)
+        assert text.startswith("❓ 4 questions — answer in one message")
+        assert '"2 later"' in text
+        assert "\n\n1. QS-38 — Should the load test run before or after the release?\n   a) Before the release\n   b) After the release" in text
+        assert "\n\n4. Docs — Where should the release notes go?" in text
+        assert text.count(") ") == 7  # 2 + 3 + 2 lettered choices
+
+    def test_partial_replies_then_complete(self, english):
+        from tools import clarify_gateway as cm
+
+        entry = cm.register("q1", "sk-q", "first", None, questions=FOUR_OPEN_POINTS)
+        assert entry.awaiting_text is True
+        assert cm.get_pending_for_session("sk-q") is entry
+
+        assert cm.submit_questions_reply("q1", "1a 2c") == [3, 4]
+        assert cm.format_still_open([3, 4], FOUR_OPEN_POINTS) == 'Still open: 3, 4. Answer e.g. with "3a", or write "later".'
+        assert cm.format_still_open([4], FOUR_OPEN_POINTS) == 'Still open: 4. Answer e.g. with "4: …", or write "later".'
+        assert cm.submit_questions_reply("q1", "hmm") == [3, 4]
+        # A later reply may correct an earlier answer.
+        assert cm.submit_questions_reply("q1", "2b 3 later") == [4]
+
+        result = {}
+
+        def waiter():
+            result["answers"] = cm.wait_for_answers("q1", timeout=2.0)
+
+        thread = threading.Thread(target=waiter)
+        thread.start()
+        time.sleep(0.05)
+        assert cm.submit_questions_reply("q1", "In the wiki") == []
+        thread.join(timeout=3)
+
+        assert result["answers"] == [
+            {"state": "answered", "response": "Before the release"},
+            {"state": "answered", "response": "Tobias"},
+            {"state": "skipped", "response": ""},
+            {"state": "answered", "response": "In the wiki"},
+        ]
+        assert cm.submit_questions_reply("q1", "1a") is None
+
+    def test_timeout_keeps_the_answers_given_so_far(self, english):
+        from tools import clarify_gateway as cm
+
+        cm.register("q2", "sk-q2", "first", None, questions=FOUR_OPEN_POINTS[:2])
+        assert cm.submit_questions_reply("q2", "1b") == [2]
+        assert cm.wait_for_answers("q2", timeout=0.1) == [
+            {"state": "answered", "response": "After the release"},
+            {"state": "timeout", "response": ""},
+        ]
+        assert not cm.has_pending("sk-q2")
+
+    def test_session_end_releases_the_ask(self):
+        from tools import clarify_gateway as cm
+
+        cm.register("q3", "sk-q3", "first", None, questions=FOUR_OPEN_POINTS[:2])
+        threading.Timer(0.05, lambda: cm.clear_session("sk-q3")).start()
+        assert [a["state"] for a in cm.wait_for_answers("q3", timeout=2.0)] == ["timeout", "timeout"]
+
+    def test_a_single_question_entry_is_not_a_questions_ask(self):
+        from tools import clarify_gateway as cm
+
+        cm.register("s1", "sk-s", "Free form?", None)
+        assert cm.submit_questions_reply("s1", "1a") is None
+        assert cm.submit_questions_reply("missing", "1a") is None
