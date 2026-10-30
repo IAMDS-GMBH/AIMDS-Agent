@@ -327,9 +327,59 @@ def compress_context(
     agent._emit_status(
         "🗜️ Compacting context — summarizing earlier conversation so I can continue..."
     )
+    # The desktop shows "summarizing the conversation so far" for the whole
+    # pass, also mid-turn after output, and clears it when the pass ends —
+    # however it ends (AIS-460, AIS-786).
     _emit_phase = getattr(agent, "_emit_turn_phase", None)
     if callable(_emit_phase):
         _emit_phase("compressing", messages=_pre_msg_count)
+    try:
+        return _compress_and_rotate(
+            agent, messages, system_message,
+            approx_tokens=approx_tokens, task_id=task_id,
+            focus_topic=focus_topic, force=force, pre_msg_count=_pre_msg_count,
+        )
+    finally:
+        if callable(_emit_phase):
+            _emit_phase("compressed")
+
+
+def _bind_tool_result_persister(agent: Any, task_id: str) -> None:
+    """Let the compressor save trimmed tail results where read_file finds them.
+
+    Uses the task's tool environment (sandbox backends), else the local temp
+    dir (AIS-786). Plugin context engines without the hook are left alone.
+    """
+    compressor = getattr(agent, "context_compressor", None)
+    if compressor is None or not hasattr(compressor, "tool_result_persister"):
+        return
+    env = None
+    try:
+        from tools.terminal_tool import get_active_env
+
+        env = get_active_env(task_id)
+    except Exception:
+        env = None
+    try:
+        from tools.tool_result_storage import persist_full_result
+    except Exception:
+        return
+    compressor.tool_result_persister = lambda content, call_id: persist_full_result(content, call_id, env=env)
+
+
+def _compress_and_rotate(
+    agent: Any,
+    messages: list,
+    system_message: str,
+    *,
+    approx_tokens: Optional[int],
+    task_id: str,
+    focus_topic: Optional[str],
+    force: bool,
+    pre_msg_count: int,
+) -> Tuple[list, str]:
+    """Lock, compress and rotate the session — the body of :func:`compress_context`."""
+    _pre_msg_count = pre_msg_count
 
     # ── Compression lock ────────────────────────────────────────────────
     # Atomic, state.db-backed lock per session_id.  Without this, two
@@ -435,6 +485,7 @@ def compress_context(
         except Exception:
             pass
 
+    _bind_tool_result_persister(agent, task_id)
     try:
         compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
     except TypeError:
@@ -833,6 +884,10 @@ __all__ = [
 def _persist_compaction_summary(agent, compressed) -> None:
     """Save the fresh compaction summary to the memory vault and point at it."""
     compressor = getattr(agent, "context_compressor", None)
+    # A pass that only trimmed tool results wrote no new summary (AIS-786);
+    # saving the previous one again would duplicate it in the vault.
+    if compressor is not None and getattr(compressor, "_last_compress_new_summary", True) is False:
+        return
     summary = getattr(compressor, "_previous_summary", None) if compressor is not None else None
     if not isinstance(summary, str) or not summary.strip():
         return

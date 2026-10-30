@@ -142,7 +142,14 @@ export function useSessionStateCache({
     // jerks the scroll position while the user is reading. Skip the publish when
     // the merged result is content-identical to what's already on screen.
     const currentMessages = $messages.get()
-    const nextMessages = preserveLocalAssistantErrors(pending.state.messages, currentMessages)
+
+    // A running turn's message stays pending in the view (AIS-786); once the
+    // session is idle nothing may keep looking busy.
+    const stateMessages = pending.state.busy
+      ? pending.state.messages
+      : pending.state.messages.map(message => (message.pending ? { ...message, pending: false } : message))
+
+    const nextMessages = preserveLocalAssistantErrors(stateMessages, currentMessages)
 
     if (!sameMessageList(nextMessages, currentMessages)) {
       setMessages(nextMessages)

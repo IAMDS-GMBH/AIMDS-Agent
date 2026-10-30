@@ -20,10 +20,13 @@ import { useI18n } from '@/i18n'
 import { PrettyLink, LinkifiedText as SharedLinkifiedText, urlSlugTitleLabel } from '@/lib/external-link'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { serviceDisplayName, toolLabel } from '@/lib/tool-labels'
+import { midTurnPhaseLine } from '@/lib/turn-phase-copy'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
+import { $activeSessionId } from '@/store/session'
 import { $toolInlineDiffs } from '@/store/tool-diffs'
 import { $toolDisclosureOpen, $toolViewMode, setToolDisclosureOpen } from '@/store/tool-view'
+import { $turnPhaseBySession } from '@/store/turn-phase'
 
 import { useAwaitingApproval } from './tool-approval'
 import {
@@ -31,7 +34,6 @@ import {
   buildToolView,
   cleanVisibleText,
   formatActivityDuration,
-  groupableToolParts,
   inlineDiffFromResult,
   isPreviewableTarget,
   looksRedundant,
@@ -41,7 +43,8 @@ import {
   toolCopyPayload,
   type ToolPart,
   toolPartDisclosureId,
-  type ToolStatus
+  type ToolStatus,
+  toolStepRuns
 } from './tool-fallback-model'
 
 // `true` when a ToolEntry is rendered inside an embedding wrapper that owns
@@ -471,32 +474,54 @@ function numberArg(args: unknown, key: string): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
 
+/** The sentence for a context summary, retry or model switch while the active
+ *  chat's turn already shows output (AIS-786); empty otherwise. */
+export function useMidTurnPhaseLine(): string {
+  const { locale } = useI18n()
+  const sessionId = useStore($activeSessionId)
+  const phases = useStore($turnPhaseBySession)
+
+  return midTurnPhaseLine(sessionId ? phases[sessionId] : undefined, locale)
+}
+
 /**
- * One block for all tool steps of a message (AIS-744). While the turn runs it
- * says in one line what is happening right now, with a timer and a hint when
- * a service is slow or reconnecting; afterwards it collapses to a summary
- * ("7 steps · 3m 12s · OpenProject, Memory"). The rows stay one click away.
+ * One block for a run of consecutive tool steps (AIS-744, per run since
+ * AIS-786). While the turn works on this run — it is the message's tail, or
+ * one of its steps has not answered yet — the block says in one line what is
+ * happening right now ("Working on it · <step>"), with a timer and a hint
+ * when a service is slow or reconnecting; a finished run collapses to a
+ * summary ("7 steps · 3m 12s · OpenProject, Memory"). The rows stay one click
+ * away.
  *
- * The parts come from the whole message content, not from the assistant-ui
+ * The run comes from the whole message content, not from the assistant-ui
  * range this block happens to be rendered in, so the block does not reshuffle
  * when a fragmented live stream settles into one range (see ToolGroupSlot).
  */
-function ActivityBlock({ parts }: { parts: ToolPart[] }) {
+function ActivityBlock({ atEnd, parts }: { atEnd: boolean; parts: ToolPart[] }) {
   const { t } = useI18n()
   const copy = t.assistant.tool
   const activity = copy.activity
   const messageId = useAuiState(s => s.message.id)
-  const messageRunning = useAuiState(selectMessageRunning)
+  // The turn decides, not this run's own parts: the agent keeps working
+  // between two steps (model call, context summary) with nothing pending.
+  const turnRunning = useAuiState(selectMessageRunning)
   const toolViewMode = useStore($toolViewMode)
-  const disclosureId = `activity:${messageId}`
+  const runKey = parts[0] ? toolPartDisclosureId(parts[0]) : 'run'
+  const disclosureId = `activity:${messageId}:${runKey}`
   const open = useDisclosureOpen(disclosureId, toolViewMode === 'technical')
-  const enterRef = useEnterAnimation(messageRunning, `activity:${messageId}`)
-  const pendingParts = messageRunning ? parts.filter(part => part.result === undefined) : []
-  const current = pendingParts.at(-1)
-  const currentKey = current ? toolPartDisclosureId(current) : 'idle'
-  const stepElapsed = useElapsedSeconds(Boolean(current), `activity-step:${messageId}:${currentKey}`)
-  const summary = useMemo(() => activitySummary(parts), [parts])
+  const enterRef = useEnterAnimation(turnRunning, `activity:${messageId}:${runKey}`)
+  const pendingParts = turnRunning ? parts.filter(part => part.result === undefined) : []
+  const live = turnRunning && (atEnd || pendingParts.length > 0)
+  const current = live ? pendingParts.at(-1) : undefined
   const lastPart = parts.at(-1)
+
+  const timerKey = current
+    ? `activity-step:${messageId}:${toolPartDisclosureId(current)}`
+    : `activity-idle:${messageId}:${lastPart ? toolPartDisclosureId(lastPart) : 'none'}`
+
+  const stepElapsed = useElapsedSeconds(live, timerKey)
+  const summary = useMemo(() => activitySummary(parts), [parts])
+  const phaseLine = useMidTurnPhaseLine()
   // The approval itself renders at the end of the message (AIS-746); the
   // block only says that it waits instead of looking busy.
   const awaitingApproval = useAwaitingApproval(current?.toolName)
@@ -507,17 +532,21 @@ function ActivityBlock({ parts }: { parts: ToolPart[] }) {
     }
 
     if (current) {
-      return buildToolView(current, '').title
+      return `${activity.working} · ${buildToolView(current, '').title}`
     }
 
-    if (messageRunning) {
+    if (live) {
+      if (phaseLine) {
+        return phaseLine
+      }
+
       return lastPart ? `${activity.working} · ${buildToolView({ ...lastPart, result: lastPart.result ?? {} }, '').title}` : activity.working
     }
 
     return [activity.stepCount(summary.steps), formatActivityDuration(summary.seconds), summary.areas.slice(0, 3).join(', ')]
       .filter(Boolean)
       .join(' · ')
-  }, [activity, awaitingApproval, current, lastPart, messageRunning, summary])
+  }, [activity, awaitingApproval, current, lastPart, live, phaseLine, summary])
 
   let hint = ''
 
@@ -533,7 +562,7 @@ function ActivityBlock({ parts }: { parts: ToolPart[] }) {
     }
   }
 
-  const status: ToolStatus | undefined = current ? 'running' : summary.failed > 0 ? 'warning' : undefined
+  const status: ToolStatus | undefined = live ? 'running' : summary.failed > 0 ? 'warning' : undefined
 
   return (
     <div
@@ -552,14 +581,14 @@ function ActivityBlock({ parts }: { parts: ToolPart[] }) {
         <DisclosureRow
           onToggle={() => setToolDisclosureOpen(disclosureId, !open)}
           open={open}
-          trailing={current ? <ActivityTimerText className={TOOL_HEADER_DURATION_CLASS} seconds={stepElapsed} /> : undefined}
+          trailing={live ? <ActivityTimerText className={TOOL_HEADER_DURATION_CLASS} seconds={stepElapsed} /> : undefined}
         >
-          <span aria-live={messageRunning ? 'polite' : undefined} className="flex min-w-0 items-center gap-1.5">
-            <ToolGlyph copy={copy} icon={current ? undefined : 'tools'} status={status} />
+          <span aria-live={turnRunning ? 'polite' : undefined} className="flex min-w-0 items-center gap-1.5">
+            <ToolGlyph copy={copy} icon={live ? undefined : 'tools'} status={status} />
             <FadeText
               className={cn(
                 TOOL_HEADER_TITLE_CLASS,
-                current && !awaitingApproval && 'shimmer text-(--ui-text-tertiary)',
+                live && !awaitingApproval && 'shimmer text-(--ui-text-tertiary)',
                 awaitingApproval && 'text-primary'
               )}
             >
@@ -581,19 +610,20 @@ function ActivityBlock({ parts }: { parts: ToolPart[] }) {
 }
 
 /**
- * Per-tool fallback. A message with two or more groupable tool steps shows
- * them as one ActivityBlock, rendered in place of the first step; the other
- * steps render nothing here. Single steps and ungrouped tools keep their row.
+ * Per-tool fallback. Each run of two or more consecutive groupable steps
+ * shows as one ActivityBlock, rendered in place of the run's first step; the
+ * run's other steps render nothing here (AIS-786). A step on its own and
+ * ungrouped tools keep their row.
  */
 export const ToolFallback = ({ toolCallId, toolName, args, isError, result }: ToolCallMessagePartProps) => {
   const part: ToolPart = { args, isError, result, toolCallId, toolName, type: 'tool-call' }
   const content = useAuiState(s => s.message.content)
-  const group = useMemo(() => groupableToolParts(content), [content])
-  const inGroup = group.length > 1 && group.some(entry => entry.toolCallId === toolCallId)
+  const runs = useMemo(() => toolStepRuns(content), [content])
+  const run = toolCallId ? runs.find(entry => entry.parts.some(step => step.toolCallId === toolCallId)) : undefined
 
-  if (!inGroup) {
+  if (!run || run.parts.length < 2) {
     return <ToolEntry part={part} />
   }
 
-  return group[0]?.toolCallId === toolCallId ? <ActivityBlock parts={group} /> : null
+  return run.parts[0]?.toolCallId === toolCallId ? <ActivityBlock atEnd={run.atEnd} parts={run.parts} /> : null
 }

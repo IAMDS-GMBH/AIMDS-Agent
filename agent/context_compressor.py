@@ -111,6 +111,20 @@ SUITE_PROMPT_BUDGET_TOKENS = 80_000
 # too little room and compaction would thrash.
 MIN_PROMPT_BUDGET_TOKENS = 32_000
 
+# AIS-786: a pass that cuts less than this share of the message tokens did not
+# shrink the context (chat 20261030_112808_6330c0: "17->17", "19->19" before
+# every call, 20-30 s each, while the prompt stayed above the budget).
+NO_SHRINK_MIN_SAVINGS_PCT = 10
+# After such a pass the next one waits until the prompt grew by this much.
+NO_SHRINK_REGROWTH_MIN_TOKENS = 4_096
+# Tool results in the protected tail above this size are cut to a preview plus
+# the path of their saved full text when the tail alone exceeds its budget —
+# otherwise no summary of the middle can bring the prompt under the budget.
+TAIL_TOOL_RESULT_TRIM_CHARS = 8_000
+TAIL_TOOL_RESULT_PREVIEW_CHARS = 1_500
+# The newest result is what the model works on: it keeps a longer preview.
+LATEST_TOOL_RESULT_PREVIEW_CHARS = 4_000
+
 
 def resolve_prompt_budget(setting: Any, model: str = "", provider: str = "") -> Optional[int]:
     """Absolute compaction budget in prompt tokens, or ``None`` for none.
@@ -601,6 +615,7 @@ class ContextCompressor(ContextEngine):
         self._last_aux_model_failure_model = None
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
+        self._no_shrink_trigger_tokens = 0
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
         self.last_real_prompt_tokens = 0
         self.last_compression_rough_tokens = 0
@@ -747,6 +762,15 @@ class ContextCompressor(ContextEngine):
         # Anti-thrashing: track whether last compression was effective
         self._last_compression_savings_pct: float = 100.0
         self._ineffective_compression_count: int = 0
+        # AIS-786: prompt tokens that triggered the last pass that did not
+        # shrink the context (0 = none); see should_compress.
+        self._no_shrink_trigger_tokens: int = 0
+        # Saves a trimmed tail result's full text: (content, tool_call_id) ->
+        # path or None. The agent binds its tool environment; without one the
+        # local temp dir is used.
+        self.tool_result_persister = None
+        # Whether the last compress() produced a new summary (vs. a trim only).
+        self._last_compress_new_summary: bool = False
         self._summary_failure_cooldown_until: float = 0.0
         self._last_summary_error: Optional[str] = None
         # When summary generation fails and a static fallback is inserted,
@@ -821,6 +845,20 @@ class ContextCompressor(ContextEngine):
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         if tokens < self.threshold_tokens:
             return False
+        # AIS-786: the last pass did not shrink the context — another one on
+        # the same content only costs the user another summary round trip.
+        # Wait until the prompt grew by a margin (new tool results, a new
+        # message); then a pass has something new to cut.
+        if self._no_shrink_trigger_tokens:
+            regrown = tokens - self._no_shrink_trigger_tokens
+            margin = self._no_shrink_margin_tokens()
+            if regrown < margin:
+                logger.info(
+                    "compression skipped: the last pass did not shrink the context "
+                    "(prompt ~%s tokens then, ~%s now, waits for +%s)",
+                    f"{self._no_shrink_trigger_tokens:,}", f"{tokens:,}", f"{margin:,}",
+                )
+                return False
         # Anti-thrashing: back off if recent compressions were ineffective
         if self._ineffective_compression_count >= 2:
             if not self.quiet_mode:
@@ -832,6 +870,108 @@ class ContextCompressor(ContextEngine):
                 )
             return False
         return True
+
+    def _no_shrink_margin_tokens(self) -> int:
+        return max(NO_SHRINK_REGROWTH_MIN_TOKENS, int(self.threshold_tokens * 0.10))
+
+    def _record_shrink(self, before_tokens: int, compressed: List[Dict[str, Any]], trigger_tokens: int) -> None:
+        """Remember whether this pass shrank the context (AIS-786).
+
+        Both sides are the messages-only rough estimate, so system prompt and
+        tool schemas do not make a pass that cut nothing look effective.
+        """
+        after_tokens = estimate_messages_tokens_rough(compressed)
+        shrunk_pct = (before_tokens - after_tokens) / before_tokens * 100 if before_tokens > 0 else 0.0
+        if shrunk_pct >= NO_SHRINK_MIN_SAVINGS_PCT:
+            self._no_shrink_trigger_tokens = 0
+            return
+        self._no_shrink_trigger_tokens = max(int(trigger_tokens or 0), self.threshold_tokens)
+        logger.info(
+            "compression did not shrink the context: messages ~%s -> ~%s tokens (%.0f%%); "
+            "the next pass waits until the prompt passes ~%s tokens",
+            f"{before_tokens:,}", f"{after_tokens:,}", shrunk_pct,
+            f"{self._no_shrink_trigger_tokens + self._no_shrink_margin_tokens():,}",
+        )
+
+    @staticmethod
+    def _budget_tokens(msg: Dict[str, Any]) -> int:
+        """Token estimate of one message, as the tail cut counts it."""
+        tokens = _content_length_for_budget(msg.get("content") or "") // _CHARS_PER_TOKEN + 10
+        for tc in msg.get("tool_calls") or []:
+            if isinstance(tc, dict):
+                tokens += len(tc.get("function", {}).get("arguments", "") or "") // _CHARS_PER_TOKEN
+        return tokens
+
+    def _trim_tail_tool_results(
+        self, messages: List[Dict[str, Any]], tail_start: int,
+    ) -> tuple[List[Dict[str, Any]], int]:
+        """Cut large tool results in the protected tail to a preview + saved file.
+
+        The tail is kept verbatim so the model can continue its current step.
+        When the tail alone is over its budget — a 50k-character terminal
+        output and a 20k-character file read right before the cap (AIS-786) —
+        summarising the middle cannot bring the prompt under the budget, and
+        every later call compresses again for nothing. Deterministic: the
+        largest results go first until the tail fits; each keeps a bounded
+        preview and the path of its full text, which the model can read with
+        read_file. The newest result keeps a longer preview.
+
+        Returns ``(messages, trimmed_count)``; the input list is not mutated.
+        """
+        tail_tokens = sum(self._budget_tokens(m) for m in messages[tail_start:])
+        if tail_tokens <= self.tail_token_budget:
+            return messages, 0
+        try:
+            from tools.tool_result_storage import (
+                PERSISTED_OUTPUT_TAG,
+                bounded_result_with_pointer,
+                persist_full_result,
+            )
+        except Exception as exc:  # pragma: no cover - storage module is part of the core
+            logger.debug("tail trim unavailable: %s", exc)
+            return messages, 0
+
+        candidates = [
+            i for i in range(tail_start, len(messages))
+            if messages[i].get("role") == "tool"
+            and isinstance(messages[i].get("content"), str)
+            and len(messages[i]["content"]) > TAIL_TOOL_RESULT_TRIM_CHARS
+            and PERSISTED_OUTPUT_TAG not in messages[i]["content"]
+        ]
+        if not candidates:
+            return messages, 0
+        latest_tool = max(i for i, m in enumerate(messages) if m.get("role") == "tool")
+        candidates.sort(key=lambda i: len(messages[i]["content"]), reverse=True)
+
+        persist = self.tool_result_persister or (lambda content, call_id: persist_full_result(content, call_id))
+        result = list(messages)
+        trimmed = 0
+        before_tokens = tail_tokens
+        for i in candidates:
+            if tail_tokens <= self.tail_token_budget:
+                break
+            msg = result[i]
+            content = msg["content"]
+            call_id = str(msg.get("tool_call_id") or f"compaction_tail_{i}")
+            try:
+                path = persist(content, call_id)
+            except Exception as exc:
+                logger.debug("tail result save failed for %s: %s", call_id, exc)
+                path = None
+            preview_chars = LATEST_TOOL_RESULT_PREVIEW_CHARS if i == latest_tool else TAIL_TOOL_RESULT_PREVIEW_CHARS
+            replacement = bounded_result_with_pointer(content, path, preview_chars)
+            if len(replacement) >= len(content):
+                continue
+            result[i] = {**msg, "content": replacement}
+            tail_tokens -= (len(content) - len(replacement)) // _CHARS_PER_TOKEN
+            trimmed += 1
+        if trimmed:
+            logger.info(
+                "compression tail trim: cut %d large tool result(s) in the protected tail "
+                "to a preview + saved file (tail ~%s -> ~%s tokens, budget %s)",
+                trimmed, f"{before_tokens:,}", f"{tail_tokens:,}", f"{self.tail_token_budget:,}",
+            )
+        return result, trimmed
 
     # ------------------------------------------------------------------
     # Tool output pruning (cheap pre-pass, no LLM call)
@@ -2013,6 +2153,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compress_aborted = False
+        self._last_compress_new_summary = False
 
         # Manual /compress (force=True) bypasses the failure cooldown so the
         # user can retry immediately after an auto-compress abort.  Without
@@ -2020,6 +2161,8 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         if force and self._summary_failure_cooldown_until > 0.0:
             self._summary_failure_cooldown_until = 0.0
         n_messages = len(messages)
+        display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
+        entry_message_tokens = estimate_messages_tokens_rough(messages)
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self._protect_head_size(messages) + 3 + 1
         if n_messages <= _min_for_compress:
@@ -2028,9 +2171,8 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                     "Cannot compress: only %d messages (need > %d)",
                     n_messages, _min_for_compress,
                 )
+            self._record_shrink(entry_message_tokens, messages, display_tokens)
             return messages
-
-        display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
 
         # Phase 1: Prune old tool results (cheap, no LLM call)
         messages, pruned_count = self._prune_old_tool_results(
@@ -2047,6 +2189,15 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         # Use token-budget tail protection instead of fixed message count
         compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
 
+        # Phase 2b (AIS-786): a tail over its own budget is cut deterministically
+        # — big tool results become a preview plus their saved full text.
+        messages, tail_trimmed = self._trim_tail_tool_results(messages, compress_end)
+
+        if compress_start >= compress_end and tail_trimmed:
+            # Nothing to summarise, but the trim alone made room: no LLM call.
+            self._record_shrink(entry_message_tokens, messages, display_tokens)
+            return messages
+
         if compress_start >= compress_end:
             # No compressable window — the entire transcript fits within
             # the tail budget (soft_ceiling).  Without recording this as
@@ -2055,6 +2206,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             # re-triggers a no-op compression loop.  (#40803)
             self._ineffective_compression_count += 1
             self._last_compression_savings_pct = 0.0
+            self._record_shrink(entry_message_tokens, messages, display_tokens)
             if not self.quiet_mode:
                 logger.warning(
                     "Compression skipped: compress_start (%d) >= compress_end (%d) "
@@ -2115,6 +2267,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
         # Phase 3: Generate structured summary
         summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
+        self._last_compress_new_summary = bool(summary)
 
         # If summary generation failed, behavior splits on
         # ``abort_on_summary_failure`` (config: compression.abort_on_summary_failure):
@@ -2245,6 +2398,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             self._ineffective_compression_count += 1
         else:
             self._ineffective_compression_count = 0
+        self._record_shrink(entry_message_tokens, compressed, display_tokens)
 
         if not self.quiet_mode:
             logger.info(

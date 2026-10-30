@@ -61,8 +61,8 @@ import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/mar
 import { VirtualizedThread } from '@/components/assistant-ui/thread-virtualizer'
 import { HoistedTodoPanel, todosFromMessageContent } from '@/components/assistant-ui/todo-tool'
 import { PendingApprovalNotice } from '@/components/assistant-ui/tool-approval'
-import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool-fallback'
-import { runningStepAtEnd } from '@/components/assistant-ui/tool-fallback-model'
+import { ToolFallback, ToolGroupSlot, useMidTurnPhaseLine } from '@/components/assistant-ui/tool-fallback'
+import { liveStepLineAtEnd, selectMessageRunning } from '@/components/assistant-ui/tool-fallback-model'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
 import { UserMessageText } from '@/components/assistant-ui/user-message-text'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
@@ -236,6 +236,8 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
   }, [messageText])
 
   const messageStatus = useAuiState(s => s.message.status?.type)
+  // The running turn, not only this message's status (AIS-786).
+  const turnRunning = useAuiState(selectMessageRunning)
   const approvalPending = useStore($approvalRequest) !== null
   const isPlaceholder = messageStatus === 'running' && content.length === 0
   const enterRef = useEnterAnimation(messageStatus === 'running', `assistant-message:${messageId}`)
@@ -258,8 +260,8 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
       >
         {hoistedTodos.length > 0 && <HoistedTodoPanel todos={hoistedTodos} />}
         <MessagePrimitive.Parts components={MESSAGE_PARTS_COMPONENTS} />
-        {messageStatus === 'running' && <PendingApprovalNotice />}
-        {messageStatus === 'running' && !approvalPending && !runningStepAtEnd(content) && (
+        {turnRunning && <PendingApprovalNotice />}
+        {turnRunning && !approvalPending && !liveStepLineAtEnd(content) && (
           <StreamStallIndicator activity={`${content.length}:${messageText.length}`} />
         )}
         {previewTargets.length > 0 && (
@@ -339,12 +341,14 @@ const STREAM_STALL_S = 2
 // provider stall) nothing signals that work continues. Watch a per-render
 // activity signal; when it hasn't changed for STREAM_STALL_S, re-show the
 // dither + a timer counting from the last activity.
-// A running tool step shows its own live line and timer (AIS-744), so the
-// stall indicator would only add a second, wordless timer under it — unless
-// that line sits further up the message (AIS-746, see runningStepAtEnd).
+// A running tool step or the live activity block shows its own line and
+// timer (AIS-744), so the stall indicator would only add a second, wordless
+// timer under it (see liveStepLineAtEnd). A context summary mid-turn says so
+// here in plain words instead of "working" (AIS-786).
 
 const StreamStallIndicator: FC<{ activity: string }> = ({ activity }) => {
   const { t } = useI18n()
+  const phaseLine = useMidTurnPhaseLine()
   const [stalled, setStalled] = useState(false)
 
   useEffect(() => {
@@ -354,17 +358,19 @@ const StreamStallIndicator: FC<{ activity: string }> = ({ activity }) => {
     return () => window.clearTimeout(id)
   }, [activity])
 
-  const elapsed = useElapsedSeconds(stalled)
+  const elapsed = useElapsedSeconds(stalled || Boolean(phaseLine))
 
-  if (!stalled) {
+  if (!stalled && !phaseLine) {
     return null
   }
 
+  const line = phaseLine || `${t.assistant.tool.activity.working} …`
+
   return (
-    <StatusRow className="mt-1.5" data-slot="aui_stream-stall" label={t.assistant.tool.activity.working}>
+    <StatusRow className="mt-1.5" data-slot="aui_stream-stall" label={phaseLine || t.assistant.tool.activity.working}>
       <span aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80 animate-pulse" />
       <span className="min-w-0">
-        {t.assistant.tool.activity.working} … <ActivityTimerText seconds={elapsed} />
+        {line} <ActivityTimerText seconds={elapsed} />
       </span>
     </StatusRow>
   )

@@ -1,6 +1,7 @@
 import { map } from 'nanostores'
 
-/** What a turn is doing before its first output (AIS-460, from `turn.phase`). */
+/** What a turn is doing before its first output (AIS-460, from `turn.phase`),
+ *  and between steps when it summarizes, retries or switches models (AIS-786). */
 export type TurnPhaseName = 'compressing' | 'retrying' | 'switching_model' | 'waiting'
 
 export interface TurnPhase {
@@ -78,7 +79,19 @@ export function applyTurnPhaseEvent(sessionId: string | null | undefined, payloa
     return
   }
 
-  const parsed = parseTurnPhase(payload, $turnPhaseBySession.get()[sessionId])
+  const current = $turnPhaseBySession.get()[sessionId]
+
+  // The agent says when a context summary is done (AIS-786); mid-turn no
+  // output event follows right away to clear the sentence.
+  if ((payload as Record<string, unknown> | null)?.phase === 'compressed') {
+    if (current?.name === 'compressing') {
+      setTurnPhase(sessionId, null)
+    }
+
+    return
+  }
+
+  const parsed = parseTurnPhase(payload, current)
 
   if (parsed) {
     setTurnPhase(sessionId, parsed)
