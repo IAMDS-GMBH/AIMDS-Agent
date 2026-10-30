@@ -102,6 +102,13 @@ jobs:
             npx playwright install --only-shell chromium
           fi
 
+      # The three runner instances on the Windows VM share one network stack,
+      # so a fixed preview port collides when their jobs overlap.
+      - name: Pick a free port for the preview server
+        shell: bash
+        run: |
+          node -e "const s=require('net').createServer();s.listen(0,'127.0.0.1',()=>{console.log('SCREENSHOTS_PORT='+s.address().port);s.close()})" >> "$GITHUB_ENV"
+
       - name: Compare screenshots
         id: compare
         if: inputs.update_baselines != true

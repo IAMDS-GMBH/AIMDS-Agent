@@ -3,8 +3,9 @@ import { defineConfig } from '@playwright/test'
 // Screenshot check (AIS-798): the built renderer (`vite build`) served by
 // `vite preview`, driven by headless Chromium with a fake desktop bridge and
 // fixtures. Baselines are per OS — font rasterisers differ (DirectWrite,
-// Core Text, FreeType) even with the bundled faces.
-const PORT = 4179
+// Core Text, FreeType) even with the bundled faces. CI picks a free port per
+// job: the runner instances on the Windows VM share one network stack.
+const PORT = Number(process.env.SCREENSHOTS_PORT) || 4179
 
 export default defineConfig({
   expect: {
