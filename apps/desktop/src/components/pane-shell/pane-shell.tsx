@@ -64,6 +64,8 @@ interface CollectedPane {
   disabled: boolean
   forceCollapsed: boolean
   id: string
+  /** CSS max width; caps a persisted resize width on a smaller window. */
+  maxWidth?: string
   resizable: boolean
   side: PaneSide
   width: string
@@ -154,6 +156,7 @@ function collectPanes(children: ReactNode) {
       disabled: props.disabled ?? false,
       forceCollapsed: props.forceCollapsed ?? false,
       id: props.id,
+      maxWidth: props.maxWidth === undefined ? undefined : widthToCss(props.maxWidth, DEFAULT_WIDTH),
       resizable: props.resizable ?? false,
       side: props.side,
       width: widthToCss(props.width, DEFAULT_WIDTH)
@@ -175,7 +178,13 @@ function trackForPane(pane: CollectedPane, states: Record<string, { open: boolea
 
   const override = pane.resizable ? states[pane.id]?.widthOverride : undefined
 
-  return { open: true, track: override !== undefined ? `${override}px` : pane.width }
+  if (override === undefined) {
+    return { open: true, track: pane.width }
+  }
+
+  // Resize widths persist across launches (AIS-794): a width dragged on a big
+  // window must not overrun the pane's max on a smaller one.
+  return { open: true, track: pane.maxWidth ? `min(${override}px, ${pane.maxWidth})` : `${override}px` }
 }
 
 export function PaneShell({ children, className, style }: PaneShellProps) {

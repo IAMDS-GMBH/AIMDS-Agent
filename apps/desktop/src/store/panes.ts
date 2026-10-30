@@ -56,16 +56,18 @@ function load(): Record<string, PaneStateSnapshot> {
   return {}
 }
 
-// widthOverride is in-memory only — phase 2 can add per-pane persistWidth opt-in.
+// AIS-794: a pane keeps the width the user dragged it to across launches, next
+// to its open flag. PaneShell caps a stored width by the pane's max width, so a
+// width from a big window cannot overrun a smaller one.
 function persist(states: Record<string, PaneStateSnapshot>) {
   if (typeof window === 'undefined') {
     return
   }
 
-  const minimal: Record<string, { open: boolean }> = {}
+  const minimal: Record<string, PaneStateSnapshot> = {}
 
   for (const [id, s] of Object.entries(states)) {
-    minimal[id] = { open: s.open }
+    minimal[id] = s.widthOverride === undefined ? { open: s.open } : { open: s.open, widthOverride: s.widthOverride }
   }
 
   try {

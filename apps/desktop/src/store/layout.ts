@@ -24,6 +24,8 @@ export const SIDEBAR_SESSIONS_PAGE_SIZE = 50
 const SIDEBAR_PINNED_STORAGE_KEY = 'hermes.desktop.pinnedSessions'
 const SIDEBAR_AGENTS_GROUPED_STORAGE_KEY = 'hermes.desktop.agentsGroupedByWorkspace'
 const SIDEBAR_BACKGROUND_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarBackgroundOpen'
+const SIDEBAR_PINS_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarPinsOpen'
+const SIDEBAR_RECENTS_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarRecentsOpen'
 // Retired with the automations section (AIS-794).
 const SIDEBAR_CRON_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarCronOpen'
 const SIDEBAR_MESSAGING_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarMessagingOpen'
@@ -59,13 +61,15 @@ export const $sidebarWidth: ReadableAtom<number> = computed($paneStates, states 
 })
 
 export const $pinnedSessionIds = atom(storedStringArray(SIDEBAR_PINNED_STORAGE_KEY))
-export const $sidebarPinsOpen = atom(true)
+// Section open states survive a relaunch (AIS-794), like the background and
+// messaging sections already did.
+export const $sidebarPinsOpen = atom(storedBoolean(SIDEBAR_PINS_OPEN_STORAGE_KEY, true))
 // Set by the PaneShell hover-reveal overlay while the sidebar is collapsed; kept
 // true the whole time it's a floating overlay (not just while shown) so the
 // consumer mounts contents off-screen, ready to slide. ChatSidebar mounts its
 // rows on `sidebarOpen || this`.
 export const $sidebarOverlayMounted = atom(false)
-export const $sidebarRecentsOpen = atom(true)
+export const $sidebarRecentsOpen = atom(storedBoolean(SIDEBAR_RECENTS_OPEN_STORAGE_KEY, true))
 // "Im Hintergrund" (AIS-794): agent runs + automations, high up in the
 // sidebar and open by default. It only renders when something runs in the
 // background. Its own key: the old automations section persisted its
@@ -84,6 +88,8 @@ export const $sessionsLimit = atom(SIDEBAR_SESSIONS_PAGE_SIZE)
 
 $pinnedSessionIds.subscribe(ids => persistStringArray(SIDEBAR_PINNED_STORAGE_KEY, [...ids]))
 $sidebarBackgroundOpen.subscribe(open => persistBoolean(SIDEBAR_BACKGROUND_OPEN_STORAGE_KEY, open))
+$sidebarPinsOpen.subscribe(open => persistBoolean(SIDEBAR_PINS_OPEN_STORAGE_KEY, open))
+$sidebarRecentsOpen.subscribe(open => persistBoolean(SIDEBAR_RECENTS_OPEN_STORAGE_KEY, open))
 $sidebarMessagingOpenIds.subscribe(ids => persistStringArray(SIDEBAR_MESSAGING_OPEN_STORAGE_KEY, [...ids]))
 // Recents and workspace groups follow the latest activity. The saved manual
 // orders froze them at first sight (AIS-459), so drop what older builds stored.
