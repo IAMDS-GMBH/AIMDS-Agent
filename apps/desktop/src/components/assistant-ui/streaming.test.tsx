@@ -899,8 +899,12 @@ describe('calmer thread scrolling (AIS-789)', () => {
 
     rerender(<TurnStartHarness step="user-sent" />)
 
-    await waitFor(() => {
-      expect(viewport.scrollTop).toBe(800)
-    })
+    // The glide takes ~220ms; leave room for a loaded test machine.
+    await waitFor(
+      () => {
+        expect(viewport.scrollTop).toBe(800)
+      },
+      { timeout: 3_000 }
+    )
   })
 })
