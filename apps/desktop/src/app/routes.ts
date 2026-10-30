@@ -5,6 +5,8 @@ export const COMMAND_CENTER_ROUTE = '/command-center'
 // AIS-794: skills & tools live in Settings → Fähigkeiten; /skills redirects there.
 export const SKILLS_ROUTE = '/skills'
 export const SETTINGS_SKILLS_ROUTE = '/settings?tab=skills'
+// "Konten" in the account menu: the provider accounts page.
+export const SETTINGS_ACCOUNTS_ROUTE = '/settings?tab=providers&pview=accounts'
 export const ARTIFACTS_ROUTE = '/artifacts'
 export const TODOS_ROUTE = '/todos'
 export const CRON_ROUTE = '/cron'

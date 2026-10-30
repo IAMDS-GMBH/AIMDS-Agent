@@ -103,7 +103,7 @@ import {
   type SidebarNavSlot,
   visibleNavSlots
 } from './nav-model'
-import { ProfileRail } from './profile-switcher'
+import { AccountMenu } from './profile-switcher'
 import { sessionTime, sortByLatestActivity, workspaceGroupsFor } from './session-order'
 import { SidebarSessionRow } from './session-row'
 import { VirtualSessionList } from './virtual-session-list'
@@ -980,7 +980,7 @@ export function ChatSidebar({
 
         {contentVisible && (
           <div className="shrink-0 px-0.5 pb-1 pt-0.5">
-            <ProfileRail />
+            <AccountMenu />
           </div>
         )}
       </SidebarContent>
