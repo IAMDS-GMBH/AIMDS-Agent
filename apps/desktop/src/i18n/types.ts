@@ -304,6 +304,7 @@ export interface Translations {
       keysSettings: string
       mcp: string
       archivedChats: string
+      skills: string
       about: string
     }
     sections: Record<string, string>
@@ -344,6 +345,10 @@ export interface Translations {
       installed: (name: string) => string
       removeTheme: string
       importedBadge: string
+      developerViewTitle: string
+      developerViewDesc: string
+      technicalDetailsTitle: string
+      technicalDetailsDesc: string
       updateChannelTitle: string
       updateChannelDesc: string
       updateChannelStable: string

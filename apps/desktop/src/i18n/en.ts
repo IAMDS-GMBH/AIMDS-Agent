@@ -370,6 +370,7 @@ export const en: Translations = {
       keysSettings: 'Settings',
       mcp: 'MCP',
       archivedChats: 'Archived Chats',
+      skills: 'Skills',
       about: 'About'
     },
     sections: {
@@ -432,6 +433,11 @@ export const en: Translations = {
       installed: name => `Installed “${name}”.`,
       removeTheme: 'Remove theme',
       importedBadge: 'Imported',
+      developerViewTitle: 'Developer view',
+      developerViewDesc: 'Shows Discover, the technical details switch and other developer tools. Saved for this profile.',
+      technicalDetailsTitle: 'Technical details',
+      technicalDetailsDesc:
+        'Status bar with gateway, background agents, cron, token numbers, tool count and session timer.',
       updateChannelTitle: 'Update Channel',
       updateChannelDesc: 'Stable follows released versions, Preview also gets release candidates, Main follows the developer branch.',
       updateChannelStable: 'Stable',

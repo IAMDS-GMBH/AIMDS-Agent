@@ -3,11 +3,13 @@ import { useState } from 'react'
 
 import { LanguageSwitcher } from '@/components/language-switcher'
 import { SegmentedControl } from '@/components/ui/segmented-control'
+import { Switch } from '@/components/ui/switch'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Download, Loader2, Palette, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
+import { $developerView, $technicalDetailsSetting, setDeveloperView, setTechnicalDetails } from '@/store/view-mode'
 import { useTheme } from '@/themes/context'
 import { installVscodeThemeFromMarketplace } from '@/themes/install'
 import { isUserTheme, removeUserTheme, resolveTheme } from '@/themes/user-themes'
@@ -135,6 +137,8 @@ export function AppearanceSettings() {
   const { themeName, mode, availableThemes, setTheme, setMode } = useTheme()
   const profiles = useStore($profiles)
   const activeProfileKey = normalizeProfileKey(useStore($activeGatewayProfile))
+  const developerView = useStore($developerView)
+  const technicalDetails = useStore($technicalDetailsSetting)
   const a = t.settings.appearance
 
   // Themes save per profile. Surface that only when the user actually has more
@@ -175,6 +179,40 @@ export function AppearanceSettings() {
             description={a.colorModeDesc}
             title={a.colorMode}
           />
+
+          <ListRow
+            action={
+              <Switch
+                aria-label={a.developerViewTitle}
+                checked={developerView}
+                onCheckedChange={on => {
+                  triggerHaptic('crisp')
+                  setDeveloperView(on)
+                }}
+                size="xs"
+              />
+            }
+            description={a.developerViewDesc}
+            title={a.developerViewTitle}
+          />
+
+          {developerView && (
+            <ListRow
+              action={
+                <Switch
+                  aria-label={a.technicalDetailsTitle}
+                  checked={technicalDetails}
+                  onCheckedChange={on => {
+                    triggerHaptic('crisp')
+                    setTechnicalDetails(on)
+                  }}
+                  size="xs"
+                />
+              }
+              description={a.technicalDetailsDesc}
+              title={a.technicalDetailsTitle}
+            />
+          )}
 
           <ListRow
             below={

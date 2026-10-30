@@ -371,6 +371,7 @@ export const de
       keysSettings: 'Einstellungen',
       mcp: 'MCP',
       archivedChats: 'Archivierte Chats',
+      skills: 'Fähigkeiten',
       about: 'Über'
     },
     sections: {
@@ -433,6 +434,12 @@ export const de
       installed: name => `„${name}" installiert.`,
       removeTheme: 'Theme entfernen',
       importedBadge: 'Importiert',
+      developerViewTitle: 'Entwickleransicht',
+      developerViewDesc:
+        'Zeigt Entdecken, den Schalter für technische Details und weitere Entwicklerwerkzeuge. Gilt für dieses Profil.',
+      technicalDetailsTitle: 'Technische Details',
+      technicalDetailsDesc:
+        'Statusleiste mit Gateway, Hintergrund-Agenten, Cron, Token-Zahlen, Tool-Anzahl und Sitzungsdauer.',
       updateChannelTitle: 'Update-Kanal',
       updateChannelDesc: 'Stable folgt freigegebenen Versionen, Preview erhält zusätzlich Release-Kandidaten, Main folgt dem Entwickler-Branch.',
       updateChannelStable: 'Stable',
