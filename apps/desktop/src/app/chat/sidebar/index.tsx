@@ -711,7 +711,8 @@ export function ChatSidebar({
       <SidebarContent className="gap-0 overflow-hidden bg-transparent px-2.5">
         {/* AIS-794 top: "Neue Sitzung" as the primary action, then the search. */}
         <div className="shrink-0 pb-1 pt-[calc(var(--titlebar-height)+0.375rem)]">
-          <Tip label={s.nav['new-session']}>
+          {/* The label is on the button; the tooltip only helps the icon-only rail. */}
+          <Tip label={contentVisible ? undefined : s.nav['new-session']}>
             <Button
               aria-label={s.nav['new-session']}
               className={cn('w-full', contentVisible ? 'justify-start' : 'justify-center')}
