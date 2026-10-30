@@ -34,6 +34,19 @@ def _to_compact_line(text: str, *, limit: int) -> str:
     return line[:limit]
 
 
+def _already_recorded(text: str, needed_line: str) -> bool:
+    """True when an entry with the same ``needed=`` text is in the file."""
+    marker = f"needed={needed_line}".lower()
+    for line in text.splitlines():
+        lowered = line.strip().lower()
+        if not lowered.startswith("- "):
+            continue
+        # The value ends at the next ` | key=` separator or the line end.
+        if f"{marker} |" in lowered or lowered.endswith(marker):
+            return True
+    return False
+
+
 def append_open_question_entry(
     *,
     context: str,
@@ -41,8 +54,12 @@ def append_open_question_entry(
     source: str = "",
     turn_id: str = "",
     dedupe_key: str = "",
+    skip_if_recorded: bool = False,
 ) -> Optional[Path]:
     """Append one open-question entry to workspace `_open-questions.md`.
+
+    ``skip_if_recorded`` also skips an entry whose ``needed`` text the file
+    already holds (from an earlier session), not only one seen in this process.
 
     Returns the file path when a line was appended, or ``None`` when skipped.
     """
@@ -85,9 +102,40 @@ def append_open_question_entry(
     with _open_questions_file_lock:
         if not questions_path.exists():
             questions_path.write_text(_OPEN_QUESTIONS_HEADER, encoding="utf-8")
+        elif skip_if_recorded and _already_recorded(
+            questions_path.read_text(encoding="utf-8", errors="replace"), needed_line
+        ):
+            return None
         with questions_path.open("a", encoding="utf-8") as fh:
             fh.write(entry)
     return questions_path
+
+
+def append_deferred_clarify_question(
+    question: str,
+    *,
+    topic: str = "",
+    source: str = "",
+    turn_id: str = "",
+) -> Optional[Path]:
+    """Record a question the user chose to answer later (AIS-793, "Später").
+
+    ``needed`` is the question itself (topic first), which is what the morning
+    brief shows; the same question is recorded once, across sessions too.
+    """
+    text = _to_compact_line(question, limit=220)
+    if not text:
+        return None
+    label = _to_compact_line(topic, limit=80)
+    needed = f"{label}: {text}" if label else text
+    return append_open_question_entry(
+        context=f"Deferred question ({label})" if label else "Deferred question",
+        needed=needed,
+        source=source,
+        turn_id=turn_id,
+        dedupe_key=f"deferred|{needed.lower()}",
+        skip_if_recorded=True,
+    )
 
 
 def derive_blocking_open_question_from_review_text(text: str) -> Optional[Tuple[str, str]]:
