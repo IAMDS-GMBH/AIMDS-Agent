@@ -34,7 +34,11 @@ import {
 import { CreateProfileDialog } from '../../profiles/create-profile-dialog'
 import { PROFILES_ROUTE, SETTINGS_ACCOUNTS_ROUTE, SETTINGS_ROUTE } from '../../routes'
 
-const initialOf = (name: string) => name.replace(/[^a-z0-9]/gi, '').charAt(0).toUpperCase() || '?'
+const initialOf = (name: string) =>
+  name
+    .replace(/[^a-z0-9]/gi, '')
+    .charAt(0)
+    .toUpperCase() || '?'
 
 /**
  * The account menu at the sidebar foot (AIS-794). One button — the active

@@ -171,7 +171,11 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
     // AIS-794: the co-worker items (connection dot, context ring) carry their
     // words in a hover card.
     return item.tooltip ? (
-      <Tip className="max-w-xs px-2.5 py-2 text-left text-[11px] font-normal leading-snug" label={item.tooltip} side="top">
+      <Tip
+        className="max-w-xs px-2.5 py-2 text-left text-[11px] font-normal leading-snug"
+        label={item.tooltip}
+        side="top"
+      >
         {text}
       </Tip>
     ) : (

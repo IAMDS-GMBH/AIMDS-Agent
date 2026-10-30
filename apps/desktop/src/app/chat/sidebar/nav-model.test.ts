@@ -42,7 +42,8 @@ describe('sidebar nav entries (AIS-794)', () => {
 
 // Local time: Friday 2026-10-30, 10:30.
 const NOW = new Date(2026, 9, 30, 10, 30).getTime()
-const at = (year: number, month: number, day: number, hour = 12) => new Date(year, month - 1, day, hour).getTime() / 1000
+const at = (year: number, month: number, day: number, hour = 12) =>
+  new Date(year, month - 1, day, hour).getTime() / 1000
 
 const session = (id: string, lastActive: number) =>
   ({ id, last_active: lastActive, started_at: lastActive }) as unknown as SessionInfo
@@ -172,7 +173,11 @@ describe('"Im Hintergrund" (AIS-794)', () => {
   })
 
   it('counts a running automation and a failed action', () => {
-    const summary = backgroundSummary([job({ id: 'busy', state: 'running' })], {}, { sync: action('sync', false, 2, 5) })
+    const summary = backgroundSummary(
+      [job({ id: 'busy', state: 'running' })],
+      {},
+      { sync: action('sync', false, 2, 5) }
+    )
 
     expect(summary.running).toBe(1)
     expect(summary.items.find(item => item.kind === 'action')).toMatchObject({ status: 'failed' })

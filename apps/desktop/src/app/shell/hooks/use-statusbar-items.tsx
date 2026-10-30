@@ -422,7 +422,9 @@ export function useStatusbarItems({
       label: state === 'ready' ? undefined : label,
       title: label,
       tooltip: state === 'setup' ? copy.connectionSetupHint : label,
-      ...(state === 'setup' ? { to: SETTINGS_ACCOUNTS_ROUTE, variant: 'action' as const } : { variant: 'text' as const })
+      ...(state === 'setup'
+        ? { to: SETTINGS_ACCOUNTS_ROUTE, variant: 'action' as const }
+        : { variant: 'text' as const })
     }
   }, [copy, gatewayState, inferenceStatus])
 
@@ -618,6 +620,7 @@ export function useStatusbarItems({
       turnStartedAt,
       clientVersionItem,
       backendVersionItem,
+      supportTicketItem,
       yoloActive,
       totalMcpTools
     ]
