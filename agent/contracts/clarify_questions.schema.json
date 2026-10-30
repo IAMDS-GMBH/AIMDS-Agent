@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:aimds-agent:contract:clarify_questions:1",
+  "title": "ClarifyQuestions",
+  "description": "Questions the agent asks in one card and the answers it gets back (forward-looking; the question card implements it, AIS-793).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "questions"],
+  "properties": {
+    "v": { "const": 1, "description": "Contract version." },
+    "questions": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/ClarifyQuestion" } },
+    "answers": { "type": "array", "items": { "$ref": "#/$defs/ClarifyAnswer" }, "description": "One per question, same order." }
+  },
+  "$defs": {
+    "ClarifyQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["question"],
+      "properties": {
+        "question": { "type": "string", "minLength": 1 },
+        "choices": { "type": "array", "maxItems": 4, "items": { "type": "string" } },
+        "topic": { "type": "string", "maxLength": 80, "description": "Short label that groups questions in the card." }
+      }
+    },
+    "ClarifyAnswerState": {
+      "description": "Same values as the clarify tool's response_state.",
+      "enum": ["answered", "skipped", "timeout", "empty", "delivery_failed", "unavailable"]
+    },
+    "ClarifyAnswer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "response"],
+      "properties": {
+        "state": { "$ref": "#/$defs/ClarifyAnswerState" },
+        "response": { "type": "string" }
+      }
+    }
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:aimds-agent:contract:agent_envelope:1",
+  "title": "AgentEnvelope",
+  "description": "A message between agents on the agent bus. Refs carry identifiers only, never content: the receiver reads the item itself with its own access.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "id", "from", "to", "kind", "refs", "intent", "expires", "runner"],
+  "properties": {
+    "v": { "const": 1, "description": "Contract version." },
+    "id": { "type": "string", "maxLength": 120, "description": "Envelope id; reply_to of an answer names it." },
+    "from": { "type": "string", "maxLength": 200, "description": "Sender device or agent id." },
+    "to": { "type": "string", "maxLength": 200, "description": "Receiver device or agent id." },
+    "kind": { "enum": ["notify", "handoff", "ask", "result"] },
+    "refs": { "type": "array", "maxItems": 20, "items": { "$ref": "#/$defs/AgentRef" } },
+    "intent": { "type": "string", "maxLength": 200, "description": "What the sender wants, in one sentence." },
+    "reply_to": { "type": "string", "maxLength": 120 },
+    "expires": { "type": "string", "description": "ISO 8601 time after which the envelope is dropped." },
+    "runner": { "enum": ["local", "suite"], "description": "Where the receiver should run the work." }
+  },
+  "$defs": {
+    "AgentRef": {
+      "description": "Pointer to an item by identifier; at least one of key, id or url.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source"],
+      "anyOf": [{ "required": ["key"] }, { "required": ["id"] }, { "required": ["url"] }],
+      "properties": {
+        "source": { "type": "string", "maxLength": 120, "description": "Service the identifier belongs to." },
+        "key": { "type": "string", "maxLength": 120 },
+        "id": { "type": "string", "maxLength": 200 },
+        "url": { "type": "string", "maxLength": 500 }
+      }
+    }
+  }
+}
