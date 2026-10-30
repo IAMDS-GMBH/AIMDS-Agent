@@ -5715,6 +5715,22 @@ class TestCheckMcpArgNames:
         _remember_handed_back_args("AIMDSSuiteMCP", "pm_update_work_package", "not json \"continue\"")
         assert mcp_tool._handed_back_args == {("AIMDSSuiteMCP", "pm_update_work_package"): {"id", "project", "dry_run", "move_offset"}}
 
+    def test_an_in_progress_move_continue_passes_unchanged(self, monkeypatch):
+        """AIS-783: go-mcp-openproject 0.7.2 answers a long move with
+        ``in_progress`` and a ``continue`` of schema arguments only; repeating
+        it joins the running move, so it must reach the server as it is."""
+        from tools import mcp_tool
+        from tools.mcp_tool import _check_mcp_arg_names, _remember_handed_back_args
+
+        monkeypatch.setattr(mcp_tool, "_handed_back_args", {})
+        tool = _make_mcp_tool(name="pm_update_work_package", input_schema={"type": "object", "properties": {
+            "id": {}, "ids": {}, "project": {}, "parent": {}, "type_map": {}, "version": {}, "category": {}, "dry_run": {}}})
+        server = _make_mock_server("AIMDSSuiteMCP", tools=[tool])
+        nxt = {"project": "LBBW", "dry_run": False, "ids": ["AIS-700", "AIS-701"], "type_map": {"Wochenziel": "Milestone"}}
+        _remember_handed_back_args("AIMDSSuiteMCP", "pm_update_work_package",
+                                   json.dumps({"in_progress": True, "running_for_s": 35, "continue": nxt}))
+        assert _check_mcp_arg_names(server, "pm_update_work_package", nxt) == (nxt, [], None)
+
     def test_unknown_argument_of_a_deprecated_tool_names_its_successor(self):
         """AIS-775: a 0.7.0 alias lists only its required arguments."""
         from tools.mcp_tool import _check_mcp_arg_names
