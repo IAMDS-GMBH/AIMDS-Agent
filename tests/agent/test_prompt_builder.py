@@ -2199,6 +2199,30 @@ class TestOpenProjectWholeSets:
                 "as the next call's arguments.") in text
         assert "search_work_packages" not in text
 
+    # go-mcp-openproject 0.7.2 (Suite AIS-780/AIS-782): the subtree always
+    # moves (no include_descendants), parent on update, in_progress answers.
+    V072 = dict(V070, pm_update_work_package=V070["pm_update_work_package"] - {"include_descendants"} | {"parent"})
+
+    def test_suite_072_teaches_parent_and_in_progress(self, monkeypatch):
+        """AIS-783: a running move answers in_progress; continue joins it."""
+        from agent.prompt_builder import build_ticket_routing_guidance as g
+        self._params(monkeypatch, self.V072)
+        text = g(self._names(self.SUITE) | {f"{self.SUITE}get_work_package"})
+        assert ("the same change for several work packages through `ids`; a new parent through `parent` in the update "
+                "(`\"none\"` removes it); a comment") in text
+        assert ("pass a returned `continue` unchanged as the next call's arguments. The children move along. "
+                "`in_progress` means the move still runs: tell the user, then call with `continue`, which joins it.") in text
+
+    def test_suite_070_is_not_told_about_072(self, monkeypatch):
+        """Prod (Suite 2.17.12) runs 0.7.0: continue still carries move_offset
+        and is passed on unchanged; no in_progress, no parent."""
+        from agent.prompt_builder import build_ticket_routing_guidance as g
+        self._params(monkeypatch, self.V070)
+        text = g(self._names(self.SUITE) | {f"{self.SUITE}get_work_package"})
+        assert "pass a returned `continue` unchanged" in text
+        for word in ("in_progress", "`parent`", "children move along"):
+            assert word not in text, word
+
     def test_suite_06x_on_prod_is_not_told_about_070_arguments(self, monkeypatch):
         """Prod may still run go-mcp-openproject 0.6.x when a release ships:
         include/comment/add_relations/moves appear only with the schema."""

@@ -2708,6 +2708,7 @@ def _tool_param_names(name: str) -> "set[str]":
 # status changes one by one, a relation call after every create. AIS-775
 # (0.7.0): get→get, get→activity/relations, update→comment and
 # create→relation were the most frequent chains on prod (Suite AIS-771).
+# AIS-783 (0.7.1): update takes ``parent``.
 # (tool suffix, parameter, text, unless the tool also has this parameter)
 _OPENPROJECT_SET_CAPABILITIES = (
     ("pm_list_time_entries", "group_by", "hours of a day or week across all projects in one "
@@ -2716,6 +2717,7 @@ _OPENPROJECT_SET_CAPABILITIES = (
     ("pm_get_work_package", "ids", "several work packages through one `pm_get_work_package` with `ids`", ""),
     ("pm_get_work_package", "include", "their comment log and relations through `include` on that get", ""),
     ("pm_update_work_package", "ids", "the same change for several work packages through `ids`", ""),
+    ("pm_update_work_package", "parent", "a new parent through `parent` in the update (`\"none\"` removes it)", ""),
     ("pm_update_work_package", "comment", "a comment on the change through `comment` in the same update", ""),
     ("pm_update_work_package", "add_relations", "relations through `add_relations`/`remove_relations` in the update "
                                                 "or create", ""),
@@ -2732,7 +2734,10 @@ def _openproject_whole_sets(names: "set[str]", op_tools: "dict[str, dict[str, li
     (its server would ignore an unknown argument silently). AIS-775: the same
     holds for go-mcp-openproject 0.7.0's ``include``, ``comment``,
     ``add_relations`` and moves (``project`` + ``dry_run``) — prod may still
-    run 0.6.x when a release ships.
+    run 0.6.x when a release ships. AIS-783: since 0.7.1 the subtree always
+    moves (``include_descendants`` left the schema) and 0.7.2 answers a long
+    move with ``in_progress``; a 0.7.0 ``continue`` (``move_offset``) is
+    passed on unchanged all the same.
     """
     from tools.openproject_names import openproject_kind, openproject_tools
 
@@ -2757,6 +2762,10 @@ def _openproject_whole_sets(names: "set[str]", op_tools: "dict[str, dict[str, li
         out += (" Moving work packages to another project (`project` in the update) answers with a preview first:"
                 " show it and apply with `dry_run=false` only after the user confirms; pass a returned `continue`"
                 " unchanged as the next call's arguments.")
+        if not has("pm_update_work_package", "include_descendants"):
+            # 0.7.1+: children always move along; 0.7.2 runs a long move detached.
+            out += (" The children move along. `in_progress` means the move still runs: tell the user, then call"
+                    " with `continue`, which joins it.")
     if tool_of("pm_link_status"):
         out += (" Call `pm_link_status` only after a tool answered `action_required` or when the user asks"
                 " which account is linked — never as a check before other calls.")

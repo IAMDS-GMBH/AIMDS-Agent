@@ -77,7 +77,7 @@ def _assert_compatible(tool, prop, suite, local):
 
 def test_snapshot_has_the_27_suite_tools():
     tools = _snapshot()
-    assert len(tools) == 27  # go-mcp-openproject 0.7.0 (AIS-775): five of them are deprecated aliases
+    assert len(tools) == 27  # go-mcp-openproject 0.7.2 (AIS-783): five of them are deprecated aliases
     assert all(name.startswith("pm_") for name in tools)
 
 
@@ -205,7 +205,9 @@ def test_unknown_arguments_are_rejected_with_the_argument_list(monkeypatch):
     text = result.content[0].text
     assert result.isError and text.startswith("pm_get_work_package does not take projekt. Arguments: ")
     assert "include" in text and "move_offset" not in text
-    # An argument only an answer hands back (continue) is taken, not advertised.
+    # 0.7.1 (AIS-780) dropped include_descendants from the schema (the subtree
+    # always moves) but still takes it; 0.7.2 (AIS-782) has no move_offset.
     schema = server.TOOLS["pm_update_work_package"][1]
-    assert server._unknown_args("pm_update_work_package", schema, {"id": 1, "project": "X", "move_offset": 50}) is None
-    assert "move_offset" not in schema["properties"]
+    assert server._unknown_args("pm_update_work_package", schema, {"id": 1, "project": "X", "include_descendants": True}) is None
+    assert "include_descendants" not in schema["properties"]
+    assert server._unknown_args("pm_update_work_package", schema, {"id": 1, "project": "X", "move_offset": 50})

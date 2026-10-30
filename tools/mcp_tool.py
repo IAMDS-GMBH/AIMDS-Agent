@@ -4079,9 +4079,10 @@ _ARG_SYNONYM_GROUPS: Tuple[frozenset, ...] = (
 )
 
 # AIS-775: arguments a tool's own answer handed back for the next call —
-# ``continue`` (go-mcp-openproject 0.7.0 moves carry ``move_offset``) and
-# ``retry`` — are taken even when the schema does not list them: the server
-# accepts them on purpose, and the guidance says to pass them unchanged.
+# ``continue`` (go-mcp-openproject 0.7.0 moves carry ``move_offset``; 0.7.2's
+# ``in_progress`` continue only schema arguments, AIS-783) and ``retry`` — are
+# taken even when the schema does not list them: the server accepts them on
+# purpose, and the guidance says to pass them unchanged.
 # Bounded: a few keys per tool, a few hundred tools.
 _HANDED_BACK_KEYS = ("continue", "retry")
 _handed_back_args: Dict[Tuple[str, str], set] = {}
