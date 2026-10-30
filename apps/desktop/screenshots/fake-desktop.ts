@@ -15,7 +15,11 @@ export interface FakeDesktopFixtures {
    * unknown paths answer `{}`.
    */
   api: Record<string, unknown>
-  /** JSON-RPC results by method; unknown methods answer `{}`. */
+  /**
+   * JSON-RPC results by method; unknown methods answer `{}`. A key
+   * `method#<session_id>` answers only calls with that `session_id` param and
+   * wins over the plain method key.
+   */
   rpc: Record<string, unknown>
 }
 
@@ -187,7 +191,7 @@ export function installFakeDesktop(fixtures: FakeDesktopFixtures) {
     }
 
     send(data: string) {
-      let frame: { id?: number | string; method?: string }
+      let frame: { id?: number | string; method?: string; params?: { session_id?: unknown } }
 
       try {
         frame = JSON.parse(String(data))
@@ -200,7 +204,9 @@ export function installFakeDesktop(fixtures: FakeDesktopFixtures) {
       }
 
       calls.push(`rpc ${frame.method}`)
-      const result = frame.method in fixtures.rpc ? clone(fixtures.rpc[frame.method]) : {}
+      const scoped = `${frame.method}#${String(frame.params?.session_id ?? '')}`
+      const key = scoped in fixtures.rpc ? scoped : frame.method
+      const result = key in fixtures.rpc ? clone(fixtures.rpc[key]) : {}
       const reply = JSON.stringify({ id: frame.id, jsonrpc: '2.0', result })
       setTimeout(() => this.emit(new MessageEvent('message', { data: reply })), 0)
     }

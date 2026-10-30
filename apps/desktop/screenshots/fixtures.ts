@@ -47,6 +47,39 @@ const LONG_ANSWER = [
   'Two things to watch: the nightly export runs at 02:00 and must not overlap with a migration batch, and the reporting views need a refresh after each customer. Both are covered by the checklist in the project notes.'
 ].join('\n')
 
+// AIS-792: one answer that marks sections both ways models do — `## Heading`
+// and a paragraph that is only a bold `**Label:**` — so the baseline shows
+// they render as the same section label.
+export const SECTIONS_SESSION_ID = 'screenshot-weekly-report'
+
+const SECTIONS_ANSWER = [
+  'Here is where the billing migration stands after this week.',
+  '',
+  '## Status',
+  '',
+  'Both pilot customers run on the new pipeline since Monday. The nightly export finished on time every night, and the month-end numbers match the old path to the cent.',
+  '',
+  '**Open:**',
+  '',
+  '- The reporting views still need a manual refresh after each customer.',
+  '- Customer two asked for a dry run before their month-end close.',
+  '',
+  '**Next steps:**',
+  '',
+  '1. Schedule the dry run for Thursday morning.',
+  '2. Add the refresh step to the migration checklist.',
+  '3. Move the third customer once both pilots report a clean close.',
+  '',
+  '### Risks',
+  '',
+  'The only open risk is the export window: a migration batch must finish before 02:00, or the export reads a half-migrated customer. Note that **bold inside a sentence** stays as it is.'
+].join('\n')
+
+const sectionsMessages = [
+  { content: 'Draft the weekly status report for the billing migration.', role: 'user', timestamp: NOW_S - 86_500 },
+  { content: SECTIONS_ANSWER, role: 'assistant', timestamp: NOW_S - 86_400 }
+]
+
 const sessions = [
   {
     ended_at: null,
@@ -65,11 +98,11 @@ const sessions = [
   },
   {
     ended_at: null,
-    id: 'screenshot-weekly-report',
+    id: SECTIONS_SESSION_ID,
     input_tokens: 920,
     is_active: false,
     last_active: NOW_S - 86_400,
-    message_count: 4,
+    message_count: 2,
     model: 'suite-auto',
     output_tokens: 310,
     preview: 'Draft the weekly status report',
@@ -192,6 +225,10 @@ export const FIXTURES: FakeDesktopFixtures = {
       messages: longAnswerMessages,
       session_id: LONG_ANSWER_SESSION_ID
     },
+    [`/api/sessions/${SECTIONS_SESSION_ID}/messages`]: {
+      messages: sectionsMessages,
+      session_id: SECTIONS_SESSION_ID
+    },
     '/api/status': status
   },
   rpc: {
@@ -207,6 +244,14 @@ export const FIXTURES: FakeDesktopFixtures = {
       resumed: LONG_ANSWER_SESSION_ID,
       running: false,
       session_id: 'runtime-long-answer'
+    },
+    [`session.resume#${SECTIONS_SESSION_ID}`]: {
+      info: { ...model, cwd: '/home/hermes', desktop_contract: 999 },
+      message_count: sectionsMessages.length,
+      messages: sectionsMessages,
+      resumed: SECTIONS_SESSION_ID,
+      running: false,
+      session_id: 'runtime-sections'
     }
   }
 }
