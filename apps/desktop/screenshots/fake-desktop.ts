@@ -15,8 +15,17 @@ export interface FakeDesktopFixtures {
    * unknown paths answer `{}`.
    */
   api: Record<string, unknown>
-  /** JSON-RPC results by method; unknown methods answer `{}`. */
+  /**
+   * JSON-RPC results by method; unknown methods answer `{}`. A key may name
+   * the call's `session_id` (`session.resume#<id>`), which wins over the bare
+   * method.
+   */
   rpc: Record<string, unknown>
+  /**
+   * Gateway events pushed right after the reply to the RPC key they are
+   * listed under (same keys as `rpc`) — e.g. a pending question (AIS-793).
+   */
+  events?: Record<string, { payload?: unknown; session_id?: string; type: string }[]>
 }
 
 export function installFakeDesktop(fixtures: FakeDesktopFixtures) {
@@ -187,7 +196,7 @@ export function installFakeDesktop(fixtures: FakeDesktopFixtures) {
     }
 
     send(data: string) {
-      let frame: { id?: number | string; method?: string }
+      let frame: { id?: number | string; method?: string; params?: { session_id?: unknown } }
 
       try {
         frame = JSON.parse(String(data))
@@ -200,9 +209,20 @@ export function installFakeDesktop(fixtures: FakeDesktopFixtures) {
       }
 
       calls.push(`rpc ${frame.method}`)
-      const result = frame.method in fixtures.rpc ? clone(fixtures.rpc[frame.method]) : {}
+
+      const sessionKey =
+        typeof frame.params?.session_id === 'string' ? `${frame.method}#${frame.params.session_id}` : ''
+
+      const key = sessionKey && sessionKey in fixtures.rpc ? sessionKey : frame.method
+      const result = key in fixtures.rpc ? clone(fixtures.rpc[key]) : {}
       const reply = JSON.stringify({ id: frame.id, jsonrpc: '2.0', result })
       setTimeout(() => this.emit(new MessageEvent('message', { data: reply })), 0)
+
+      for (const event of fixtures.events?.[key] ?? []) {
+        const frameData = JSON.stringify({ jsonrpc: '2.0', method: 'event', params: clone(event) })
+        // After the reply has been handled (the session is bound by then).
+        setTimeout(() => this.emit(new MessageEvent('message', { data: frameData })), 50)
+      }
     }
 
     close() {

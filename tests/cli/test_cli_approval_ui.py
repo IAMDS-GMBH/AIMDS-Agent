@@ -460,6 +460,55 @@ class TestModalPaintNow:
         assert cli._secret_state is None  # cleared
 
 
+class TestClarifyQuestionsInCli:
+    """AIS-793: several questions in one ask — the CLI asks them one after
+    another in its arrow-key panel, each numbered and with its topic."""
+
+    def test_questions_are_asked_one_after_another(self):
+        import json
+
+        from tools.clarify_tool import clarify_tool
+
+        cli = _make_real_paint_cli_stub()
+        questions = [
+            {"topic": "QS-38", "question": "Load test before or after the release?", "choices": ["Before", "After"]},
+            {"topic": "Docs", "question": "Where should the release notes go?"},
+        ]
+        result = {}
+        shown = []
+
+        def _run():
+            result["value"] = clarify_tool(questions=questions, callback=cli._clarify_callback)
+
+        with patch.object(cli_module, "_cprint"):
+            thread = threading.Thread(target=_run, daemon=True)
+            thread.start()
+            for answer in ("After", "In the wiki"):
+                deadline = time.time() + 2
+                while cli._clarify_state is None and time.time() < deadline:
+                    time.sleep(0.01)
+                state = cli._clarify_state
+                assert state is not None
+                shown.append((state["question"], list(state["choices"]), cli._clarify_freetext))
+                # The key bindings clear the panel when they answer.
+                cli._clarify_state = None
+                cli._clarify_freetext = False
+                state["response_queue"].put(answer)
+            thread.join(timeout=2)
+        assert not thread.is_alive()
+
+        assert shown == [
+            ("(1/2) QS-38: Load test before or after the release?", ["Before", "After"], False),
+            # Open-ended goes straight to free text.
+            ("(2/2) Docs: Where should the release notes go?", [], True),
+        ]
+        payload = json.loads(result["value"])
+        assert payload["answers"] == [
+            {"state": "answered", "response": "After"},
+            {"state": "answered", "response": "In the wiki"},
+        ]
+
+
 class TestApprovalCallbackThreadLocalWiring:
     """Regression guard for the thread-local callback freeze (#13617 / #13618).
 

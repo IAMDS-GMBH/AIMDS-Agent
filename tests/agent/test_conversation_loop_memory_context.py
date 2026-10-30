@@ -698,6 +698,29 @@ def test_enforce_single_onboarding_clarify_question_rewrites_multi_prompt():
     assert args["question"] == "What is your role/title?"
 
 
+def test_enforce_single_onboarding_clarify_question_drops_a_questions_list():
+    """AIS-793: onboarding stays one question at a time, also when the model
+    packs the profile fields into `questions`."""
+    clarify_call = SimpleNamespace(
+        function=SimpleNamespace(
+            name="clarify",
+            arguments=json.dumps(
+                {"questions": [{"question": "Your role?"}, {"question": "Your tech stack?"}]},
+                ensure_ascii=False,
+            ),
+        )
+    )
+    assistant_message = SimpleNamespace(tool_calls=[clarify_call])
+
+    _enforce_single_onboarding_clarify_question(
+        assistant_message,
+        onboarding_payload={"onboarding_first_question": "What is your role/title?"},
+    )
+
+    args = json.loads(assistant_message.tool_calls[0].function.arguments)
+    assert args == {"question": "What is your role/title?"}
+
+
 def test_enforce_initial_memory_context_call_runs_onboarding_clarify_sequence():
     calls = []
 
