@@ -1,0 +1,65 @@
+{
+  "version": "0.7.14",
+  "notes": [
+    {
+      "group": "new",
+      "de": "Tickets in OpenProject samt ihren Unteraufgaben in ein anderes Projekt verschieben – mit Vorschau, bevor etwas passiert",
+      "en": "Move OpenProject tickets with their subtasks to another project, with a preview before anything changes"
+    },
+    {
+      "group": "new",
+      "de": "Kommentare, Verknüpfungen und eine neue übergeordnete Aufgabe setzt der Assistent jetzt in einem Schritt",
+      "en": "Comments, links and a new parent task are now set in one step"
+    },
+    {
+      "group": "new",
+      "de": "Nach einem Update zeigt die Statusleiste, was die neue Version bringt",
+      "en": "After an update, the status bar shows what the new version brings"
+    },
+    {
+      "group": "improved",
+      "de": "Der Assistent findet passende Werkzeuge zuverlässiger, auch wenn mehrere angebundene Dienste dasselbe Thema abdecken",
+      "en": "The assistant finds the right tools more reliably, even when several connected services cover the same topic"
+    },
+    {
+      "group": "improved",
+      "de": "Antworten kommen schneller und günstiger, weil die festen Anweisungen an den Assistenten deutlich kürzer sind",
+      "en": "Answers arrive faster and cost less because the assistant's standing instructions are much shorter"
+    },
+    {
+      "group": "improved",
+      "de": "Lange Unterhaltungen mit großen Ergebnissen bleiben flüssig, statt immer wieder zu pausieren",
+      "en": "Long conversations with large results stay responsive instead of pausing again and again"
+    },
+    {
+      "group": "fixed",
+      "de": "Bei langen Antworten siehst du jetzt unten laufend, woran der Assistent arbeitet – auch während er das Gespräch zusammenfasst",
+      "en": "During long answers you now see at the bottom what the assistant is working on, also while it summarizes the conversation"
+    },
+    {
+      "group": "fixed",
+      "de": "Fällt ein angebundener Dienst aus, sagt der Assistent warum, und die Verbindung kommt von selbst zurück",
+      "en": "If a connected service drops out, the assistant says why, and the connection comes back on its own"
+    },
+    {
+      "group": "fixed",
+      "de": "Ist deine Anmeldung abgelaufen, wartet die App im Hintergrund auf die neue Anmeldung, statt es nachts immer wieder zu versuchen",
+      "en": "If your sign-in has expired, the app waits for you to sign in again instead of retrying all night"
+    },
+    {
+      "group": "fixed",
+      "de": "Nach dem Aufwachen des Rechners aktualisieren sich alle Ansichten wieder zuverlässig",
+      "en": "After the computer wakes up, all views update reliably again"
+    },
+    {
+      "group": "fixed",
+      "de": "Die Freigabe für Microsoft 365 zeigt an, welche Berechtigungen tatsächlich erteilt sind",
+      "en": "The Microsoft 365 consent shows which permissions were actually granted"
+    },
+    {
+      "group": "fixed",
+      "de": "Weitere Verbesserungen an Stabilität und Zuverlässigkeit",
+      "en": "More stability and reliability improvements"
+    }
+  ]
+}
