@@ -183,7 +183,7 @@ describe('QuestionCard', () => {
     expect(screen.getByText('1 of 4 answered')).toBeTruthy()
   })
 
-  it('opens again when the thread anchor asks for it', () => {
+  it('opens again when the thread anchor asks for it', async () => {
     const value = ask()
     $questionCardMinimized.set({ [value.requestId]: true })
     render(<QuestionCard />, { wrapper })
@@ -191,6 +191,8 @@ describe('QuestionCard', () => {
     act(() => revealQuestionCard(value.requestId))
 
     expect(document.querySelector('[data-slot="question-card"]')).not.toBeNull()
+    // The first open question takes the focus.
+    await waitFor(() => expect(document.activeElement?.textContent).toBe('Before the release'))
   })
 
   it('only shows the active session’s questions', () => {

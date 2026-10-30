@@ -134,12 +134,16 @@ function QuestionCardFor({ request }: { request: ClarifyRequest }) {
     block?.querySelector<HTMLElement>('button, textarea')?.focus({ preventScroll: true })
   }, [])
 
-  // The anchor or the chip asked for the card: show it and focus the first open question.
+  // The anchor or the chip asked for the card: show it and focus the first open
+  // question. Only a new ask counts — coming back to the chat steals no focus.
+  const handledFocusTick = useRef(focus?.requestId === request.requestId ? focus.tick : 0)
+
   useEffect(() => {
-    if (!focus || focus.requestId !== request.requestId || minimized) {
+    if (!focus || focus.requestId !== request.requestId || minimized || focus.tick === handledFocusTick.current) {
       return
     }
 
+    handledFocusTick.current = focus.tick
     cardRef.current?.scrollIntoView?.({ block: 'nearest' })
     window.setTimeout(() => focusQuestion(null), 0)
   }, [focus, focusQuestion, minimized, request.requestId])
@@ -206,11 +210,14 @@ function QuestionCardFor({ request }: { request: ClarifyRequest }) {
     void send(answers.map(given => given ?? { response: '', state: 'skipped' }))
   }
 
+  // Both live inside the composer box (its measured surface), so the thread's
+  // clearance above the composer grows with them and the last message stays
+  // visible right above the questions.
   if (minimized) {
     return (
-      <div className="relative z-5 mx-1 mb-1.5 flex">
+      <div className="relative z-2 flex px-(--composer-surface-pad-x) pt-1.5">
         <button
-          className="inline-flex items-center gap-1.5 rounded-full border border-border/70 bg-[color-mix(in_srgb,var(--dt-card)_92%,transparent)] px-2.5 py-1 text-xs font-medium text-foreground shadow-xs transition-colors hover:bg-accent/60"
+          className="inline-flex items-center gap-1.5 rounded-full border border-border/70 bg-accent/40 px-2.5 py-0.5 text-xs font-medium text-foreground transition-colors hover:bg-accent/70"
           data-slot="question-chip"
           onClick={() => revealQuestionCard(request.requestId)}
           type="button"
@@ -225,11 +232,10 @@ function QuestionCardFor({ request }: { request: ClarifyRequest }) {
   return (
     <section
       aria-label={copy.title(questions.length)}
-      className="relative z-5 mx-1 mb-2 grid max-h-[min(60vh,36rem)] grid-rows-[auto_minmax(0,1fr)_auto] gap-3 rounded-xl border border-border/70 bg-[color-mix(in_srgb,var(--dt-card)_94%,transparent)] px-3 py-2.5 text-sm shadow-[0_0.25rem_1rem_color-mix(in_srgb,var(--foreground)_6%,transparent)] backdrop-blur-[0.75rem]"
+      className="relative z-2 grid max-h-[min(60vh,36rem)] grid-rows-[auto_minmax(0,1fr)_auto] gap-3 border-b border-border/60 px-3 pb-3 pt-2.5 text-sm"
       data-slot="question-card"
       ref={cardRef}
     >
-      <span aria-hidden className="arc-border" />
       <header className="flex items-center gap-2">
         <span
           aria-hidden
