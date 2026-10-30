@@ -198,6 +198,21 @@ def test_titles_are_clipped(agent):
     assert len(out[0]["ref"]["title"]) == sl.TITLE_MAX
 
 
+def test_secrets_in_titles_and_answers_are_redacted(agent):
+    token = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+    out = call(agent, OP + "pm_create_work_package", {"subject": f"Rotate {token}"},
+               wp(19, "Backlog", f"Rotate {token}"))
+    answer = json.dumps({"question": "Which token?", "user_response": token, "response_state": "answered",
+                         "resolved": True})
+    out += call(agent, "clarify", {"question": "Which token?"}, raw=answer, call_id="c2")
+    assert token not in json.dumps(out)
+
+
+def test_big_output_of_an_anonymous_call_is_not_parsed(monkeypatch):
+    monkeypatch.setattr(sl, "_payload", lambda result: pytest.fail("parsed"))
+    assert sl.derive("terminal", {"command": "cat big.log"}, "x" * 50_000) == []
+
+
 # --- persistence -------------------------------------------------------------
 def test_ledger_survives_compression_rotation(agent, db):
     call(agent, OP + "pm_get_work_package", {"id": "DEMO-10"}, wp(10, "In Progress"))

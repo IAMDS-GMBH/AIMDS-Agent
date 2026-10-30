@@ -45,6 +45,7 @@ DETAIL_MAX = 120
 STATUS_MAX = 80
 _MEMO_MAX = 1000
 _DELTAS_MAX = 32
+_ANSWER_MAX_CHARS = 8000  # a clarify answer is far smaller; bigger anonymous output is not parsed
 
 KINDS = ("ticket", "mail", "chat", "file", "note", "web", "artifact", "decision", "open")
 VERBS = ("create", "update", "delete", "send", "write", "read", "list", "search", "ask")
@@ -128,6 +129,19 @@ def _norm(key: Any) -> str:
 def _clip(value: Any, n: int) -> str:
     text = " ".join(str(value or "").split())
     return text if len(text) <= n else text[: max(0, n - 1)] + "…"
+
+
+def _text(value: Any, n: int) -> str:
+    """Free text (a title, an answer): secrets redacted, then clipped."""
+    text = str(value or "")
+    if text:
+        try:
+            from agent.redact import redact_sensitive_text
+
+            text = redact_sensitive_text(text, force=True)
+        except Exception:
+            pass
+    return _clip(text, n)
 
 
 def _scalar(value: Any) -> str:
@@ -244,7 +258,8 @@ def _ref(obj: Any) -> Dict[str, str]:
         for key in keys:
             value = _scalar(norm.get(key))
             if value:
-                ref[field_name] = _clip(value, _REF_LIMITS[field_name])
+                limit = _REF_LIMITS[field_name]
+                ref[field_name] = _text(value, limit) if field_name == "title" else _clip(value, limit)
                 break
     # ``id: "DEMO-12"`` names the item by its key (OpenProject, Jira accept both).
     if "key" not in ref and _KEYLIKE.match(ref.get("id", "")):
@@ -304,6 +319,16 @@ def _fingerprint(tool: str, args: Dict[str, Any]) -> str:
 def derive(name: str, args: Any, result: Any) -> List[Draft]:
     """Ledger drafts for one successful tool call; empty when nothing is worth keeping."""
     args = args if isinstance(args, dict) else {}
+    source, area, tool_part = _origin(name)
+    tool_tokens = _tokens(tool_part)
+    verb = _verb(tool_tokens, args)
+    kind = _kind(tool_tokens, area)
+    arg_ref = _ref(args)
+    if (kind is None and verb not in WRITE_VERBS and not arg_ref
+            and isinstance(result, str) and len(result) > _ANSWER_MAX_CHARS):
+        # Nothing in the name or arguments names an item; only a (small)
+        # clarify-shaped answer could still count — skip parsing big output.
+        return []
     payload = _payload(result)
     if _is_preview(args, payload):
         return []
@@ -311,24 +336,19 @@ def derive(name: str, args: Any, result: Any) -> List[Draft]:
 
     if _is_error_payload(payload):
         return []
-    source, area, tool_part = _origin(name)
 
     # A clarify-shaped answer: a decision when answered, an open question otherwise.
     if isinstance(payload, dict) and "response_state" in payload and "question" in payload:
-        question = _clip(payload.get("question") or args.get("question"), TITLE_MAX)
+        question = _text(payload.get("question") or args.get("question"), TITLE_MAX)
         if not question:
             return []
         answered = payload.get("resolved") is True
         return [Draft(
             kind="decision" if answered else "open", verb="ask", source=source, area=area, tool=name,
             ref={"title": question}, status=_status_value(payload.get("response_state")),
-            detail=_clip(payload.get("user_response"), DETAIL_MAX) if answered else "",
+            detail=_text(payload.get("user_response"), DETAIL_MAX) if answered else "",
         )]
 
-    tool_tokens = _tokens(tool_part)
-    verb = _verb(tool_tokens, args)
-    kind = _kind(tool_tokens, area)
-    arg_ref = _ref(args)
     if kind is None:
         if "path" in arg_ref:
             kind = "file"
