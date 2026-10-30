@@ -1,6 +1,7 @@
 export type GatewayEventName =
   | 'gateway.ready'
   | 'session.info'
+  | 'session.ledger'
   | 'message.start'
   | 'message.delta'
   | 'message.complete'

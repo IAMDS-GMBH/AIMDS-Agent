@@ -39,9 +39,9 @@ class M365Adapter(SourceAdapter):
         mail_top = int(cfg.get("mail_top", 15) or 15)
         start_iso = window.start.strftime("%Y-%m-%dT%H:%M:%S")
         end_iso = window.end.strftime("%Y-%m-%dT%H:%M:%S")
-        want_mail = window.kind in ("morning-brief", "weekly-review", "mail-check")
-        want_teams = window.kind in ("morning-brief", "weekly-review", "teams-check")
-        want_cal = window.kind in ("morning-brief", "weekly-review")
+        want_mail = window.kind in ("morning-brief", "weekly-review", "mail-check", "workspace")
+        want_teams = window.kind in ("morning-brief", "weekly-review", "teams-check", "workspace")
+        want_cal = window.kind in ("morning-brief", "weekly-review", "workspace")
         items: List[BriefItem] = []
         errors: List[str] = []
 

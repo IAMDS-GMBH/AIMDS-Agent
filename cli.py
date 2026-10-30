@@ -7503,6 +7503,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._show_usage()
         elif canonical == "insights":
             self._show_insights(cmd_original)
+        elif canonical == "notes":
+            self._show_session_notes()
+        elif canonical == "today":
+            self._show_work_feed(cmd_original)
         elif canonical == "copy":
             self._handle_copy_command(cmd_original)
         elif canonical == "debug":
@@ -8249,6 +8253,43 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 print(f"  ❌ Compression failed: {e}")
 
 
+
+    def _show_session_notes(self):
+        """Developer probe (AIS-797): the session ledger of this conversation.
+
+        Read from state.db by lineage, so it also works in the TUI's slash
+        worker, which has no live agent.
+        """
+        if not self._session_db:
+            print("(._.) No session database — the ledger is unavailable.")
+            return
+        from agent.session_ledger import format_entries, read_page
+
+        session_id = getattr(getattr(self, "agent", None), "session_id", None) or self.session_id
+        try:
+            page = read_page(self._session_db, session_id)
+        except Exception as exc:
+            print(f"(._.) Ledger unavailable: {exc}")
+            return
+        if not page["entries"]:
+            print("(._.) Nothing in the ledger yet — tool calls on tickets, mail, files or notes show up here.")
+            return
+        print(f"  Session ledger — lineage {page['lineage_root']}, {page['total']} entries")
+        for line in format_entries(page["entries"]):
+            print(f"  {line}")
+
+    def _show_work_feed(self, cmd_original: str = ""):
+        """Developer probe (AIS-797): the work feed; ``/today refresh`` skips the cache."""
+        from cron.workspace_feed import format_feed, get_feed
+
+        refresh = "refresh" in cmd_original.split()[1:]
+        try:
+            feed = get_feed(refresh=refresh)
+        except Exception as exc:
+            print(f"(._.) Work feed unavailable: {exc}")
+            return
+        for line in format_feed(feed):
+            print(f"  {line}")
 
     def _show_usage(self):
         """Rate limits + session token usage (when a live agent exists) + Nous credits.

@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:aimds-agent:contract:workspace_feed:1",
+  "title": "WorkspaceFeed",
+  "description": "The user's work across every active source (AIS-797): response of GET /api/workspace/feed. Collected LLM-free by the brief source adapters.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "generated_at", "window", "items", "sources"],
+  "properties": {
+    "v": { "const": 1, "description": "Contract version." },
+    "generated_at": { "type": "string", "description": "ISO 8601 time the sources were read." },
+    "cached": { "type": "boolean", "description": "Served from the cache instead of a fresh read." },
+    "age_s": { "type": "number", "minimum": 0, "description": "Seconds since generated_at." },
+    "window": { "$ref": "#/$defs/FeedWindow" },
+    "items": { "type": "array", "items": { "$ref": "#/$defs/FeedItem" } },
+    "sources": { "type": "array", "items": { "$ref": "#/$defs/FeedSourceStatus" } }
+  },
+  "$defs": {
+    "FeedWindow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "today", "preview_day", "start", "end"],
+      "properties": {
+        "kind": { "const": "workspace" },
+        "today": { "type": "string", "description": "YYYY-MM-DD" },
+        "preview_day": { "type": "string", "description": "Next working day, YYYY-MM-DD." },
+        "start": { "type": "string", "description": "ISO 8601" },
+        "end": { "type": "string", "description": "ISO 8601" }
+      }
+    },
+    "FeedItemKind": {
+      "enum": ["event", "mail", "task", "ticket", "chat", "worklog", "note"]
+    },
+    "FeedItem": {
+      "description": "One normalised item (cron.brief_sources.base.BriefItem).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "source", "kind", "key", "title", "status", "mine"],
+      "properties": {
+        "id": { "type": "string", "description": "source:kind:key" },
+        "source": { "type": "string", "description": "Adapter name: m365, jira, openproject, tempo, workspace." },
+        "kind": { "$ref": "#/$defs/FeedItemKind" },
+        "key": { "type": "string" },
+        "title": { "type": "string" },
+        "status": { "type": "string" },
+        "priority": { "type": "string" },
+        "prev_status": { "type": ["string", "null"], "description": "Status before the last change the store saw." },
+        "status_changed_at": { "type": ["string", "null"], "description": "ISO 8601 time of that change." },
+        "first_seen_at": { "type": ["string", "null"] },
+        "due_at": { "type": "string" },
+        "starts_at": { "type": "string" },
+        "ends_at": { "type": "string" },
+        "updated_at": { "type": "string" },
+        "url": { "type": "string" },
+        "mine": { "type": "boolean" },
+        "extra": { "type": "object", "description": "Adapter-specific display fields (sender name, location, hours); not part of the stable contract." }
+      }
+    },
+    "FeedSourceStatus": {
+      "description": "Per-source outcome (cron.brief_sources.base.SourceStatus).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "label", "status", "detail", "count", "partial", "unavailable"],
+      "properties": {
+        "name": { "type": "string" },
+        "label": { "type": "string", "description": "Service name as the user knows it." },
+        "status": { "enum": ["active", "skipped", "failed"] },
+        "detail": { "type": "string" },
+        "count": { "type": "integer", "minimum": 0 },
+        "partial": { "type": "boolean", "description": "Active, but some sub-sources failed." },
+        "unavailable": { "type": "boolean", "description": "Set up by the user but not usable right now — the only skip worth showing." }
+      }
+    }
+  }
+}

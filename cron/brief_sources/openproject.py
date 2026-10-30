@@ -15,6 +15,10 @@ AIS-711: both answer for every readable project when ``project`` is left out
 filtered listing on either server. The per-project loop over
 ``pm_list_projects`` it replaces timed out the morning brief on the listing
 alone and cost one request per project.
+
+AIS-797: for the work feed (``workspace`` window) it also lists the user's
+open work packages — one ``pm_list_work_packages`` call, assignee "me",
+``open_only`` — next to today's hours.
 """
 
 from __future__ import annotations
@@ -23,13 +27,17 @@ import re
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
-from cron.brief_sources.base import BriefItem, SourceAdapter, SourceContext, SourceStatus, Window, dispatch_json, first_list
+from cron.brief_sources.base import (
+    BriefItem, SourceAdapter, SourceContext, SourceStatus, Window, clip, dispatch_json, first_list,
+)
 from tools.openproject_names import SUITE, openproject_kind, openproject_tools, server_for
 
 SERVER = "OpenProjectMCP"
 LIST = "pm_list_time_entries"
+WORK_PACKAGES = "pm_list_work_packages"
 PAGE_SIZE = 200  # the contract's ceiling
 MAX_PAGES = 25
+OPEN_LIMIT = 30  # the feed's open work packages: one page
 
 _ISO_DURATION = re.compile(r"P(?:(\d+(?:\.\d+)?)D)?(?:T(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?)?")
 
@@ -51,11 +59,17 @@ def entry_hours(entry: Dict[str, Any]) -> float:
         return 0.0
 
 
+def _name(value: Any) -> str:
+    if isinstance(value, dict):
+        return str(value.get("name") or value.get("title") or "")
+    return str(value or "")
+
+
 class OpenProjectAdapter(SourceAdapter):
     name = "openproject"
     server = SERVER  # local default; the Suite is resolved per call (AIS-483)
     required_tools = (LIST,)
-    kinds = ("morning-brief", "weekly-review")
+    kinds = ("morning-brief", "weekly-review", "workspace")
 
     def resolve(self, ctx: SourceContext, suffix: str) -> Optional[str]:
         """The Suite's tool when both are registered, visible and connected,
@@ -98,8 +112,47 @@ class OpenProjectAdapter(SourceAdapter):
         return entries
 
     def fetch(self, window: Window, ctx: SourceContext) -> List[BriefItem]:
+        if window.kind != "workspace":
+            return self._worklogs(window, ctx)
+        items: List[BriefItem] = []
+        errors: List[str] = []
+        for label, part in (("work packages", self._open_work_packages), ("time entries", self._worklogs)):
+            try:
+                items += part(window, ctx)
+            except Exception as exc:
+                errors.append(f"{label}: {clip(exc, 60)}")
+        if len(errors) == 2:
+            raise RuntimeError("; ".join(errors))
+        if errors:
+            self.partial_errors = errors  # surfaced by the collector in the sources line
+        return items
+
+    def _open_work_packages(self, window: Window, ctx: SourceContext) -> List[BriefItem]:
+        tool = self.resolve(ctx, WORK_PACKAGES)
+        if tool is None:
+            return []
+        data = dispatch_json(ctx, tool, {"assignee": "me", "open_only": True, "limit": OPEN_LIMIT})
+        items: List[BriefItem] = []
+        for raw in first_list(data, "work_packages", "results"):
+            if not isinstance(raw, dict):
+                continue
+            key = str(raw.get("key") or raw.get("display_id") or raw.get("id") or "")
+            if not key:
+                continue
+            items.append(BriefItem(
+                source="openproject", kind="ticket", key=key, title=clip(raw.get("subject"), 90),
+                status=_name(raw.get("status")), priority=_name(raw.get("priority")),
+                due_at=str(raw.get("due_date") or raw.get("date") or "")[:10],
+                updated_at=str(raw.get("updated_at") or ""), url=str(raw.get("url") or ""),
+                extra={"project": clip(_name(raw.get("project")), 40), "type": _name(raw.get("type"))},
+            ))
+        return items
+
+    def _worklogs(self, window: Window, ctx: SourceContext) -> List[BriefItem]:
         tool = self.resolve(ctx, LIST)
-        if window.kind == "morning-brief":
+        if window.kind == "workspace":
+            start = end = window.today
+        elif window.kind == "morning-brief":
             start = end = window.last_working_day
         else:
             start, end = window.week_start, min(window.week_end, window.today)

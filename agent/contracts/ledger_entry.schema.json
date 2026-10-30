@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:aimds-agent:contract:ledger_entry:1",
+  "title": "LedgerEntry",
+  "description": "One thing a session did, derived deterministically from a tool call (AIS-797). Identifiers and short titles only, never bodies or mail text.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "seq", "ts", "kind", "verb", "source", "area", "tool", "ref", "lineage_root", "session_id"],
+  "properties": {
+    "v": { "const": 1, "description": "Contract version." },
+    "seq": { "type": "integer", "minimum": 0, "description": "Monotonic within the ledger; pass the last one as `after` to read only newer entries." },
+    "ts": { "type": "number", "description": "Unix epoch seconds (same clock as message timestamps)." },
+    "kind": { "$ref": "#/$defs/LedgerKind" },
+    "verb": { "$ref": "#/$defs/LedgerVerb" },
+    "source": { "type": "string", "maxLength": 120, "description": "MCP server or toolset that served the call." },
+    "area": { "type": "string", "maxLength": 120, "description": "Most specific service behind the call, e.g. the upstream server a Suite tool proxies." },
+    "tool": { "type": "string", "maxLength": 200, "description": "Registered tool name." },
+    "ref": { "$ref": "#/$defs/LedgerRef" },
+    "status": { "type": "string", "maxLength": 80, "description": "Status of the referenced item as seen after the call." },
+    "status_from": { "type": "string", "maxLength": 80, "description": "Last status the ledger knew before a write changed it." },
+    "status_to": { "type": "string", "maxLength": 80, "description": "Status a write moved the item to." },
+    "count": { "type": "integer", "minimum": 0, "description": "Number of records a list or search returned." },
+    "detail": { "type": "string", "maxLength": 120, "description": "Short answer of a decision (clarify), clipped." },
+    "lineage_root": { "type": "string", "description": "Root session of the compression lineage; the ledger key." },
+    "session_id": { "type": "string", "description": "Session segment the call ran in." },
+    "turn_id": { "type": "string", "description": "Turn the call belongs to." },
+    "tool_call_id": { "type": "string", "description": "Tool call id; matches tool_call_id of the tool message in the transcript." }
+  },
+  "$defs": {
+    "LedgerKind": {
+      "description": "What the entry is about.",
+      "enum": ["ticket", "mail", "chat", "file", "note", "web", "artifact", "decision", "open"]
+    },
+    "LedgerVerb": {
+      "description": "What the call did, normalised from the tool-name tokens.",
+      "enum": ["create", "update", "delete", "send", "write", "read", "list", "search", "ask"]
+    },
+    "LedgerRef": {
+      "description": "Identifiers of the item an entry is about; at most one item per entry.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "key": { "type": "string", "maxLength": 120, "description": "Human key such as a ticket key." },
+        "id": { "type": "string", "maxLength": 200 },
+        "title": { "type": "string", "maxLength": 120, "description": "Title or subject, clipped." },
+        "url": { "type": "string", "maxLength": 500 },
+        "path": { "type": "string", "maxLength": 500 },
+        "message_id": { "type": "string", "maxLength": 300 }
+      }
+    },
+    "LedgerPage": {
+      "description": "Response of GET /api/sessions/{id}/ledger and payload of the session.ledger gateway event (delta).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v", "session_id", "lineage_root", "entries", "total"],
+      "properties": {
+        "v": { "const": 1 },
+        "session_id": { "type": "string", "description": "Session the request or event named." },
+        "lineage_root": { "type": "string" },
+        "entries": { "type": "array", "items": { "$ref": "#" }, "description": "Oldest first." },
+        "total": { "type": "integer", "minimum": 0, "description": "Entries the ledger holds for the lineage." }
+      }
+    }
+  }
+}

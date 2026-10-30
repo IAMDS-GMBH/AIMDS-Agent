@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:aimds-agent:contract:feedback_signature:1",
+  "title": "FeedbackSignature",
+  "description": "A recurring tool problem, counted for automatic quality reports. Signatures only: no arguments, results or other content.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["v", "server", "tool", "signal", "count", "versions"],
+  "properties": {
+    "v": { "const": 1, "description": "Contract version." },
+    "server": { "type": "string", "maxLength": 120, "description": "MCP server or toolset." },
+    "tool": { "type": "string", "maxLength": 200 },
+    "signal": { "$ref": "#/$defs/FeedbackSignal" },
+    "count": { "type": "integer", "minimum": 1 },
+    "versions": { "type": "array", "items": { "type": "string", "maxLength": 40 }, "description": "Agent versions that saw the signal." }
+  },
+  "$defs": {
+    "FeedbackSignal": {
+      "enum": ["error", "timeout", "oversized", "missing_capability", "repeated_workaround", "parent_redo"]
+    }
+  }
+}

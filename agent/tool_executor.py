@@ -133,6 +133,16 @@ def _maybe_persist_blocking_clarify_open_question(
         logger.debug("Failed to persist clarify open question", exc_info=True)
 
 
+def _record_session_ledger(agent, name, args, result, is_error, tool_call_id) -> None:
+    """Feed the session ledger (AIS-797); the gateway emits the delta on tool.complete."""
+    try:
+        from agent.session_ledger import record_tool_call
+
+        record_tool_call(agent, name, args, result, is_error=bool(is_error), tool_call_id=tool_call_id or "")
+    except Exception as exc:
+        logger.debug("session ledger record failed: %s", exc)
+
+
 def _ra():
     """Lazy reference to ``run_agent`` so patches like ``run_agent._set_interrupt`` work."""
     import run_agent
@@ -808,6 +818,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     function_name=function_name,
                     function_args=function_args,
                     function_result=function_result,
+                )
+                _record_session_ledger(
+                    agent, function_name, function_args, function_result, is_error, getattr(tc, "id", ""),
                 )
 
             if not blocked and agent.tool_progress_callback:
@@ -1542,6 +1555,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 function_name=function_name,
                 function_args=function_args,
                 function_result=function_result,
+            )
+            _record_session_ledger(
+                agent, function_name, function_args, function_result, _is_error_result,
+                getattr(tool_call, "id", ""),
             )
 
         if not _execution_blocked and agent.tool_progress_callback:
