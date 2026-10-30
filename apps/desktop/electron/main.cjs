@@ -28,6 +28,7 @@ const { pathToFileURL } = require('node:url')
 const { execFileSync, spawn } = require('node:child_process')
 const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = require('./bootstrap-platform.cjs')
 const { runBootstrap } = require('./bootstrap-runner.cjs')
+const { watchFileForChanges } = require('./file-watch.cjs')
 const {
   WINDOW_BUTTON_POSITION,
   nativeOverlayWidth,
@@ -62,7 +63,7 @@ const {
 const { ensureVaultAccess } = require('./vault-access.cjs')
 const { buildSessionWindowUrl, createSessionWindowRegistry } = require('./session-windows.cjs')
 const {
-  badgeOverlaySvgDataUrl,
+  badgeOverlayPng,
   buildNotificationOptions,
   normalizeBadgeCount,
   shouldFlashFrame
@@ -4303,24 +4304,24 @@ function sendPreviewFileChanged(payload) {
 
 async function watchPreviewFile(rawUrl) {
   const filePath = await filePathFromPreviewUrl(rawUrl)
-  const watchDir = path.dirname(filePath)
-  const targetName = path.basename(filePath)
   const id = crypto.randomBytes(12).toString('base64url')
   let timer = null
-  const watcher = fs.watch(watchDir, (_eventType, filename) => {
-    const changedName = filename ? path.basename(String(filename)) : ''
-
-    if (changedName && changedName !== targetName) {
-      return
+  // Directory watch with a stat-polling fallback where the OS has no watcher
+  // to give (Linux inotify limits, network mounts) — AIS-798.
+  const watcher = watchFileForChanges(
+    filePath,
+    () => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => {
+        timer = null
+        if (!fileExists(filePath)) return
+        sendPreviewFileChanged({ id, path: filePath, url: pathToFileURL(filePath).toString() })
+      }, PREVIEW_WATCH_DEBOUNCE_MS)
+    },
+    {
+      onFallback: error => rememberLog(`[preview] file watch falls back to polling: ${error?.code || error?.message || error}`)
     }
-
-    if (timer) clearTimeout(timer)
-    timer = setTimeout(() => {
-      timer = null
-      if (!fileExists(filePath)) return
-      sendPreviewFileChanged({ id, path: filePath, url: pathToFileURL(filePath).toString() })
-    }, PREVIEW_WATCH_DEBOUNCE_MS)
-  })
+  )
 
   previewWatchers.set(id, {
     close: () => {
@@ -7065,6 +7066,7 @@ ipcMain.handle('hermes:api', async (_event, request) => {
 // into the renderer (AIS-305): focus the main window and hand it the action
 // (`{kind:'cron-artifact', jobId, …}`), which opens the artifact.
 const liveNotifications = new Set()
+let notificationsUnsupportedLogged = false
 
 function sendNotificationAction(action) {
   if (!mainWindow || mainWindow.isDestroyed()) return
@@ -7077,8 +7079,16 @@ function sendNotificationAction(action) {
 }
 
 ipcMain.handle('hermes:notify', (_event, payload) => {
-  if (!Notification.isSupported()) return false
-  const { action, options } = buildNotificationOptions(payload)
+  if (!Notification.isSupported()) {
+    // Linux without a notification daemon (libnotify finds no D-Bus server).
+    // Logged once; the renderer keeps its in-app notice either way.
+    if (!notificationsUnsupportedLogged) {
+      notificationsUnsupportedLogged = true
+      rememberLog('[notify] native notifications unsupported on this desktop')
+    }
+    return false
+  }
+  const { action, options } = buildNotificationOptions(payload, { icon: IS_MAC ? null : getAppIconPath() })
   const notification = new Notification(options)
   liveNotifications.add(notification)
   const release = () => liveNotifications.delete(notification)
@@ -7115,7 +7125,7 @@ function applyUnreadBadge(nextCount) {
   if (!mainWindow || mainWindow.isDestroyed()) return
   try {
     if (nextCount > 0) {
-      const image = nativeImage.createFromDataURL(badgeOverlaySvgDataUrl(nextCount))
+      const image = nativeImage.createFromBuffer(badgeOverlayPng(nextCount), { scaleFactor: 2 })
       mainWindow.setOverlayIcon(image, `${nextCount} unread`)
       if (shouldFlashFrame(previous, nextCount, mainWindow.isFocused())) mainWindow.flashFrame(true)
     } else {
