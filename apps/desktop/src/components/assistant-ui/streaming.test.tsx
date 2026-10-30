@@ -800,3 +800,107 @@ describe('assistant-ui streaming renderer', () => {
     expect(Boolean(thinkingDisclosure?.contains(todoPanel as Node))).toBe(false)
   })
 })
+
+// AIS-789: a turn that starts on its own vs. a message the user just sent.
+function TurnStartHarness({ step }: { step: 'idle' | 'run-again' | 'user-sent' }) {
+  const followUp: ThreadMessage = { ...userMessage(), content: [{ type: 'text', text: 'And the next one?' }], id: 'user-2' }
+
+  const messages =
+    step === 'user-sent'
+      ? [userMessage(), assistantMessage('complete response', false), followUp]
+      : [userMessage(), assistantMessage('complete response', false)]
+
+  const runtime = useExternalStoreRuntime<ThreadMessage>({
+    messages,
+    isRunning: step !== 'idle',
+    onNew: async () => {}
+  })
+
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      <Thread />
+    </AssistantRuntimeProvider>
+  )
+}
+
+describe('calmer thread scrolling (AIS-789)', () => {
+  beforeEach(() => {
+    resizeObservers.clear()
+  })
+
+  async function parkedViewport(container: HTMLElement) {
+    const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
+    const viewport = content.parentElement as HTMLDivElement
+    const box = { scrollHeight: 1_000 }
+
+    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 200 })
+    Object.defineProperty(viewport, 'scrollHeight', { configurable: true, get: () => box.scrollHeight })
+
+    await wait(80)
+    await act(async () => {
+      viewport.scrollTop = 800
+      fireEvent.scroll(viewport)
+    })
+    await wait(0)
+
+    return { box, viewport }
+  }
+
+  it('releases the pin on a keyboard scroll-up while the answer streams', async () => {
+    const { container } = render(<StreamingHarness />, { wrapper })
+    const { box, viewport } = await parkedViewport(container)
+
+    await act(async () => {
+      fireEvent.keyDown(viewport, { key: 'PageUp' })
+      // The content grows in the same frame, so the scroll delta alone
+      // cannot tell the key press from layout.
+      box.scrollHeight = 1_100
+      viewport.scrollTop = 420
+      fireEvent.scroll(viewport)
+    })
+
+    box.scrollHeight = 1_300
+
+    await act(async () => {
+      for (const observer of resizeObservers) {
+        observer.trigger(1_300)
+      }
+    })
+    await wait(300)
+
+    expect(viewport.scrollTop).toBe(420)
+  })
+
+  it('does not pull a reader who scrolled up down when a turn starts on its own', async () => {
+    const { container, rerender } = render(<TurnStartHarness step="idle" />, { wrapper })
+    const { viewport } = await parkedViewport(container)
+
+    await act(async () => {
+      fireEvent.wheel(viewport, { deltaY: -120 })
+      viewport.scrollTop = 300
+      fireEvent.scroll(viewport)
+    })
+
+    rerender(<TurnStartHarness step="run-again" />)
+    await wait(300)
+
+    expect(viewport.scrollTop).toBe(300)
+  })
+
+  it('brings a message the user just sent into view, even when scrolled up', async () => {
+    const { container, rerender } = render(<TurnStartHarness step="idle" />, { wrapper })
+    const { viewport } = await parkedViewport(container)
+
+    await act(async () => {
+      fireEvent.wheel(viewport, { deltaY: -120 })
+      viewport.scrollTop = 300
+      fireEvent.scroll(viewport)
+    })
+
+    rerender(<TurnStartHarness step="user-sent" />)
+
+    await waitFor(() => {
+      expect(viewport.scrollTop).toBe(800)
+    })
+  })
+})

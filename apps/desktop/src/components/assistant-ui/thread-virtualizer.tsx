@@ -14,11 +14,14 @@ import {
 
 import { setMutableRef } from '@/lib/mutable-ref'
 import { createSmoothScroller, type SmoothScrollController } from '@/lib/smooth-scroll'
+import { AT_BOTTOM_THRESHOLD, isScrollUpKey, threadScrollTarget } from '@/lib/thread-follow'
 import { setThreadScrolledUp } from '@/store/thread-scroll'
 
 const ESTIMATED_ITEM_HEIGHT = 220
 const OVERSCAN = 4
-const AT_BOTTOM_THRESHOLD = 4
+// Width of the scroller's right edge that counts as its scrollbar (overlay
+// scrollbars on macOS take no layout space, so clientWidth cannot tell).
+const SCROLLBAR_HIT_PX = 16
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 
@@ -119,37 +122,34 @@ const VirtualizedThreadInner: FC<VirtualizedThreadProps> = ({
     // `observeElementRect` reports the real layout (it overrides this).
     initialRect: { height: 600, width: 800 },
     overscan: OVERSCAN,
-    // When the virtualizer adjusts scroll due to item measurement changes,
-    // skip the adjustment if the user is at the bottom. Our ResizeObserver +
-    // pinToBottom loop handles scroll anchoring; letting the virtualizer also
-    // adjust creates a feedback loop where the two fight each other,
-    // producing visible rubber-banding (the view snaps to the composer
-    // then jumps back up).
-    scrollToFn: (offset, _options, instance) => {
+    // Measurement corrections keep the text in place when a turn above the
+    // viewport changes height (offset + adjustments, see threadScrollTarget).
+    // While parked at the bottom they are skipped: the ResizeObserver +
+    // pinToBottom loop owns the position there, and letting both adjust
+    // makes them fight (the view snaps to the composer, then jumps back up).
+    scrollToFn: (offset, options, instance) => {
       const el = instance.scrollElement
 
       if (!el) {
         return
       }
 
-      if (stickyBottomRef.current) {
-        const maxScroll = el.scrollHeight - el.clientHeight
-        const distFromBottom = maxScroll - el.scrollTop
+      const target = threadScrollTarget(offset, options.adjustments, el, stickyBottomRef.current)
 
-        if (distFromBottom <= AT_BOTTOM_THRESHOLD && offset < maxScroll) {
-          return
-        }
+      if (target !== null) {
+        ;(el as HTMLElement).scrollTo(0, target)
       }
-
-      ;(el as HTMLElement).scrollTo(0, offset)
     }
   })
+
+  const userTurnCount = useMemo(() => groups.filter(group => group.kind === 'turn').length, [groups])
 
   useThreadScrollAnchor({
     contentRef,
     enabled: !renderEmpty,
     groupCount: groups.length,
     isRunning,
+    userTurnCount,
     scrollerRef,
     sessionKey: sessionKey ?? null,
     stickyBottomRef,
@@ -245,6 +245,8 @@ interface ScrollAnchorOptions {
   scrollerRef: React.RefObject<HTMLDivElement | null>
   sessionKey: string | null
   stickyBottomRef: React.MutableRefObject<boolean>
+  /** Turns that start with a user message; grows when the user sends one. */
+  userTurnCount: number
   virtualizer: Virtualizer<HTMLDivElement, Element>
 }
 
@@ -256,6 +258,7 @@ function useThreadScrollAnchor({
   scrollerRef,
   sessionKey,
   stickyBottomRef,
+  userTurnCount,
   virtualizer
 }: ScrollAnchorOptions) {
   // `stickyBottomRef` = parked at bottom, content growth should follow. Cleared on
@@ -421,14 +424,36 @@ function useThreadScrollAnchor({
       }
     }
 
+    // AIS-789: keyboard and scrollbar scrolling release the pin like the
+    // wheel. While a turn streams the content grows every frame, so the
+    // scroll-delta check above cannot tell them from layout, and the follow
+    // loop pulled the reader back to the bottom.
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (isScrollUpKey(event)) {
+        disarm()
+      }
+    }
+
+    const onPointerDown = (event: PointerEvent) => {
+      // Only the scrollbar: the pointer is on the scroller itself (not its
+      // content) at its right edge — the column gutter sits there too.
+      if (event.target === el && event.offsetX >= el.clientWidth - SCROLLBAR_HIT_PX) {
+        disarm()
+      }
+    }
+
     el.addEventListener('scroll', onScroll, { passive: true })
     el.addEventListener('wheel', onWheel, { passive: true })
     el.addEventListener('touchmove', disarm, { passive: true })
+    el.addEventListener('keydown', onKeyDown)
+    el.addEventListener('pointerdown', onPointerDown, { passive: true })
 
     return () => {
       el.removeEventListener('scroll', onScroll)
       el.removeEventListener('wheel', onWheel)
       el.removeEventListener('touchmove', disarm)
+      el.removeEventListener('keydown', onKeyDown)
+      el.removeEventListener('pointerdown', onPointerDown)
     }
   }, [scrollerRef, stickyBottomRef])
 
@@ -525,5 +550,28 @@ function useThreadScrollAnchor({
     prevIsRunningForLayoutRef.current = isRunning
   }, [isRunning])
 
-  useAuiEvent('thread.runStart', jumpToBottom)
+  // AIS-789: a message the user just sent always comes into view, even when
+  // they had scrolled up to read. A turn that starts on its own (a
+  // continuation, a retry) brings the view down only while parked at the
+  // bottom — reading further up is never interrupted. Counting user turns,
+  // not ids: hydrating the stored transcript swaps message ids, and that
+  // must not count as a new message.
+  const prevUserTurnCountRef = useRef(userTurnCount)
+  useLayoutEffect(() => {
+    const userSentMessage = userTurnCount > prevUserTurnCountRef.current
+
+    prevUserTurnCountRef.current = userTurnCount
+
+    if (enabled && userSentMessage) {
+      jumpToBottom()
+    }
+  }, [enabled, jumpToBottom, userTurnCount])
+
+  const followRunStart = useCallback(() => {
+    if (stickyBottomRef.current) {
+      jumpToBottom()
+    }
+  }, [jumpToBottom, stickyBottomRef])
+
+  useAuiEvent('thread.runStart', followRunStart)
 }
