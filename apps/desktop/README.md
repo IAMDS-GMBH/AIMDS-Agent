@@ -136,6 +136,27 @@ npm run lint
 npm run test:desktop:all
 ```
 
+### Screenshot check (Windows, macOS, Linux)
+
+The app must look the same on every OS (AIS-798), so CI (`.github/workflows/desktop-screenshots.yml`) renders key views on macOS, Linux and the self-hosted Windows runner and compares them with committed baselines in `screenshots/baselines/<darwin|linux|win32>/`. It builds the renderer, serves it with `vite preview` and drives it with Playwright's headless Chromium. `screenshots/fake-desktop.ts` stands in for the Electron bridge and the backend gateway and answers from `screenshots/fixtures.ts` — no backend, fixed clock, seeded randomness, bundled fonts only. Up to 0.1 % of the pixels may differ (anti-aliasing noise); more fails the job.
+
+```bash
+npx playwright install --only-shell chromium   # once
+npm run screenshots          # compare against this OS's baselines
+npm run screenshots:update   # re-record this OS's baselines
+SCREENSHOTS_DEBUG=1 npm run screenshots   # print every bridge/REST/RPC call and page error
+```
+
+**Add a view:** one line in `screenshots/views.ts` (name, hash route, a selector that is visible once the view has rendered); put any data it needs into `screenshots/fixtures.ts` (`SCREENSHOTS_DEBUG=1` lists the calls the view makes), then record its baselines.
+
+**Update baselines after an intended UI change:**
+
+1. Re-record your own OS locally with `npm run screenshots:update`.
+2. For the other OSes, use the failed PR run: each failing OS uploads `screenshot-diff-<OS>` (expected / actual / diff) and `screenshot-baselines-<OS>` (all baselines of that OS, recorded from the PR). Alternatively run the workflow by hand (*Actions → Desktop Screenshots → Run workflow* on your branch, `update_baselines` checked).
+3. Review the diff, unzip each `screenshot-baselines-<OS>` into `screenshots/baselines/`, commit, push.
+
+Never update a baseline to make an unintended change pass.
+
 ### Troubleshooting
 
 Boot logs land in `HERMES_HOME/logs/desktop.log` (includes backend output and recent Python tracebacks) — check it first if the app reports a boot failure.

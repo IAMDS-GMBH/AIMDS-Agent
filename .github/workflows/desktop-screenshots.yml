@@ -1,0 +1,172 @@
+# .github/workflows/desktop-screenshots.yml
+#
+# AIS-798: the desktop must look the same on Windows, macOS and Linux. Every
+# PR that touches the desktop renders key views on all three OSes and compares
+# them against committed per-OS baselines (apps/desktop/screenshots/). A diff
+# above the tolerance fails the job and uploads the diff plus a ready-to-commit
+# set of new baselines.
+#
+# Why the renderer in headless Chromium and not Electron: the self-hosted
+# Windows runner runs as a service without an interactive desktop, where a
+# windowed Electron cannot paint reliably, and Linux would need Xvfb. The views
+# are pure renderer output (the OS-painted window controls are not in any
+# capture anyway), so the built renderer in Playwright's Chromium — same Blink
+# and Skia as Electron, same bundled fonts — with a fake desktop bridge and
+# fixtures is the deterministic choice on every runner.
+#
+# Updating baselines: see apps/desktop/README.md ("Screenshot check").
+name: Desktop Screenshots
+
+on:
+  pull_request:
+    paths:
+      - 'apps/desktop/**'
+      - 'apps/shared/**'
+      - 'package-lock.json'
+      - '.github/workflows/desktop-screenshots.yml'
+  # AIS-480: no re-run after merge; the PR run checked the same tree.
+  workflow_dispatch:
+    inputs:
+      update_baselines:
+        description: 'Record new baselines on every OS (uploaded as artifacts) instead of comparing'
+        type: boolean
+        default: false
+
+concurrency:
+  group: desktop-screenshots-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  screenshots:
+    name: Screenshots (${{ matrix.os }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macOS
+            runner: macos-latest
+          - os: Linux
+            runner: ubuntu-latest
+          # The self-hosted Windows build VM (same label as the release build).
+          - os: Windows
+            runner: self-hosted-windows
+    env:
+      # The screenshot check never starts Electron.
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Same as the release build: the persistent Windows workspace can be
+      # owned by another account, and the runner instances must not share one
+      # npm cache (AIS-400).
+      - name: Trust the persistent workspace for git (self-hosted Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          {
+            echo "GIT_CONFIG_COUNT=1"
+            echo "GIT_CONFIG_KEY_0=safe.directory"
+            echo "GIT_CONFIG_VALUE_0=*"
+          } >> "$GITHUB_ENV"
+
+      - name: Use a per-instance npm cache (self-hosted Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $cache = Join-Path (Split-Path $env:RUNNER_WORKSPACE -Parent) 'npm-cache'
+          Add-Content -Path $env:GITHUB_ENV -Value "npm_config_cache=$cache" -Encoding ascii
+          Write-Host "npm cache: $cache"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          # GitHub npm cache only on the GitHub-hosted macOS runner, as in the
+          # release build (DEVOPS-108: PR caches fill the 10 GB repo limit).
+          cache: ${{ runner.os == 'macOS' && 'npm' || '' }}
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        shell: bash
+        working-directory: apps/desktop
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            npx playwright install --with-deps --only-shell chromium
+          else
+            npx playwright install --only-shell chromium
+          fi
+
+      - name: Compare screenshots
+        id: compare
+        if: inputs.update_baselines != true
+        working-directory: apps/desktop
+        env:
+          CI: 'true'
+        run: npm run screenshots
+
+      # A failed comparison (or a dispatch with update_baselines) records the
+      # current rendering as this OS's baselines, ready to review and commit.
+      - name: Record baselines
+        if: always() && (inputs.update_baselines == true || steps.compare.outcome == 'failure')
+        working-directory: apps/desktop
+        env:
+          CI: 'true'
+        run: npx playwright test -c screenshots/playwright.config.ts --update-snapshots=all
+
+      - name: Upload diff report
+        if: always() && steps.compare.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: screenshot-diff-${{ matrix.os }}
+          path: |
+            apps/desktop/test-results/screenshots/
+            apps/desktop/playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload recorded baselines
+        if: always() && (inputs.update_baselines == true || steps.compare.outcome == 'failure')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: screenshot-baselines-${{ matrix.os }}
+          # Unzip into apps/desktop/screenshots/baselines/ to apply.
+          path: apps/desktop/screenshots/baselines/
+          if-no-files-found: error
+          retention-days: 14
+
+  # AIS-798: Linux clients build the desktop app themselves on install and on
+  # every update (there is no prebuilt Linux release asset), so a PR must not
+  # break that build. Same command install.sh runs.
+  linux-pack:
+    name: Desktop build (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build the unpacked Linux app
+        working-directory: apps/desktop
+        run: npm run pack
+
+      - name: Check the unpacked app
+        working-directory: apps/desktop/release/linux-unpacked
+        run: |
+          set -euo pipefail
+          test -f resources/app.asar
+          test -f chrome-sandbox
+          exe="$(find . -maxdepth 1 -type f -perm -u+x ! -name '*.so*' ! -name chrome-sandbox ! -name chrome_crashpad_handler | head -1)"
+          test -n "$exe"
+          echo "Linux desktop app: $exe ($(du -sh . | cut -f1))"

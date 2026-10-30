@@ -194,3 +194,7 @@ Mirrors the repo TS style (see root `AGENTS.md`):
 - [ ] Flat — no card-in-card, no gratuitous row dividers?
 - [ ] Both locales (`en`, `de`) updated for any new/changed string?
 - [ ] `cursor-pointer`, focus ring, and `Esc`-to-close behave?
+- [ ] Bundled fonts, `isModKey` / `formatCombo` — nothing OS-specific?
+- [ ] Screenshot check green on macOS, Linux and Windows, or its baselines
+      re-recorded on purpose (README → "Screenshot check"); a new view is one
+      line in `screenshots/views.ts`?

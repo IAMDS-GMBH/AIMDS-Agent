@@ -37,11 +37,13 @@
     "test:desktop:fresh": "node scripts/test-desktop.mjs fresh",
     "test:desktop:platforms": "node --test electron/backend-port.test.cjs electron/boot-signatures.test.cjs electron/bootstrap-platform.test.cjs electron/hardening.test.cjs electron/backend-probes.test.cjs electron/bootstrap-runner.test.cjs electron/incident-report.test.cjs electron/install-id.test.cjs electron/suite-key-hash.test.cjs electron/connection-config.test.cjs electron/gateway-ws-probe.test.cjs electron/oauth-net-request.test.cjs electron/desktop-uninstall.test.cjs electron/session-windows.test.cjs electron/titlebar.test.cjs electron/file-watch.test.cjs electron/notifications.test.cjs electron/workspace-cwd.test.cjs electron/preview-path.test.cjs electron/support-cases.test.cjs electron/clipboard-compat.test.cjs electron/fs-read-dir.test.cjs electron/git-root.test.cjs electron/windows-child-process.test.cjs electron/update-remote.test.cjs electron/update-channels.test.cjs electron/release-notes.test.cjs electron/update-apply.test.cjs electron/update-swap.test.cjs electron/nightly-restart.test.cjs electron/suite-auth.test.cjs electron/boot-guard.test.cjs electron/vault-access.test.cjs electron/vscode-marketplace.test.cjs scripts/assert-dist-built.test.cjs scripts/before-pack.test.cjs",
     "typecheck": "tsc -p . --noEmit",
-    "lint": "eslint src/ electron/",
-    "lint:fix": "eslint src/ electron/ --fix",
-    "fmt": "prettier --write 'src/**/*.{ts,tsx}' 'electron/**/*.{js,cjs}' 'vite.config.ts'",
+    "lint": "eslint src/ electron/ screenshots/",
+    "lint:fix": "eslint src/ electron/ screenshots/ --fix",
+    "fmt": "prettier --write 'src/**/*.{ts,tsx}' 'electron/**/*.{js,cjs}' 'screenshots/**/*.ts' 'vite.config.ts'",
     "fix": "npm run lint:fix && npm run fmt",
     "test:ui": "vitest run --environment jsdom",
+    "screenshots": "node scripts/assert-root-install.cjs && vite build && playwright test -c screenshots/playwright.config.ts",
+    "screenshots:update": "node scripts/assert-root-install.cjs && vite build && playwright test -c screenshots/playwright.config.ts --update-snapshots",
     "preview": "node scripts/assert-root-install.cjs && vite preview --host 127.0.0.1 --port 4174"
   },
   "dependencies": {
@@ -102,6 +104,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
+    "@playwright/test": "^1.64.1",
     "@testing-library/dom": "^10.4.0",
     "@testing-library/react": "^16.3.2",
     "@types/hast": "^3.0.4",
