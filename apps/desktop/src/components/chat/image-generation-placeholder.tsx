@@ -2,6 +2,7 @@ import { type FC, useCallback, useEffect, useRef } from 'react'
 
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
+import { BUNDLED_MONO_FAMILY } from '@/themes/presets'
 
 type Rgb = { r: number; g: number; b: number }
 
@@ -130,7 +131,7 @@ const drawAsciiDiffusion = (ctx: CanvasRenderingContext2D, width: number, height
   const timestep = Math.floor(time * 1.15)
   const timestepBlend = smoothstep(0, 1, time * 1.15 - timestep)
 
-  ctx.font = `${fontSize}px "SF Mono", "Cascadia Code", Menlo, Consolas, monospace`
+  ctx.font = `${fontSize}px ${BUNDLED_MONO_FAMILY}, monospace`
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
 

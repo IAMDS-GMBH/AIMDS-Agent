@@ -12,14 +12,19 @@ import type { DesktopTheme, DesktopThemeTypography } from './types'
 export const EMOJI_FALLBACK =
   '"Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji", emoji'
 
-const SYSTEM_SANS =
-  '"Segoe WPC", "Segoe UI", -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, sans-serif, ' +
-  EMOJI_FALLBACK
+// AIS-798: the bundled UI faces (src/styles.css imports them; SIL OFL 1.1).
+// One face per role on every OS, so text measures and wraps the same on
+// Windows, macOS and Linux. The system stack behind them only fills scripts
+// the bundled fonts lack (CJK, Arabic, …). Built-in themes never load fonts
+// from the network.
+export const BUNDLED_SANS_FAMILY = '"Inter Variable"'
+export const BUNDLED_MONO_FAMILY = '"JetBrains Mono Variable"'
 
-const SYSTEM_MONO =
-  '"Cascadia Code", "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace, ' + EMOJI_FALLBACK
+const UI_SANS = `${BUNDLED_SANS_FAMILY}, system-ui, sans-serif, ${EMOJI_FALLBACK}`
 
-export const DEFAULT_TYPOGRAPHY: DesktopThemeTypography = { fontSans: SYSTEM_SANS, fontMono: SYSTEM_MONO }
+const UI_MONO = `${BUNDLED_MONO_FAMILY}, ui-monospace, monospace, ${EMOJI_FALLBACK}`
+
+export const DEFAULT_TYPOGRAPHY: DesktopThemeTypography = { fontSans: UI_SANS, fontMono: UI_MONO }
 
 const NOUS_BLUE = '#6366F1'
 const NOUS_INDIGO_LIGHT = '#4F46E5'
@@ -86,10 +91,7 @@ export const nousTheme: DesktopTheme = {
     userBubble: '#1E2640',
     userBubbleBorder: '#334166'
   },
-  typography: {
-    fontSans: SYSTEM_SANS,
-    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`
-  }
+  typography: DEFAULT_TYPOGRAPHY
 }
 
 /** Deep blue-violet with cool accents. Matches the dashboard midnight theme. */
@@ -123,10 +125,7 @@ export const midnightTheme: DesktopTheme = {
     userBubble: '#14143a',
     userBubbleBorder: '#242466'
   },
-  typography: {
-    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
-    fontUrl: 'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap'
-  }
+  typography: DEFAULT_TYPOGRAPHY
 }
 
 /** Warm crimson and bronze — forge vibes. Matches the CLI ares skin. */
@@ -160,10 +159,7 @@ export const emberTheme: DesktopTheme = {
     userBubble: '#2a1000',
     userBubbleBorder: '#4a2010'
   },
-  typography: {
-    fontMono: `"IBM Plex Mono", ${SYSTEM_MONO}`,
-    fontUrl: 'https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&display=swap'
-  }
+  typography: DEFAULT_TYPOGRAPHY
 }
 
 /** Clean grayscale. Matches the CLI mono skin and dashboard mono theme. */
@@ -230,10 +226,8 @@ export const cyberpunkTheme: DesktopTheme = {
     userBubble: '#001400',
     userBubbleBorder: '#004800'
   },
-  typography: {
-    fontMono: `"Courier New", Courier, monospace, ${EMOJI_FALLBACK}`,
-    fontSans: `"Courier New", Courier, monospace, ${EMOJI_FALLBACK}`
-  }
+  // All-mono look, with the bundled mono so it reads the same on every OS.
+  typography: { fontMono: UI_MONO, fontSans: UI_MONO }
 }
 
 /** Cool slate blue for developers. Matches the CLI slate skin. */
@@ -267,9 +261,7 @@ export const slateTheme: DesktopTheme = {
     userBubble: '#1e2a38',
     userBubbleBorder: '#2e4060'
   },
-  typography: {
-    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`
-  }
+  typography: DEFAULT_TYPOGRAPHY
 }
 
 export const BUILTIN_THEMES: Record<string, DesktopTheme> = {

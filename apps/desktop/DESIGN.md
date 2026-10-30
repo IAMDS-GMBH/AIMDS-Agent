@@ -109,6 +109,21 @@ Notes:
   Every place we surface raw logs uses it.
 - **Empty:** `EmptyState` / `EmptyPanel` — don't hand-roll centered empties.
 
+## Typography
+
+- **Bundled faces only.** UI text is Inter, code and key caps are JetBrains
+  Mono — both ship with the app (`@fontsource-variable/*`, SIL OFL 1.1) and are
+  imported at the top of `src/styles.css`. Same face, metrics and line breaks
+  on Windows, macOS and Linux; nothing loads from the network.
+- **Use the tokens:** `font-sans` / `font-mono` (Tailwind) or
+  `var(--dt-font-sans)` / `var(--dt-font-mono)`. Canvas/xterm code that needs
+  a family string uses `BUNDLED_SANS_FAMILY` / `BUNDLED_MONO_FAMILY` from
+  `src/themes/presets.ts`. Never name a system font (`Segoe UI`, `SF Pro`,
+  `Arial`, `Menlo`, …) in a component.
+- The system stack behind the bundled face only fills scripts it lacks (CJK,
+  Arabic, …) and emoji. Sizes are rem tokens, identical on every OS.
+- The brand display face `Collapse` (intro wordmark) is bundled too.
+
 ## Iconography & brand
 
 - **`Codicon`** is the icon set. No mixing icon libraries inline.
