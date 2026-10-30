@@ -300,6 +300,13 @@
     --composer-shell-pad-block-end: 0.625rem;
     --message-text-indent: 0.75rem;
     --conversation-text-font-size: 0.8125rem;
+    /* AIS-792: chat text (replies and the user's messages) reads at 14px; the
+       rest of the UI keeps --conversation-text-font-size. */
+    --thread-text-font-size: 0.875rem;
+    /* Gap above a section label (h2/h3 and bold "Label:" lines). */
+    --section-gap: 0.875rem;
+    /* Gap between list items. */
+    --list-item-gap: 0.125rem;
     --conversation-tool-font-size: 0.6875rem;
     --conversation-caption-font-size: 0.75rem;
     --conversation-line-height: 1.125rem;
@@ -836,7 +843,7 @@ canvas {
 
 [data-slot='aui_assistant-message-content'] {
   padding-left: var(--message-text-indent);
-  font-size: var(--conversation-text-font-size);
+  font-size: var(--thread-text-font-size);
   line-height: 1.5;
 }
 
@@ -855,6 +862,54 @@ canvas {
    top-margin (bottom zeroed to avoid doubling), first child reset to flush. */
 [data-slot='aui_assistant-message-content'] .aui-md :where(p) {
   margin-block: var(--paragraph-gap) 0;
+}
+
+/* AIS-792: one section style. h2, h3 and a paragraph that is only a bold
+   "Label:" render as SectionLabel (markdown-text.tsx); the gap above sets the
+   section apart, the next block follows at the paragraph gap. */
+[data-slot='aui_assistant-message-content'] .aui-md :where(h1, h2, h3, h4, [data-slot='section-label']) {
+  margin-block: var(--section-gap) 0;
+  line-height: var(--dt-line-height);
+}
+
+[data-slot='aui_assistant-message-content'] .aui-md :where([data-slot='section-label']) {
+  font-size: 1.07em;
+}
+
+/* Lists at the paragraph rhythm, items close together (Typography's 1.25em
+   list margins and 0.5em item margins read as gaps in a chat column). */
+[data-slot='aui_assistant-message-content'] .aui-md :where(ul, ol) {
+  margin-block: var(--paragraph-gap) 0;
+}
+
+[data-slot='aui_assistant-message-content'] .aui-md :where(li) {
+  margin-block: var(--list-item-gap) 0;
+}
+
+[data-slot='aui_assistant-message-content'] .aui-md :where(li > p, li > ul, li > ol) {
+  margin-block: var(--list-item-gap) 0;
+}
+
+[data-slot='aui_assistant-message-content'] .aui-md :where(li > :first-child) {
+  margin-top: 0;
+}
+
+/* AIS-792: tables and code use the full column. The prose block reaches into
+   the text indent (padding keeps the text where it is, and the clip box of
+   its overflow-hidden now covers the indent), so a table or code card spans
+   the same edges as the user bubble and the composer. */
+[data-slot='aui_assistant-message-content'] > .aui-md {
+  width: calc(100% + var(--message-text-indent));
+  margin-left: calc(-1 * var(--message-text-indent));
+  padding-left: var(--message-text-indent);
+}
+
+[data-slot='aui_assistant-message-content']
+  > .aui-md
+  :is(.aui-md-table, [data-slot='code-card']):not(:where(li, blockquote) *) {
+  width: calc(100% + var(--message-text-indent));
+  max-width: none;
+  margin-left: calc(-1 * var(--message-text-indent));
 }
 
 /* First rendered element of a prose block is flush — the block-level gap above
@@ -876,7 +931,7 @@ canvas {
 
 [data-slot='aui_user-message-root'],
 [data-slot='aui_edit-composer-root'] {
-  font-size: var(--conversation-text-font-size);
+  font-size: var(--thread-text-font-size);
 }
 
 /* Sticky human bubbles clamp to ~2 lines with a soft bottom fade so a long
@@ -887,7 +942,7 @@ canvas {
    height instead of overshooting the cap. */
 .sticky-human-clamp {
   cursor: pointer;
-  max-height: calc(2 * var(--dt-line-height) * var(--conversation-text-font-size) + 0.15rem);
+  max-height: calc(2 * var(--dt-line-height) * var(--thread-text-font-size) + 0.15rem);
   overflow: hidden;
   transition: max-height 0.08s cubic-bezier(0.4, 0, 0.2, 1);
 }

@@ -15,6 +15,7 @@ import {
   memo,
   type ReactNode,
   useCallback,
+  useContext,
   useDeferredValue,
   useEffect,
   useMemo,
@@ -235,6 +236,114 @@ export function splitListItemChildren(children: ReactNode): { lead: ReactNode[];
 // so option-click detection only ever applies to top-level numbered options
 // (never to unordered sub-bullets, even if their text happened to match).
 const ListKindContext = createContext<'ordered' | 'unordered'>('unordered')
+
+// True inside lists and quotes: a bold "Label:" line there is list content,
+// not a section of the answer (see `sectionLabelText`).
+const NestedBlockContext = createContext(false)
+
+// ── Section labels (AIS-792) ────────────────────────────────────────────────
+// Models mark sections two ways: `## Offene Punkte` and a paragraph that is
+// only a bold label, `**Offen:**`. Both render as one section label so the
+// same concept looks the same from turn to turn. Deterministic: decided from
+// the paragraph's own syntax tree, never from wording.
+
+export interface HastNode {
+  children?: HastNode[]
+  tagName?: string
+  type: string
+  value?: string
+}
+
+const SECTION_LABEL_MAX_CHARS = 80
+const LABEL_COLON_RE = /[:：]$/
+// Inline markup a label may carry; anything else (links, images, chips) keeps
+// the paragraph as it is.
+const LABEL_INLINE_TAGS = new Set(['b', 'code', 'em', 'i', 'strong'])
+
+function hastText(node: HastNode): string {
+  if (node.type === 'text') {
+    return node.value ?? ''
+  }
+
+  return (node.children ?? []).map(hastText).join('')
+}
+
+function onlyLabelInline(node: HastNode): boolean {
+  if (node.type === 'text') {
+    return true
+  }
+
+  return (
+    node.type === 'element' && LABEL_INLINE_TAGS.has(node.tagName ?? '') && (node.children ?? []).every(onlyLabelInline)
+  )
+}
+
+/**
+ * The label of a paragraph that consists only of a bold run ending in ":"
+ * (`**Offen:**`, `**Offen**:`), without the colon; null for anything else —
+ * bold inside a sentence, a bold run followed by text, a bare bold phrase.
+ */
+export function sectionLabelText(node: HastNode | undefined): null | string {
+  if (!node || node.tagName !== 'p') {
+    return null
+  }
+
+  const children = (node.children ?? []).filter(child => child.type !== 'text' || (child.value ?? '').trim())
+  const [bold, ...rest] = children
+
+  if (!bold || bold.type !== 'element' || (bold.tagName !== 'strong' && bold.tagName !== 'b')) {
+    return null
+  }
+
+  if (!onlyLabelInline(bold) || rest.some(child => child.type !== 'text')) {
+    return null
+  }
+
+  // At most the colon may follow the bold run (`**Offen**:`).
+  const tail = rest.map(hastText).join('').trim()
+  const text = `${hastText(bold)}${tail}`.trim()
+
+  if ((tail && tail !== ':' && tail !== '：') || !LABEL_COLON_RE.test(text) || text.includes('\n')) {
+    return null
+  }
+
+  const label = text.replace(LABEL_COLON_RE, '').trim()
+
+  return label && label.length <= SECTION_LABEL_MAX_CHARS ? label : null
+}
+
+const SECTION_LABEL_CLASS_NAME = 'aui-section-label font-semibold tracking-tight text-foreground'
+
+function SectionLabel({ as: Tag, className, ...props }: ComponentProps<'h2'> & { as: 'h2' | 'h3' | 'p' }) {
+  return (
+    <Tag
+      className={cn(SECTION_LABEL_CLASS_NAME, className)}
+      data-slot="section-label"
+      {...(Tag === 'p' ? { 'aria-level': 3, role: 'heading' } : {})}
+      {...props}
+    />
+  )
+}
+
+function MarkdownParagraph({ className, node, ...props }: ComponentProps<'p'> & { node?: HastNode }) {
+  const nested = useContext(NestedBlockContext)
+  const label = nested ? null : sectionLabelText(node)
+
+  if (label) {
+    return <SectionLabel as="p">{label}</SectionLabel>
+  }
+
+  // Vertical rhythm is owned by styles.css (`--paragraph-gap`), which must
+  // out-specify Tailwind Typography's `prose` margins — so no `my-*` here.
+  return <p className={cn('wrap-anywhere leading-(--dt-line-height)', className)} {...props} />
+}
+
+// Streamdown passes the hast `node` to every component; keep it off the DOM.
+function withoutNode<P extends { node?: unknown }>(props: P): Omit<P, 'node'> {
+  const { node: _node, ...rest } = props
+
+  return rest
+}
 
 // Sends the option's label text as a brand-new user message, mirroring
 // assistant-ui's own `SuggestionPrimitive.Trigger` "send" behavior
@@ -507,17 +616,16 @@ interface MarkdownTextSurfaceProps {
   containerProps?: ComponentProps<'div'>
 }
 
-// Headings shrink to chat scale rather than the prose default (h1≈xl). Kept
-// table-driven so adding/tweaking levels is one row.
-const HEADING_SIZES: Record<'h1' | 'h2' | 'h3' | 'h4', string> = {
-  h1: 'text-[1rem] tracking-tight',
-  h2: 'text-[0.9375rem] tracking-tight',
-  h3: 'text-[0.875rem]',
-  h4: 'text-[0.8125rem]'
+// Headings shrink to chat scale rather than the prose default (h1≈xl); h2 and
+// h3 are section labels (see SectionLabel). Sizes are relative to the
+// conversation text so the reasoning view's smaller text scales along.
+const HEADING_SIZES: Record<'h1' | 'h4', string> = {
+  h1: 'text-[1.15em] tracking-tight',
+  h4: 'text-[1em]'
 }
 
 const MARKDOWN_CONTAINER_CLASS_NAME = cn(
-  'aui-md prose w-full max-w-none overflow-hidden text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground',
+  'aui-md prose w-full max-w-none overflow-hidden text-[length:var(--thread-text-font-size)] leading-(--dt-line-height) text-foreground',
   'prose-p:leading-(--dt-line-height) prose-li:leading-(--dt-line-height)',
   'prose-headings:text-foreground prose-strong:text-foreground',
   'prose-a:break-words prose-p:[overflow-wrap:anywhere]',
@@ -538,42 +646,45 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
   const components = useMemo(
     () =>
       ({
-        h1: ({ className, ...props }: ComponentProps<'h1'>) => (
-          <h1 className={cn('my-1 font-semibold', HEADING_SIZES.h1, className)} {...props} />
+        // Vertical rhythm of headings, section labels and lists lives in
+        // styles.css (it must out-specify Tailwind Typography's margins).
+        h1: ({ className, ...props }: ComponentProps<'h1'> & { node?: unknown }) => (
+          <h1 className={cn('font-semibold', HEADING_SIZES.h1, className)} {...withoutNode(props)} />
         ),
-        h2: ({ className, ...props }: ComponentProps<'h2'>) => (
-          <h2 className={cn('my-1 font-semibold', HEADING_SIZES.h2, className)} {...props} />
+        h2: ({ className, ...props }: ComponentProps<'h2'> & { node?: unknown }) => (
+          <SectionLabel as="h2" className={className} {...withoutNode(props)} />
         ),
-        h3: ({ className, ...props }: ComponentProps<'h3'>) => (
-          <h3 className={cn('my-1 font-semibold', HEADING_SIZES.h3, className)} {...props} />
+        h3: ({ className, ...props }: ComponentProps<'h3'> & { node?: unknown }) => (
+          <SectionLabel as="h3" className={className} {...withoutNode(props)} />
         ),
-        h4: ({ className, ...props }: ComponentProps<'h4'>) => (
-          <h4 className={cn('my-1 font-semibold', HEADING_SIZES.h4, className)} {...props} />
+        h4: ({ className, ...props }: ComponentProps<'h4'> & { node?: unknown }) => (
+          <h4 className={cn('font-semibold', HEADING_SIZES.h4, className)} {...withoutNode(props)} />
         ),
-        p: ({ className, ...props }: ComponentProps<'p'>) => (
-          // Vertical rhythm is owned by styles.css (`--paragraph-gap`), which
-          // must out-specify Tailwind Typography's `prose` margins — so no
-          // `my-*` here on purpose.
-          <p className={cn('wrap-anywhere leading-(--dt-line-height)', className)} {...props} />
-        ),
+        p: MarkdownParagraph,
         a: MarkdownLink,
         inlineCode: MarkdownCode,
         // `---` as quiet spacing, not a heavy full-width rule.
         hr: (_props: ComponentProps<'hr'>) => <div aria-hidden className="my-3" />,
-        blockquote: ({ className, ...props }: ComponentProps<'blockquote'>) => (
-          <blockquote
-            className={cn('border-l-2 border-border pl-3 text-muted-foreground italic', className)}
-            {...props}
-          />
+        blockquote: ({ className, ...props }: ComponentProps<'blockquote'> & { node?: unknown }) => (
+          <NestedBlockContext.Provider value>
+            <blockquote
+              className={cn('border-l-2 border-border pl-3 text-muted-foreground italic', className)}
+              {...withoutNode(props)}
+            />
+          </NestedBlockContext.Provider>
         ),
-        ul: ({ className, ...props }: ComponentProps<'ul'>) => (
+        ul: ({ className, ...props }: ComponentProps<'ul'> & { node?: unknown }) => (
           <ListKindContext.Provider value="unordered">
-            <ul className={cn('my-1 gap-0', className)} {...props} />
+            <NestedBlockContext.Provider value>
+              <ul className={cn('gap-0', className)} {...withoutNode(props)} />
+            </NestedBlockContext.Provider>
           </ListKindContext.Provider>
         ),
-        ol: ({ className, ...props }: ComponentProps<'ol'>) => (
+        ol: ({ className, ...props }: ComponentProps<'ol'> & { node?: unknown }) => (
           <ListKindContext.Provider value="ordered">
-            <ol className={cn('my-1 gap-0', className)} {...props} />
+            <NestedBlockContext.Provider value>
+              <ol className={cn('gap-0', className)} {...withoutNode(props)} />
+            </NestedBlockContext.Provider>
           </ListKindContext.Provider>
         ),
         li: ListItem,

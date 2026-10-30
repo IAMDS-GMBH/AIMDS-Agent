@@ -262,7 +262,7 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
       ref={enterRef}
     >
       <div
-        className="wrap-anywhere min-w-0 max-w-full overflow-hidden text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground"
+        className="wrap-anywhere min-w-0 max-w-full overflow-hidden text-pretty text-[length:var(--thread-text-font-size)] leading-(--dt-line-height) text-foreground"
         data-slot="aui_assistant-message-content"
       >
         {hoistedTodos.length > 0 && <HoistedTodoPanel todos={hoistedTodos} />}
@@ -849,7 +849,7 @@ const UserMessage: FC<{
 
   const bubbleClassName = cn(
     USER_BUBBLE_BASE_CLASS,
-    'border-(--ui-stroke-tertiary) pr-9 text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground/95 transition-colors',
+    'border-(--ui-stroke-tertiary) pr-9 text-[length:var(--thread-text-font-size)] leading-(--dt-line-height) text-foreground/95 transition-colors',
     !threadRunning && 'cursor-pointer hover:border-(--ui-stroke-secondary)'
   )
 
@@ -1614,7 +1614,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
               aria-label={copy.editMessage}
               autoFocus
               className={cn(
-                'ui-prompt-input-editor__input max-h-48 w-full resize-none bg-transparent p-0 pr-7 text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground/95 outline-none',
+                'ui-prompt-input-editor__input max-h-48 w-full resize-none bg-transparent p-0 pr-7 text-[length:var(--thread-text-font-size)] leading-(--dt-line-height) text-foreground/95 outline-none',
                 'empty:before:content-[attr(data-placeholder)] empty:before:text-muted-foreground/60',
                 '**:data-ref-text:cursor-default',
                 expanded ? 'min-h-16' : 'min-h-[1.25rem]'
