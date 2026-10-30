@@ -83,6 +83,10 @@ for (const view of VIEWS) {
       })
     }
 
+    if (view.colorScheme) {
+      await page.emulateMedia({ colorScheme: view.colorScheme })
+    }
+
     await page.goto(`/#${view.route}`)
 
     try {

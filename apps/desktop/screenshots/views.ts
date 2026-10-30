@@ -16,6 +16,8 @@ export interface ScreenshotView {
   ready: string
   /** Scroll this element to the top before the capture (e.g. a long thread). */
   scrollToTop?: string
+  /** OS colour scheme for this capture (default light, see the config). */
+  colorScheme?: 'dark' | 'light'
 }
 
 const THREAD = '[data-slot="aui_thread-viewport"]'
@@ -23,5 +25,11 @@ const THREAD = '[data-slot="aui_thread-viewport"]'
 export const VIEWS: readonly ScreenshotView[] = [
   { name: 'new-chat', route: '/', ready: '[data-slot="composer-rich-input"]' },
   { name: 'chat-long-answer', route: `/${LONG_ANSWER_SESSION_ID}`, ready: 'table', scrollToTop: THREAD },
-  { name: 'settings', route: '/settings', ready: '[data-slot="select-trigger"]' }
+  { name: 'settings', route: '/settings', ready: '[data-slot="select-trigger"]' },
+  // AIS-794: the Suite look in dark, with every sidebar section filled
+  // (Im Hintergrund, Favoriten, sessions by day, account menu).
+  { colorScheme: 'dark', name: 'sidebar-sections-dark', route: '/', ready: '[data-testid="sidebar-background"]' },
+  // AIS-794: Darstellung with the Entwickleransicht switch, and Fähigkeiten.
+  { name: 'settings-appearance', route: '/settings?tab=config:appearance', ready: '[role="switch"]' },
+  { name: 'settings-skills', route: '/settings?tab=skills', ready: '[role="switch"]' }
 ]
