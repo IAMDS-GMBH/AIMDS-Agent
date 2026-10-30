@@ -8216,6 +8216,26 @@ async def get_session_messages(session_id: str, profile: Optional[str] = None):
         db.close()
 
 
+@app.get("/api/sessions/{session_id}/ledger")
+async def get_session_ledger(session_id: str, after: int = 0, profile: Optional[str] = None):
+    """What the conversation did (AIS-797): the ``LedgerPage`` contract.
+
+    Any segment id works — the ledger is keyed by the compression lineage
+    root. ``after`` returns only entries newer than that seq (the desktop
+    merges these with the ``session.ledger`` event deltas).
+    """
+    db = _open_session_db_for_profile(profile)
+    try:
+        sid = db.resolve_session_id(session_id)
+        if not sid:
+            raise HTTPException(status_code=404, detail="Session not found")
+        from agent.session_ledger import read_page
+
+        return read_page(db, sid, after=after)
+    finally:
+        db.close()
+
+
 @app.delete("/api/sessions/{session_id}")
 async def delete_session_endpoint(session_id: str, profile: Optional[str] = None):
     # ``profile`` deletes a session belonging to another (local) profile by

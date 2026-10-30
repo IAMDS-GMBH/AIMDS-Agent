@@ -2951,6 +2951,17 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         pass
     if _tool_progress_enabled(sid) or payload.get("inline_diff"):
         _emit("tool.complete", sid, payload)
+    # AIS-797: what this call added to the session ledger, whatever the
+    # tool-progress mode (the executor recorded it before this callback).
+    if session is not None:
+        try:
+            from agent.session_ledger import pop_delta
+
+            delta = pop_delta(session.get("agent"), tool_call_id)
+            if delta:
+                _emit("session.ledger", sid, delta)
+        except Exception:
+            logger.debug("session.ledger emit failed", exc_info=True)
 
 
 def _on_tool_progress(

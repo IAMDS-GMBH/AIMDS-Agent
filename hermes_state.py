@@ -554,6 +554,23 @@ CREATE TABLE IF NOT EXISTS api_calls (
 CREATE INDEX IF NOT EXISTS idx_api_calls_session ON api_calls(session_id, ts);
 CREATE INDEX IF NOT EXISTS idx_api_calls_ts ON api_calls(ts);
 
+-- AIS-797: what a session did (ticket created, status changed, file written,
+-- note saved), one row per ledger entry (agent.session_ledger). Keyed by the
+-- compression lineage root so the ledger survives the session-id rotation of
+-- a compression. ``entry`` is the ledger_entry contract JSON; ``ref`` (the
+-- item identity) and ``status`` serve lookups and the sql tool.
+CREATE TABLE IF NOT EXISTS session_ledger (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lineage_root TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    ts REAL NOT NULL,
+    ref TEXT,
+    status TEXT,
+    entry TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_session_ledger_root ON session_ledger(lineage_root, ref);
+CREATE INDEX IF NOT EXISTS idx_session_ledger_session ON session_ledger(session_id);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
@@ -579,6 +596,14 @@ END;
 
 CREATE TRIGGER IF NOT EXISTS messages_sync_delete AFTER DELETE ON messages BEGIN
     UPDATE sessions SET sync_dirty = 1, sync_gen = sync_gen + 1 WHERE id = old.session_id;
+END;
+"""
+
+# AIS-797: ledger rows go with the session segment they were written in,
+# whichever path deletes it (single, bulk, whole conversation, prune).
+LEDGER_TRIGGER_SQL = """
+CREATE TRIGGER IF NOT EXISTS sessions_ledger_delete AFTER DELETE ON sessions BEGIN
+    DELETE FROM session_ledger WHERE session_id = old.id;
 END;
 """
 
@@ -1078,6 +1103,10 @@ class SessionDB:
             cursor.executescript(SYNC_TRIGGER_SQL)
         except sqlite3.OperationalError as exc:
             logger.warning("session sync triggers not created: %s", exc)
+        try:
+            cursor.executescript(LEDGER_TRIGGER_SQL)
+        except sqlite3.OperationalError as exc:
+            logger.warning("session ledger trigger not created: %s", exc)
 
         # Indexes that reference reconciler-added columns must be created
         # AFTER _reconcile_columns runs — declaring them in SCHEMA_SQL
@@ -1608,6 +1637,97 @@ class SessionDB:
         with self._lock:
             rows = self._conn.execute(f"SELECT * FROM api_calls{where} ORDER BY ts ASC, id ASC", params).fetchall()
         return [dict(r) for r in rows]
+
+    # =========================================================================
+    # Session ledger (AIS-797) — see agent/session_ledger.py
+    # =========================================================================
+
+    LEDGER_MAX_ENTRIES = 400
+
+    def get_lineage_root(self, session_id: str) -> str:
+        """First segment of *session_id*'s compression chain (itself if none).
+
+        Walks back with the continuation rule of :meth:`_compression_chain_ids`:
+        the parent ended with ``end_reason='compression'`` before the child
+        started, or the child carries the parent's ``"<base> #n"`` title.
+        Delegate and branch children are their own roots.
+        """
+        current = session_id
+        with self._lock:
+            for _ in range(100):
+                row = self._conn.execute(
+                    "SELECT parent_session_id, started_at, title FROM sessions WHERE id = ?", (current,)
+                ).fetchone()
+                if row is None or not row["parent_session_id"]:
+                    return current
+                parent = self._conn.execute(
+                    "SELECT ended_at, title FROM sessions WHERE id = ? AND end_reason = 'compression'",
+                    (row["parent_session_id"],),
+                ).fetchone()
+                if parent is None or not (
+                    (parent["ended_at"] is not None and parent["ended_at"] <= row["started_at"])
+                    or self._is_lineage_title(row["title"], parent["title"])
+                ):
+                    return current
+                current = row["parent_session_id"]
+        return current
+
+    def append_ledger_entries(
+        self, lineage_root: str, session_id: str, entries: List[Tuple[str, Dict[str, Any]]],
+    ) -> List[int]:
+        """Store ``(ref, entry)`` pairs; returns their seq numbers (row ids).
+
+        Keeps the newest :attr:`LEDGER_MAX_ENTRIES` rows of the lineage.
+        """
+        if not lineage_root or not entries:
+            return []
+
+        def _insert(conn):
+            ids = []
+            for ref, entry in entries:
+                body = {k: v for k, v in entry.items() if k != "seq"}
+                cur = conn.execute(
+                    "INSERT INTO session_ledger (lineage_root, session_id, ts, ref, status, entry) VALUES (?,?,?,?,?,?)",
+                    (
+                        lineage_root, session_id, float(entry.get("ts") or time.time()), ref or None,
+                        entry.get("status") or None, json.dumps(body, ensure_ascii=False),
+                    ),
+                )
+                ids.append(int(cur.lastrowid))
+            conn.execute(
+                "DELETE FROM session_ledger WHERE lineage_root = ? AND id NOT IN ("
+                "SELECT id FROM session_ledger WHERE lineage_root = ? ORDER BY id DESC LIMIT ?)",
+                (lineage_root, lineage_root, self.LEDGER_MAX_ENTRIES),
+            )
+            return ids
+
+        return self._execute_write(_insert)
+
+    def get_ledger(self, lineage_root: str, *, after: int = 0, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Ledger entries of a lineage, oldest first; *after* skips seq <= after."""
+        sql = "SELECT id, entry FROM session_ledger WHERE lineage_root = ? AND id > ? ORDER BY id"
+        params: List[Any] = [lineage_root, int(after or 0)]
+        if limit:
+            sql += " LIMIT ?"
+            params.append(int(limit))
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        out = []
+        for row in rows:
+            try:
+                entry = json.loads(row["entry"])
+            except (TypeError, ValueError):
+                continue
+            entry["seq"] = int(row["id"])
+            out.append(entry)
+        return out
+
+    def count_ledger(self, lineage_root: str) -> int:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM session_ledger WHERE lineage_root = ?", (lineage_root,)
+            ).fetchone()
+        return int(row[0]) if row else 0
 
     def update_token_counts(
         self,
