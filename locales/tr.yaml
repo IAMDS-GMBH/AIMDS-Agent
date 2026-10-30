@@ -400,3 +400,10 @@ suite_auth:
   reauth_needed: "{target} oturumunun süresi doldu veya sıfırlandı. Lütfen yeniden oturum aç: Ayarlar → Hesaplar → {target} → Yeniden oturum aç. Ardından sorunu tekrar sor."
   endpoint_moved: "{target} farklı bir adreste yanıt veriyor ({location}). Lütfen sunucu adresini kontrol et: Ayarlar → Hesaplar → {target}. Ardından sorunu tekrar sor."
   model_not_allowed: "{model}, {target} erişimin için etkin değil. Başka bir model seç (Ayarlar → Model) veya yöneticinden etkinleştirmesini iste. Ardından sorunu tekrar sor."
+
+clarify:
+  # AIS-793: several questions in one message on messaging platforms.
+  questions_intro: '{count} soru — tek mesajda yanıtla, örn. "1a 2b" veya "2: yanıtın". "2 {later}" ile bir soruyu sonra yanıtlarsın.'
+  still_open: 'Hâlâ açık: {numbers}. Örn. "{example}" ile yanıtla ya da "{later}" yaz.'
+  # The word that defers a question ("2 later").
+  later: "sonra"

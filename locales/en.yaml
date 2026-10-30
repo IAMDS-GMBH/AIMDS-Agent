@@ -416,3 +416,10 @@ suite_auth:
   endpoint_moved: "{target} answers at a different address ({location}). Please check the server address: Settings → Accounts → {target}. Then just ask your question again."
   # AIS-747: valid key, but this model is not on its list.
   model_not_allowed: "{model} is not enabled for your {target} access. Pick another model (Settings → Model) or ask your administrator to enable it. Then just ask your question again."
+
+clarify:
+  # AIS-793: several questions in one message on messaging platforms.
+  questions_intro: '{count} questions — answer in one message, e.g. "1a 2b" or "2: your answer". Write "2 {later}" to answer a question later.'
+  still_open: 'Still open: {numbers}. Answer e.g. with "{example}", or write "{later}".'
+  # The word that defers a question ("2 later").
+  later: "later"

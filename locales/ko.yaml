@@ -400,3 +400,10 @@ suite_auth:
   reauth_needed: "{target} 로그인이 만료되었거나 초기화되었습니다. 다시 로그인해 주세요: 설정 → 계정 → {target} → 다시 로그인. 그런 다음 질문을 다시 해 주세요."
   endpoint_moved: "{target}이(가) 다른 주소({location})에서 응답합니다. 서버 주소를 확인해 주세요: 설정 → 계정 → {target}. 그런 다음 질문을 다시 해 주세요."
   model_not_allowed: "{model}은(는) {target} 접근 권한에서 사용할 수 없습니다. 다른 모델을 선택하거나(설정 → 모델) 관리자에게 사용 허가를 요청해 주세요. 그런 다음 질문을 다시 해 주세요."
+
+clarify:
+  # AIS-793: several questions in one message on messaging platforms.
+  questions_intro: '질문 {count}개 — 한 메시지로 답해 주세요. 예: "1a 2b" 또는 "2: 답변". "2 {later}"(이)라고 쓰면 그 질문은 나중에 답할 수 있어요.'
+  still_open: '아직 남은 질문: {numbers}. 예: "{example}"(으)로 답하거나 "{later}"(이)라고 써 주세요.'
+  # The word that defers a question ("2 later").
+  later: "나중에"

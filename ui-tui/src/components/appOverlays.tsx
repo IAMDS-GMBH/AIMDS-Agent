@@ -57,6 +57,8 @@ export function PromptZone({
       <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
         <ClarifyPrompt
           cols={cols}
+          // A fresh prompt per question of a several-question ask (AIS-793).
+          key={`${overlay.clarify.requestId}:${overlay.clarify.index ?? 0}`}
           onAnswer={onClarifyAnswer}
           onCancel={() => onClarifyAnswer('')}
           req={overlay.clarify}

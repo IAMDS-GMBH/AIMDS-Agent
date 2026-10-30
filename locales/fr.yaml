@@ -400,3 +400,10 @@ suite_auth:
   reauth_needed: "Ta connexion à {target} a expiré ou a été réinitialisée. Reconnecte-toi : Paramètres → Comptes → {target} → Se reconnecter. Pose ensuite simplement ta question à nouveau."
   endpoint_moved: "{target} répond à une autre adresse ({location}). Vérifie l'adresse du serveur : Paramètres → Comptes → {target}. Pose ensuite simplement ta question à nouveau."
   model_not_allowed: "{model} n'est pas activé pour ton accès à {target}. Choisis un autre modèle (Paramètres → Modèle) ou demande à ton administrateur de l'activer. Pose ensuite simplement ta question à nouveau."
+
+clarify:
+  # AIS-793: several questions in one message on messaging platforms.
+  questions_intro: "{count} questions : réponds en un seul message, p. ex. « 1a 2b » ou « 2 : ta réponse ». Avec « 2 {later} », tu réponds à une question plus tard."
+  still_open: "Encore ouvertes : {numbers}. Réponds p. ex. avec « {example} » ou écris « {later} »."
+  # The word that defers a question ("2 later").
+  later: "plus tard"

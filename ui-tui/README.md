@@ -188,7 +188,7 @@ Tool/status activity is shown in a live activity lane. Transcript rows stay focu
 The Python gateway can pause the main loop and request structured input:
 
 - `approval.request`: allow once, allow for session, allow always, or deny
-- `clarify.request`: pick from choices or type a custom answer
+- `clarify.request`: pick from choices or type a custom answer; several questions (`questions`) are asked one after another and answered together
 - `sudo.request`: masked password entry
 - `secret.request`: masked value entry for a named env var
 - `session.list`: used by `SessionPicker` for `/resume`
@@ -247,7 +247,7 @@ Primary event types the client handles today:
 | `tool.start`             | `{ tool_id, name, context? }`                   |
 | `tool.progress`          | `{ name, preview }`                             |
 | `tool.complete`          | `{ tool_id, name }`                             |
-| `clarify.request`        | `{ question, choices?, request_id }`            |
+| `clarify.request`        | `{ question, choices?, questions?, request_id }` |
 | `approval.request`       | `{ command, description }`                      |
 | `sudo.request`           | `{ request_id }`                                |
 | `secret.request`         | `{ prompt, env_var, request_id }`               |

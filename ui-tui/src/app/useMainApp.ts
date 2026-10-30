@@ -20,6 +20,7 @@ import type {
 } from '../gatewayTypes.js'
 import { useGitBranch } from '../hooks/useGitBranch.js'
 import { useVirtualHistory } from '../hooks/useVirtualHistory.js'
+import { advanceClarify, formatClarifyAnswers } from '../lib/clarifyQuestions.js'
 import { composerPromptWidth } from '../lib/inputMetrics.js'
 import { appendTranscriptMessage } from '../lib/messages.js'
 import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
@@ -613,25 +614,44 @@ export function useMainApp(gw: GatewayClient) {
         return
       }
 
+      // AIS-793: several questions are asked one after another and answered
+      // together once the last one is done.
+      const step = advanceClarify(clarify, answer)
+
+      if (step.next) {
+        patchOverlayState({ clarify: step.next })
+
+        return
+      }
+
+      const several = (clarify.questions?.length ?? 0) > 1
+      const answered = several ? step.answers.some(a => a.state === 'answered') : Boolean(answer)
       const label = toolTrailLabel('clarify')
 
       turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
       patchTurnState({ turnTrail: turnController.turnTools })
 
-      rpc<ClarifyRespondResponse>('clarify.respond', { answer, request_id: clarify.requestId }).then(r => {
+      rpc<ClarifyRespondResponse>('clarify.respond', {
+        answer,
+        request_id: clarify.requestId,
+        ...(several ? { answers: step.answers } : {})
+      }).then(r => {
         if (!r) {
           return
         }
 
-        if (answer) {
+        if (answered) {
           turnController.persistedToolLabels.add(label)
           appendMessage({
             kind: 'trail',
             role: 'system',
             text: '',
-            tools: [buildToolTrailLine('clarify', clarify.question)]
+            tools: [buildToolTrailLine('clarify', several ? `${clarify.questions!.length} questions` : clarify.question)]
           })
-          appendMessage({ role: 'user', text: answer })
+          appendMessage({
+            role: 'user',
+            text: several ? formatClarifyAnswers(clarify.questions!, step.answers) : answer
+          })
           patchUiState({ status: 'running…' })
         } else {
           // Esc / Ctrl+C cancel: persist the question + options as a system
