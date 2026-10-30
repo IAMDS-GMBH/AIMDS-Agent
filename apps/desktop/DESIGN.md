@@ -150,10 +150,12 @@ Notes:
 ## Iconography & brand
 
 - **`Codicon`** is the icon set. No mixing icon libraries inline.
-- **`BrandMark`** (`src/components/brand-mark.tsx`) is the brand glyph — the
-  `nous-girl` mark on a white tile, softly rounded, identical in light/dark.
-  It replaced scattered Sparkles glyphs in updates / onboarding / about. Use it
-  for hero/brand moments; don't reintroduce decorative star/sparkle icons.
+- **`BrandMark`** (`src/components/brand-mark.tsx`) is the brand glyph — a
+  white "A" monogram on the `--brand-gradient` tile (36px, 9px radius by
+  default; the radius scales with the size), identical in light/dark. It is
+  product-neutral on purpose (no product name), so it survives the app rename.
+  The white glyph is the one sanctioned literal colour. Use it for hero/brand
+  moments; don't reintroduce decorative star/sparkle icons.
 
 ## Motion
 
