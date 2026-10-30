@@ -2028,3 +2028,218 @@ def test_deprecated_match_through_a_live_sibling_name_is_not_handed_over():
     assert not _match_belongs_to_sibling(catalog, dep, {"create", "relation"})
     comment = entry("mcp_op_pm_comment_work_package", "DEPRECATED — use pm_update_work_package(id, comment).")
     assert not _match_belongs_to_sibling([comment, create, update], comment, {"comment"})
+
+
+# ---------------------------------------------------------------------------
+# AIS-785: two servers carry OpenProject — the Suite (pm_*) and a private hub
+# (op_*, with its own tool finder). Descriptions as the servers sent them in
+# session 20261030_094353_7c33d1.
+# ---------------------------------------------------------------------------
+
+_AIS785_SUITE_OP = {
+    "pm_add_meeting_agenda_item": "Add an agenda item (title, optional work_package_id, notes) to a meeting, or record an outcome on agenda_item_id (notes = outcome text, outcome_kind).",
+    "pm_comment_work_package": "DEPRECATED — use pm_update_work_package(id, comment).",
+    "pm_create_meeting": "Create a one-time meeting. Required: project, title. Optional: start_time (ISO-8601), duration (e.g. \"PT1H\"), location.",
+    "pm_create_time_entry": "Log time on a work package or project. Required: activity, spent_on, work_package_id or project, and hours OR start_time+end_time (never both).",
+    "pm_create_work_package": "Create a work package. Required: project, type (name or id), subject. assignee/responsible: id, login or \"me\"; version/category: name or id.",
+    "pm_create_work_package_relation": "DEPRECATED — use pm_update_work_package(id, add_relations=[{to, type}]).",
+    "pm_delete_time_entry": "Delete a time entry. Required: id.",
+    "pm_delete_work_package_relation": "DEPRECATED — use pm_update_work_package(id, remove_relations=[key]).",
+    "pm_get_board": "A board's columns in order with their work packages. Required: id. Optional: include_work_packages (default true), limit per column.",
+    "pm_get_meeting": "Get a meeting with its agenda: sections → items → outcomes (minutes, action items). No attendee list (not in the API). Required: id.",
+    "pm_get_project": "Get one project's summary; include_members adds who is on it. Required: project.",
+    "pm_get_work_package": "Get work packages by id or ids (max 25), with description; include adds the comment log (limit = newest) and relations.",
+    "pm_link_account": "Only to replace an existing link or token: returns a one-time link_url (10 min) where the user enters a new personal access token.",
+    "pm_link_status": "Call only after a tool answered action_required=link_account, or when the user asks which account is linked.",
+    "pm_list_boards": "List boards (optionally of one project, search by name); pass the id to pm_get_board.",
+    "pm_list_meetings": "List meetings, optionally by project, date range (from/to, YYYY-MM-DD) and state.",
+    "pm_list_projects": "List/search visible OpenProject projects. Optional: search (matches name or identifier).",
+    "pm_list_reference_data": "List valid statuses, types, priorities and time-entry activities (kind, default all). Names are also matched partially, so look up only when unsure.",
+    "pm_list_time_entries": "List logged time entries (hours as decimal). Without project it covers every project the user can read.",
+    "pm_list_users": "Find people by name/email (query) or list a project's members (project). Assignee fields also accept a name or \"me\" directly.",
+    "pm_list_work_package_activity": "DEPRECATED — use pm_get_work_package(id, include=[\"activity\"]).",
+    "pm_list_work_package_relations": "DEPRECATED — use pm_get_work_package(id, include=[\"relations\"]).",
+    "pm_list_work_packages": "List or search work packages (free-text query and/or filters, all optional). A query that is a key (\"AIS-499\") or id also returns that work package.",
+    "pm_search_work_packages": "DEPRECATED — use pm_list_work_packages(query=…), which takes the same arguments.",
+    "pm_unlink_account": "Remove the user's linked OpenProject personal access token. No arguments.",
+    "pm_update_time_entry": "Change a logged time entry: hours, activity, comment or date. Required: id.",
+    "pm_update_work_package": "Update, comment, relate or move work packages: id, or ids (max 25). responsible/version/category \"none\" clears; milestones take date.",
+}
+_AIS785_SUITE_OTHER = {
+    "mcp_memory_memory_search": "Search the memory vault by keyword or meaning.",
+    "mcp_customer_storage_status": "START HERE. Check whether the customer document store is ready and view provider index statistics.",
+    "mcp_ntfy_ntfy_send_notification": "Send a push notification to an ntfy topic.",
+    "mcp_websearch_web_search": "Search the web and return result snippets.",
+}
+_AIS785_HUB = {
+    "op_my_work": "Quickly lists work packages assigned to the authenticated user ('me'), each with its ticket key (e.g. 'DEVOPS-10'). Defaults to open tickets.",
+    "op_time": "Track and list spent work time on OpenProject work packages. Supports actions: 'log', 'list', 'activities'.",
+    "op_attachment_to_workspace": "Load an attachment of an OpenProject work package into your Hub workspace without passing its content through the chat: PDFs, images, archives.",
+    "op_work_package": "[DESTRUCTIVE ACTION] Comprehensive management of OpenProject work packages (tasks, bugs, user stories, epics), named by their ticket key (e.g. 'DEVOPS-10') or numeric id. Supports actions: 'get', 'list', 'create', 'update', 'delete', 'transitions'.",
+    "op_quick_status": "[MUTATING WORKFLOW ACTION] Transitions a work package status directly in a single call (e.g. to 'In Progress', 'Closed', 'Tested') and optionally posts a comment.",
+    "op_attachment": "[DESTRUCTIVE ACTION] Files attached to a work package. 'list' shows them with size, type and their link in OpenProject (which needs an OpenProject login).",
+    "op_inventory": "Master data of the OpenProject instance: projects (only those this server may read), work package types, statuses and versions, each with id, type, name and a one-line summary.",
+    "op_project": "Finds and inspects OpenProject projects. 'list' shows the projects the authenticated user is a member of (scope 'all' for every visible one).",
+    "hub_find_tools": "START HERE to find the right tool: describe what you want to do (German or English, e.g. 'VMs auf Proxmox auflisten', 'restart a docker container') and get the matching tools with their schemas.",
+    "hub_tool_search": "Older name of hub_find_tools, kept for agents that know it: finds tools by what you want to do and returns them with their full schemas. Prefer hub_find_tools.",
+    "hub_call": "Call any tool you may use by its name, also one your client does not list (found with hub_find_tools, or one you know).",
+    "hub_my_account": "Get details about your Hub user account, roles, assigned groups and security status.",
+    "hb_cancel": "Cancel a running Hub background job by its id.",
+    "fb_find_ports_for_ip": "Finds all port forwardings that point to a specific LAN IP.",
+    "fb_find_host": "Fast lookup for network devices matching an IP address, hostname, MAC address, or partial search term.",
+    "fb_create_port_mapping": "[DESTRUCTIVE ACTION] Creates a new NAT port forwarding rule. The hub handles approval: it returns an approval_url for the operator.",
+    "fb_vault_get": "Retrieves a specific historical snapshot by ID.",
+    "px_version": "Get Proxmox VE server version, release, and repository info. Use first to verify connectivity.",
+    "px_list_vms": "List the virtual machines of a Proxmox node with status, CPU and memory.",
+    "qn_create_folder": "Creates a new folder inside an existing directory. Never overwrites; an existing name is an error. Two-phase: returns a preview and a confirmation token.",
+    "py_create_upload_url": "Generate a signed out-of-band HTTP upload URL and ready-to-run curl/PowerShell commands to transfer large files directly into your ephemeral Python workspace.",
+    "py_create_download_url": "Generate a signed out-of-band HTTP download URL and curl/PowerShell commands to download artifacts or processed reports from your workspace.",
+    "dk_restart_container": "Restart a docker container on a host.",
+}
+_AIS785_OTHER = {
+    "mcp_MSOffice365MCP_m365_create_event": ("mcp-MSOffice365MCP", "Create a new event or meeting in Outlook Calendar or a shared calendar (e.g. URLAUB / Officezeiten)."),
+    "mcp_MSOffice365MCP_m365_create_sharepoint_folder": ("mcp-MSOffice365MCP", "Create a folder in a SharePoint document library."),
+    "mcp_MSOffice365MCP_m365_get_or_create_direct_chat": ("mcp-MSOffice365MCP", "Get or create a 1:1 Teams chat with a person by name, email/UPN or Graph user id."),
+    "mcp_MSOffice365MCP_m365_list_emails": ("mcp-MSOffice365MCP", "List emails in a mailbox folder."),
+    "mcp_GithubMCP_create_pull_request": ("mcp-GithubMCP", "Create a new pull request in a GitHub repository."),
+    "mcp_GithubMCP_list_issues": ("mcp-GithubMCP", "List issues in a GitHub repository."),
+}
+
+_AIS785_SUITE_PREFIX = "mcp_AIMDSSuiteMCP_mcp_openproject_"
+_AIS785_HUB_PREFIX = "mcp_MCPUnifiedHub_"
+
+
+def _ais785_tools():
+    tools = [(f"{_AIS785_SUITE_PREFIX}{t}", "mcp-AIMDSSuiteMCP", d) for t, d in _AIS785_SUITE_OP.items()]
+    tools += [(f"mcp_AIMDSSuiteMCP_{t}", "mcp-AIMDSSuiteMCP", d) for t, d in _AIS785_SUITE_OTHER.items()]
+    tools += [(f"{_AIS785_HUB_PREFIX}{t}", "mcp-MCPUnifiedHub", d) for t, d in _AIS785_HUB.items()]
+    tools += [(n, ts, d) for n, (ts, d) in _AIS785_OTHER.items()]
+    return tools
+
+
+def _ais785_catalog(monkeypatch):
+    """(catalog, defs) for the AIS-785 session's servers."""
+    import tools.tool_search as ts
+    from tools.registry import registry
+
+    monkeypatch.setattr(ts, "_get_mcp_server_metadata", lambda: {})
+    monkeypatch.setattr(ts, "_get_dynamic_mcp_keywords_map", lambda: {})
+    monkeypatch.setattr(ts, "_get_dynamic_skill_keywords_map", lambda: {})
+    monkeypatch.setattr(ts, "_manifest_default_tools", lambda source: [])
+    tools = _ais785_tools()
+    defs = []
+    for name, toolset, desc in tools:
+        registry.register(name=name, toolset=toolset, schema=_td(name, desc)["function"],
+                          handler=lambda a, **k: "{}", description=desc)
+        defs.append(_td(name, desc))
+    try:
+        return ts.build_catalog(defs), defs
+    finally:
+        for name, _toolset, _desc in tools:
+            registry.deregister(name)
+
+
+class TestAIS785ToolDiscoveryAcrossServers:
+    """The session's real queries against the Suite (pm_*) + hub (op_*) catalog."""
+
+    @pytest.fixture
+    def search(self, monkeypatch):
+        import tools.tool_search as ts
+
+        catalog, defs = _ais785_catalog(monkeypatch)
+        monkeypatch.setattr(ts, "_cached_catalog", lambda deferrable, skills: catalog)
+        monkeypatch.setattr(ts, "_ensure_mcp_discovery_completed", lambda: None)
+
+        def _search(query, **args):
+            return json.loads(ts.dispatch_tool_search({"query": query, **args}, current_tool_defs=defs))
+
+        _search.catalog = catalog
+        return _search
+
+    @staticmethod
+    def _names(out):
+        return [m["name"] for m in out["matches"]]
+
+    @staticmethod
+    def _hub_op(names):
+        return [n for n in names if n.startswith(f"{_AIS785_HUB_PREFIX}op_")]
+
+    def test_ranked_openproject_query_shows_both_servers(self, search):
+        names = self._names(search("openproject board create"))
+        assert names[:2] == [f"{_AIS785_SUITE_PREFIX}pm_get_board", f"{_AIS785_SUITE_PREFIX}pm_list_boards"]
+        assert self._hub_op(names), names
+        longer = self._names(search("openproject board create copy migrate column query grid", limit=15))
+        assert self._hub_op(longer), longer
+
+    def test_openproject_browse_spans_servers_and_puts_deprecated_last(self, search):
+        out = search("openproject", limit=40)
+        names = self._names(out)
+        assert out["mode"] == "source_browse" and len(names) == 20 and out["truncated"] is True
+        assert set(self._hub_op(names)) == {f"{_AIS785_HUB_PREFIX}{t}" for t in _AIS785_HUB if t.startswith("op_")}
+        assert any(n.startswith(_AIS785_SUITE_PREFIX) for n in names[:3])
+        deprecated = {f"{_AIS785_SUITE_PREFIX}{t}" for t, d in _AIS785_SUITE_OP.items() if d.startswith("DEPRECATED")}
+        assert not deprecated & set(names), "deprecated aliases must not take browse slots"
+        # Unclamped, they come last.
+        from tools.tool_search import search_catalog
+
+        full = [e.name for e in search_catalog(search.catalog, "openproject", limit=60)]
+        assert set(full[-len(deprecated):]) == deprecated
+        assert not any(n.startswith(f"{_AIS785_HUB_PREFIX}px_") for n in full)
+
+    def test_mixed_language_query_never_comes_back_empty(self, search):
+        query = "OpenProject board anlegen Spalten Kanban Vorlage kopieren"
+        out = search(query, limit=10, kind="skill")  # the session asked for skills
+        names = self._names(out)
+        assert names and "kind_note" in out
+        assert f"{_AIS785_SUITE_PREFIX}pm_get_board" in names
+        assert self._hub_op(names), names
+        assert self._names(search(query, limit=10))[:len(names)] == names
+        assert self._names(search("kanban board anlegen erstellen", limit=15))[:2] == [
+            f"{_AIS785_SUITE_PREFIX}pm_get_board", f"{_AIS785_SUITE_PREFIX}pm_list_boards"]
+
+    def test_deprecated_tools_rank_last(self, search):
+        names = self._names(search("kanban board anlegen erstellen", limit=15))
+        flags = [_AIS785_SUITE_OP.get(n.removeprefix(_AIS785_SUITE_PREFIX), "").startswith("DEPRECATED") for n in names]
+        assert flags == sorted(flags), names
+
+    def test_hub_finder_is_named(self, search):
+        hint = search("openproject board create").get("finder_hint", "")
+        assert f"{_AIS785_HUB_PREFIX}hub_find_tools" in hint
+        assert "hub_tool_search" not in hint  # the alias points to hub_find_tools
+        assert "finder_hint" not in search("github pull request")
+
+    def test_namespace_carries_the_topic(self, search):
+        by_name = {e.name: e for e in search.catalog}
+        assert "openproject" in by_name[f"{_AIS785_HUB_PREFIX}op_my_work"]._namespace_tokens
+        assert "openproject" in by_name[f"{_AIS785_HUB_PREFIX}op_quick_status"]._namespace_tokens
+        assert "openproject" not in by_name[f"{_AIS785_HUB_PREFIX}px_version"]._namespace_tokens
+        assert "openproject" not in by_name["mcp_AIMDSSuiteMCP_mcp_memory_memory_search"]._namespace_tokens
+
+    def test_unrelated_queries_keep_their_top_hit(self, search):
+        assert self._names(search("proxmox vms auflisten"))[0] == f"{_AIS785_HUB_PREFIX}px_list_vms"
+        assert self._names(search("github pull request"))[0] == "mcp_GithubMCP_create_pull_request"
+        assert self._names(search("op_ board create", limit=20))[:2] == [
+            f"{_AIS785_SUITE_PREFIX}pm_get_board", f"{_AIS785_SUITE_PREFIX}pm_list_boards"]
+
+    def test_down_servers_are_reported(self, search, monkeypatch):
+        import tools.mcp_tool as mt
+
+        monkeypatch.setattr(mt, "_unavailable_servers", {"MCPUnifiedHub": {
+            "kind": "refused", "reason": "refused the connection (HTTP 403: loopback only)",
+            "tools": set(), "since": 0.0, "retry_in": 600.0}})
+        out = search("openproject board create")
+        assert out["unavailable_servers"] == [
+            {"server": "MCPUnifiedHub", "reason": "refused the connection (HTTP 403: loopback only)"}]
+        monkeypatch.setattr(mt, "_unavailable_servers", {})
+        assert "unavailable_servers" not in search("openproject board create")
+
+    def test_missing_tool_of_a_down_server_names_the_reason(self, monkeypatch):
+        import tools.mcp_tool as mt
+        from tools.tool_search import _describe_missing_tool
+
+        monkeypatch.setattr(mt, "_unavailable_servers", {"MCPUnifiedHub": {
+            "kind": "refused", "reason": "refused the connection (HTTP 403: loopback only)",
+            "tools": set(), "since": 0.0, "retry_in": 600.0}})
+        msg = _describe_missing_tool(f"{_AIS785_HUB_PREFIX}hub_find_tools")
+        assert "MCP server 'MCPUnifiedHub' refused the connection (HTTP 403: loopback only)" in msg
+        assert "Use tool_search" not in msg

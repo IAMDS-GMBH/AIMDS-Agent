@@ -60,6 +60,10 @@ _SESSION_HERMES_HOME.mkdir()
 os.environ["HERMES_HOME"] = str(_SESSION_HERMES_HOME)
 (_SESSION_TMP_ROOT / "documents").mkdir()
 os.environ["HERMES_DOCUMENTS_DIR"] = str(_SESSION_TMP_ROOT / "documents")
+# A failed MCP connect starts a background reconnect on the MCP loop
+# (AIS-785); tests that want it opt in. Without this every test that fails
+# a fake server would leave a sleeping reconnect behind.
+os.environ["HERMES_MCP_BACKGROUND_RECONNECT"] = "0"
 
 
 # ── Per-file process isolation ──────────────────────────────────────────────

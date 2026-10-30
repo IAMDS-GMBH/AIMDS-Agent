@@ -488,6 +488,23 @@ def resolve_unknown_tool_name(agent, name: str) -> Optional[str]:
     return None
 
 
+def unavailable_tool_error(name: str) -> Optional[str]:
+    """Why a called MCP tool is gone, when its server is down (AIS-785), else None.
+
+    The conversation loop answers a call to such a name with this instead of
+    "does not exist", so the model can tell the user what is wrong.
+    """
+    import sys
+
+    mcp_tool = sys.modules.get("tools.mcp_tool")
+    if mcp_tool is None:
+        return None
+    try:
+        return mcp_tool.unavailable_tool_error(name)
+    except Exception:
+        return None
+
+
 def unknown_tool_hint(agent) -> str:
     """Suffix for the 'does not exist' error when the bridge is active."""
     if not tool_search_active(agent):
@@ -704,5 +721,6 @@ __all__ = [
     "scoped_defs_map",
     "scoped_deferrable_names",
     "tool_search_active",
+    "unavailable_tool_error",
     "unknown_tool_hint",
 ]

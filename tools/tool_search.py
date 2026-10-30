@@ -389,6 +389,12 @@ class CatalogEntry:
     # One shared dict across the whole catalog, so the query can be weighted
     # with the same corpus statistics as the entries.
     _idf: Dict[str, float] = field(default_factory=dict)
+    # AIS-785: what the tool's namespace on its server is about. A hub that
+    # groups its OpenProject tools as `op_*` says "OpenProject" in most of
+    # their descriptions, not in every one; the namespace carries the topic
+    # to all of them (see `_assign_namespaces`).
+    _namespace_tokens: set[str] = field(default_factory=set)
+    _description_tokens: Optional[set[str]] = None  # lazily, see `_desc_tokens`
 
 
 from hermes_text_vector import build_vector as _shared_build_vector
@@ -462,6 +468,104 @@ def _mcp_name_group(name: str) -> str:
     if len(parts) >= 3 and parts[0].lower() == "mcp":
         return f"mcp_{parts[1].lower()}"
     return ""
+
+
+def _bare_tool_name(name: str) -> str:
+    """``mcp_<Server>_<tool>`` → ``<tool>`` as the server names it ("" for native tools)."""
+    parts = str(name or "").split("_")
+    if len(parts) >= 3 and parts[0].lower() == "mcp":
+        return "_".join(parts[2:])
+    return ""
+
+
+def _desc_tokens(entry: "CatalogEntry") -> "set[str]":
+    """Words of the entry's description (cached on the entry; catalogs are reused)."""
+    if entry._description_tokens is None:
+        entry._description_tokens = set(_tokenize(entry.description))
+    return entry._description_tokens
+
+
+# A namespace is a name prefix at least this many tools of one server share.
+_NAMESPACE_MIN_TOOLS = 3
+# A description word is the namespace's topic when this share of its tools uses it.
+_NAMESPACE_TOPIC_SHARE = 0.5
+
+
+def _assign_namespaces(catalog: List["CatalogEntry"]) -> None:
+    """Give every MCP tool the topic words of its namespace on its server (AIS-785).
+
+    A namespace is the shortest name prefix that several tools of a server
+    share but the whole server does not: `op` for a hub's `op_time`,
+    `op_project`, …; `mcp_openproject` for the Suite's
+    `mcp_openproject_pm_*` (every Suite tool starts with `mcp`). Its topic
+    is the prefix's own words plus the description words most of its tools
+    use — so `op_my_work`, whose description never says "OpenProject",
+    still answers to it like its siblings do.
+    """
+    from collections import Counter
+
+    by_source: Dict[str, List[CatalogEntry]] = {}
+    for entry in catalog:
+        if entry.kind == "tool" and entry.source == "mcp" and entry.source_name:
+            by_source.setdefault(entry.source_name, []).append(entry)
+    for entries in by_source.values():
+        segments = {id(e): [s for s in _bare_tool_name(e.name).lower().split("_") if s] for e in entries}
+        counts: Counter = Counter()
+        for segs in segments.values():
+            for k in range(1, len(segs)):
+                counts[tuple(segs[:k])] += 1
+        groups: Dict[tuple, List[CatalogEntry]] = {}
+        for entry in entries:
+            segs = segments[id(entry)]
+            for k in range(1, len(segs)):
+                shared = counts[tuple(segs[:k])]
+                if shared < _NAMESPACE_MIN_TOOLS:
+                    break
+                if shared < len(entries):
+                    groups.setdefault(tuple(segs[:k]), []).append(entry)
+                    break
+        for prefix, members in groups.items():
+            freq: Counter = Counter()
+            for member in members:
+                freq.update(_desc_tokens(member))
+            need = max(2, math.ceil(len(members) * _NAMESPACE_TOPIC_SHARE))
+            topic = {
+                t for t, n in freq.items()
+                if n >= need and len(t) >= 4 and t not in _STOP_WORDS and t not in _GENERIC_SEARCH_TERMS
+            }
+            topic.update(t for t in prefix if len(t) >= 2 and t not in _GENERIC_SEARCH_TERMS)
+            for member in members:
+                member._namespace_tokens = set(topic)
+
+
+_FINDER_VERBS = frozenset({"find", "search", "discover", "lookup"})
+_FINDER_OBJECTS = frozenset({"tool", "tools"})
+
+
+def _server_tool_finders(catalog: List["CatalogEntry"]) -> Dict[str, "CatalogEntry"]:
+    """``{source: tool}`` for servers that bring their own tool finder (AIS-785).
+
+    Recognised by name — a server tool whose own name says it finds/searches
+    tools (`hub_find_tools`, `hub_tool_search`). Of several, the one the
+    others do not point to wins: `hub_tool_search` says "Older name of
+    hub_find_tools", so `hub_find_tools` is named.
+    """
+    candidates: Dict[str, List[CatalogEntry]] = {}
+    for entry in catalog:
+        if entry.kind != "tool" or entry.source != "mcp" or not entry.source_name:
+            continue
+        words = set(_tokenize(_split_words(_bare_tool_name(entry.name))))
+        if words & _FINDER_VERBS and words & _FINDER_OBJECTS:
+            candidates.setdefault(entry.source_name, []).append(entry)
+    finders: Dict[str, CatalogEntry] = {}
+    for source, entries in candidates.items():
+        def _points_elsewhere(e: CatalogEntry) -> bool:
+            text = (e.description or "").lower()
+            return any(o is not e and _bare_tool_name(o.name).lower() in text for o in entries)
+
+        entries.sort(key=lambda e: (_is_deprecated(e.description), _points_elsewhere(e), e.name))
+        finders[source] = entries[0]
+    return finders
 
 
 def _split_words(text: str) -> str:
@@ -744,6 +848,7 @@ def build_catalog(
     for entry, text in zip(catalog, entry_texts):
         entry._idf = idf
         entry._vector = _build_vector(text, idf)
+    _assign_namespaces(catalog)
 
     return catalog
 
@@ -1180,7 +1285,36 @@ def _match_full_source(catalog: List[CatalogEntry], query_lower: str) -> List[Ca
 
             seen = {e.name for e in suite}
             hits = sorted(suite, key=_key) + [e for e in hits if e.name not in seen]
+    if hits:
+        hits = _span_topic_browse(catalog, hits, re.sub(r"[\W_]", "", query_lower))
     return hits
+
+
+def _span_topic_browse(catalog: List[CatalogEntry], hits: List[CatalogEntry], word: str) -> List[CatalogEntry]:
+    """A server browse that names a topic also lists the other servers' tools on it (AIS-785).
+
+    "openproject" browsed the Suite's pm_* tools only, while a hub's `op_*`
+    tools — whose descriptions and namespace say "OpenProject" — stayed out
+    of sight. Tools of other servers that carry the browsed word in their
+    name, namespace or description join; each server takes turns, so a big
+    server cannot fill every slot before the next one shows. Deprecated
+    tools go last: they are aliases of tools already listed.
+    """
+    seen = {e.name for e in hits}
+    extra: Dict[str, List[CatalogEntry]] = {}
+    if len(word) >= 3:
+        for entry in catalog:
+            if entry.kind != "tool" or entry.name in seen or not entry.source_name:
+                continue
+            if word in entry._name_tokens or word in entry._namespace_tokens or word in _desc_tokens(entry):
+                extra.setdefault(entry.source_name, []).append(entry)
+    groups = [list(hits)] + [sorted(extra[s], key=lambda e: e.name) for s in sorted(extra)]
+    merged: List[CatalogEntry] = []
+    for i in range(max(len(g) for g in groups)):
+        merged.extend(g[i] for g in groups if i < len(g))
+    return [e for e in merged if not _is_deprecated(e.description)] + [
+        e for e in merged if _is_deprecated(e.description)
+    ]
 
 
 # A server-browse result is capped at this many hits (see search_catalog);
@@ -1269,6 +1403,9 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
     if not query_raw:
         return []
     query_tokens = _tokenize(_split_words(query_raw))
+    # "OpenProject" is one word to the user: keep it next to its camelCase
+    # parts ("open", "project"), which name nothing (AIS-785).
+    query_tokens += [t for t in dict.fromkeys(_tokenize(query_raw)) if t not in query_tokens]
     if not query_tokens:
         return []
 
@@ -1328,11 +1465,26 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
     group_sizes = {g: len(v) for g, v in group_members.items()}
     group_name_hits: Dict[Tuple[str, str], int] = {}
 
+    # AIS-785: query words that name a server ("openproject") are topics. A
+    # tool of another server that says the word in its description or
+    # namespace is just as much "about" it as the named server's own tools —
+    # a hub's `op_*` tools must not lose every slot to the Suite's pm_*.
+    topic_tokens = {
+        qt for qt in query_tokens
+        if qt not in _GENERIC_SERVER_NAME_TOKENS and any(qt in e._server_tokens for e in catalog)
+    }
+
     k1 = 1.5
     b = 0.75
     scored: List[Tuple[float, CatalogEntry]] = []
     inherited: Dict[str, Tuple[float, CatalogEntry]] = {}  # successor of a deprecated hit -> its score
+    deprecated_names: set[str] = set()
+    topic_sources: set[str] = set()
     for entry in catalog:
+        entry_topics = (
+            {t for t in topic_tokens if t in entry._namespace_tokens or t in _desc_tokens(entry)}
+            if topic_tokens else set()
+        )
         # Precomputed in `build_catalog`; recomputed only for entries a
         # caller constructed by hand (several tests do this).
         entry_vec = entry._vector
@@ -1361,7 +1513,9 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
                 # update …) used to earn the same +5 per token, so every
                 # Jira tool outscored the Tempo tool whose name the query
                 # actually contained.
-                if q in original_tokens and (q in entry._name_tokens or q in entry._server_tokens):
+                if q in original_tokens and (
+                    q in entry._name_tokens or q in entry._server_tokens or q in entry_topics
+                ):
                     matched_name_tokens.add(q)
                 df = doc_freq.get(q, 0)
                 idf = math.log(1 + (n_docs - df + 0.5) / (df + 0.5))
@@ -1454,6 +1608,12 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
                 # Either OpenProject server; the Suite wins a tie (AIS-483).
                 boost += 31.0 if _openproject_kind(entry.name) == _OP_SUITE else 30.0
                 break
+            if qt in entry_topics:
+                # Same weight as naming the server (AIS-785).
+                boost += 30.0
+                if entry.kind == "tool" and entry.source_name:
+                    topic_sources.add(entry.source_name)
+                break
 
         # A tool its server marks deprecated ("DEPRECATED — use X …", e.g.
         # go-mcp-openproject 0.6's pm_search_work_packages, AIS-711) hands its
@@ -1480,6 +1640,7 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
             if successor is not None and not _match_belongs_to_sibling(catalog, entry, expanded_tokens):
                 inherited[successor.name] = (max(total_score, inherited.get(successor.name, (0.0, None))[0]), successor)
             total_score -= 25.0
+            deprecated_names.add(entry.name)
 
         scored.append((total_score, entry))
 
@@ -1497,6 +1658,10 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
                 scored.append((0.1, entry))
 
     scored.sort(key=lambda x: x[0], reverse=True)
+    # A deprecated tool is an alias of a live one: it ranks last (AIS-785).
+    scored = [x for x in scored if x[1].name not in deprecated_names] + [
+        x for x in scored if x[1].name in deprecated_names
+    ]
     results = [e for _, e in scored[:limit]]
 
     # Guarantee a slot for a server the query named outright. A source with
@@ -1517,23 +1682,41 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
         entry.source_name
         for entry in catalog
         if entry.kind == "tool" and entry.source_name and any(t in entry._server_tokens for t in query_tokens)
-    }
+    } | topic_sources
     if named_sources and scored:
-        represented = {e.source_name for e in results}
-        for source in sorted(named_sources - represented):
-            best = next((e for _, e in scored if e.source_name == source), None)
-            if best is None:
-                continue
-            if len(results) >= limit:
-                victim = next(
-                    (i for i in range(len(results) - 1, -1, -1) if results[i].source_name not in named_sources),
-                    None,
-                )
-                if victim is None:
-                    continue
-                results.pop(victim)
-            results.append(best)
-            represented.add(source)
+        # A server that is only "about" the topic (AIS-785) gets a fair share
+        # of the slots, not just one: a hub's op_* tools next to the Suite's
+        # pm_* for "openproject board create". It may take them from the
+        # server that holds more than its share.
+        share = max(1, limit // (len(named_sources) + 1)) if topic_sources else 1
+        for source in sorted(named_sources):
+            want = share if source in topic_sources else 1
+            have = sum(1 for e in results if e.source_name == source)
+            picks = [e for _, e in scored if e.source_name == source and e not in results][: max(0, want - have)]
+            for i, best in enumerate(picks):
+                if len(results) >= limit:
+                    victim = next(
+                        (j for j in range(len(results) - 1, -1, -1) if results[j].source_name not in named_sources),
+                        None,
+                    )
+                    if victim is None and topic_sources:
+                        counts: Dict[str, int] = {}
+                        for e in results:
+                            counts[e.source_name] = counts.get(e.source_name, 0) + 1
+                        victim = next(
+                            (j for j in range(len(results) - 1, -1, -1)
+                             if results[j].source_name != source and counts[results[j].source_name] > share),
+                            None,
+                        )
+                    if victim is None:
+                        break
+                    results.pop(victim)
+                if source in topic_sources:
+                    # Mid-list, so a caller that trims a few slots (skills,
+                    # kind filter) does not cut exactly these.
+                    results.insert(min(len(results), limit // 2 + i), best)
+                else:
+                    results.append(best)
 
     # MCP Server Grouping: if top matches belong to an MCP server/toolset,
     # include sibling tools from the same source so the model gets related actions in 1 turn.
@@ -1545,11 +1728,15 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 8) -> L
                 break
             if entry.source != "mcp":
                 continue
-            if entry.name not in seen_names and entry.source_name in top_sources:
+            if entry.name not in seen_names and entry.source_name in top_sources \
+                    and not _is_deprecated(entry.description):
                 results.append(entry)
                 seen_names.add(entry.name)
 
-    return results
+    # Deprecated aliases after every live tool, sibling fill included (AIS-785).
+    return [e for e in results if e.name not in deprecated_names] + [
+        e for e in results if e.name in deprecated_names
+    ]
 
 
 def cap_skill_hits(results: List[CatalogEntry], query: str, kind: Optional[str] = None) -> List[CatalogEntry]:
@@ -1890,8 +2077,14 @@ def dispatch_tool_search(args: Dict[str, Any],
     catalog = _cached_catalog(deferrable, skills)
     # Skills compete for the same slots; fetch a little deeper so the cap
     # does not leave the result short of tools.
-    hits = search_catalog(catalog, query, limit=limit + SKILL_HIT_CAP)
-    hits = cap_skill_hits(hits, query, kind)[:limit]
+    all_hits = search_catalog(catalog, query, limit=limit + SKILL_HIT_CAP)
+    hits = cap_skill_hits(all_hits, query, kind)[:limit]
+    kind_note = ""
+    if kind and not hits and all_hits:
+        # AIS-785: "kind: skill" for a task only tools cover came back empty
+        # and read as "nothing exists". Show what does match, marked by kind.
+        hits = cap_skill_hits(all_hits, query, None)[:limit]
+        kind_note = f"Nothing of kind '{kind}' matched; the other matches are listed (see each 'kind')."
     # A query that names a whole server browses its catalog (up to 60 hits);
     # loading all of those would defeat deferral, so only ranked searches
     # nominate hits for autoload. The executor (agent/deferred_tools.py)
@@ -1928,7 +2121,60 @@ def dispatch_tool_search(args: Dict[str, Any],
             "does not exist. Name a server (e.g. its tool prefix or 'OpenProjectMCP') to "
             "browse its whole catalog, or refine the task description."
         )
+    if kind_note:
+        payload["kind_note"] = kind_note
+    finder_hint = _finder_hint(catalog, tool_hits)
+    if finder_hint:
+        payload["finder_hint"] = finder_hint
+    unavailable = _unavailable_servers_note()
+    if unavailable:
+        payload["unavailable_servers"] = unavailable
     return json.dumps(payload, ensure_ascii=False)
+
+
+# At most this many servers are named per finder hint / unavailability note.
+_SEARCH_NOTE_MAX_SERVERS = 3
+
+
+def _finder_hint(catalog: List[CatalogEntry], tool_hits: List[CatalogEntry]) -> str:
+    """Name the own tool finder of each server among the hits (AIS-785).
+
+    A large server (a hub with ~300 tools) knows its catalog better than one
+    ranked search across every server does. Hermes does not call it; the
+    model may, to look further on that server.
+    """
+    sources = list(dict.fromkeys(h.source_name for h in tool_hits if h.source_name))
+    if not sources:
+        return ""
+    finders = _server_tool_finders(catalog)
+    named = [
+        f"{source.removeprefix('mcp-')}: {finders[source].name}"
+        for source in sources if source in finders
+    ][:_SEARCH_NOTE_MAX_SERVERS]
+    if not named:
+        return ""
+    return "These servers have their own tool finder that searches their full catalog — " + "; ".join(named)
+
+
+def _unavailable_servers_note() -> List[Dict[str, str]]:
+    """Configured MCP servers that are down right now, with the reason (AIS-785).
+
+    Their tools are out of the catalog while they are down; saying so keeps
+    the model from concluding the tools never existed.
+    """
+    import sys as _sys
+
+    mcp_tool = _sys.modules.get("tools.mcp_tool")
+    if mcp_tool is None:
+        return []
+    try:
+        rows = mcp_tool.get_unavailable_mcp_servers()
+    except Exception:
+        return []
+    return [
+        {"server": str(r.get("server", "")), "reason": str(r.get("reason", ""))}
+        for r in rows[:_SEARCH_NOTE_MAX_SERVERS]
+    ]
 
 
 def _resolve_tool_entry(name: str):
@@ -1993,9 +2239,17 @@ def _describe_missing_tool(name: str) -> str:
             get_mcp_server_registered_tool_names,
             get_mcp_status,
             sanitize_mcp_name_component,
+            unavailable_tool_error,
         )
     except Exception:
         return generic
+    try:
+        # AIS-785: its server is down — say what the server answered.
+        down = unavailable_tool_error(name)
+    except Exception:
+        down = None
+    if down:
+        return f"{base} {down}"
     try:
         status_rows = get_mcp_status() or []
     except Exception:
