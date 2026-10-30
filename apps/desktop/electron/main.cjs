@@ -28,6 +28,13 @@ const { pathToFileURL } = require('node:url')
 const { execFileSync, spawn } = require('node:child_process')
 const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = require('./bootstrap-platform.cjs')
 const { runBootstrap } = require('./bootstrap-runner.cjs')
+const {
+  WINDOW_BUTTON_POSITION,
+  nativeOverlayWidth,
+  normalizeTitleBarTheme,
+  titleBarOverlayOptions,
+  windowChromeOptions
+} = require('./titlebar.cjs')
 const { reportIncident: reportAutoIncident } = require('./incident-report.cjs')
 const { getInstallId, legacyClientId } = require('./install-id.cjs')
 const { suiteKeyHashPrefixes } = require('./suite-key-hash.cjs')
@@ -455,20 +462,6 @@ const APP_NAME = (() => {
     return INTERNAL_APP_NAME
   }
 })()
-const TITLEBAR_HEIGHT = 34
-const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
-const WINDOW_BUTTON_POSITION = {
-  x: 24,
-  y: TITLEBAR_HEIGHT / 2 - MACOS_TRAFFIC_LIGHTS_HEIGHT / 2
-}
-// Width Electron reserves for the Windows/Linux native min/max/close cluster
-// when `titleBarOverlay` is enabled. The OS paints these buttons in the
-// top-right corner of the renderer; we have to leave that much room on the
-// right edge so our system tools (file browser, haptics, settings) don't sit
-// underneath them. macOS uses left-side traffic lights instead and reports a
-// position via getWindowButtonPosition(), so this width is non-zero only on
-// non-macOS platforms.
-const NATIVE_OVERLAY_BUTTON_WIDTH = 144
 const APP_ICON_PATHS = [
   // Prefer packaged app icons so the Dock matches the installed app bundle icon.
   path.join(APP_ROOT, 'assets', 'icon.png'),
@@ -484,29 +477,26 @@ const APP_ICON_PATHS = [
 let rendererTitleBarTheme = null
 const terminalSessions = new Map()
 
-function isHexColor(value) {
-  return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value)
+function getTitleBarOverlayOptions() {
+  return titleBarOverlayOptions(process.platform, {
+    theme: rendererTitleBarTheme,
+    useDarkColors: nativeTheme.shouldUseDarkColors
+  })
 }
 
-function getTitleBarOverlayOptions() {
-  if (IS_MAC) {
-    return { height: TITLEBAR_HEIGHT }
-  }
-
-  if (rendererTitleBarTheme) {
-    return {
-      color: rendererTitleBarTheme.background,
-      height: TITLEBAR_HEIGHT,
-      symbolColor: rendererTitleBarTheme.foreground
+// AIS-798: every window with the app title bar (main + standalone session
+// windows) follows the theme; the native controls used to keep the default
+// grey in session windows. macOS has nothing to tint.
+function applyTitleBarOverlayToAllWindows() {
+  if (IS_MAC) return
+  const options = getTitleBarOverlayOptions()
+  for (const win of [mainWindow, ...sessionWindows.all()]) {
+    if (!win || win.isDestroyed()) continue
+    try {
+      win.setTitleBarOverlay?.(options)
+    } catch (error) {
+      rememberLog(`[titlebar] overlay update failed: ${error?.message || error}`)
     }
-  }
-
-  const useDarkColors = nativeTheme.shouldUseDarkColors
-
-  return {
-    color: useDarkColors ? '#111111' : '#f7f7f7',
-    height: TITLEBAR_HEIGHT,
-    symbolColor: useDarkColors ? '#f7f7f7' : '#242424'
   }
 }
 
@@ -4385,13 +4375,14 @@ function getNativeOverlayWidth() {
   // macOS reports traffic-light coords via windowButtonPosition; the
   // titlebarOverlay there doesn't reserve right-edge space. Windows/Linux
   // render the native window-controls overlay on the right, so the renderer
-  // needs to inset its right cluster by this much to clear them.
-  return IS_MAC ? 0 : NATIVE_OVERLAY_BUTTON_WIDTH
+  // needs to inset its right cluster by this much to clear them (it measures
+  // the real width via the Window Controls Overlay API when it can).
+  return nativeOverlayWidth(process.platform)
 }
 
-function getWindowState() {
+function getWindowState(win = mainWindow) {
   return {
-    isFullscreen: Boolean(mainWindow?.isFullScreen?.()),
+    isFullscreen: Boolean(win?.isFullScreen?.()),
     nativeOverlayWidth: getNativeOverlayWidth(),
     windowButtonPosition: getWindowButtonPosition()
   }
@@ -4482,11 +4473,13 @@ function sendOpenUpdatesRequested() {
   mainWindow.focus()
 }
 
-function sendWindowStateChanged(nextIsFullscreen) {
-  if (!mainWindow || mainWindow.isDestroyed()) return
-  const { webContents } = mainWindow
+// The window whose state changed gets the update — a session window going
+// fullscreen used to re-layout the main window's title bar instead.
+function sendWindowStateChanged(nextIsFullscreen, win = mainWindow) {
+  if (!win || win.isDestroyed()) return
+  const { webContents } = win
   if (!webContents || webContents.isDestroyed()) return
-  const state = getWindowState()
+  const state = getWindowState(win)
 
   if (typeof nextIsFullscreen === 'boolean') {
     state.isFullscreen = nextIsFullscreen
@@ -6551,10 +6544,7 @@ function createSessionWindow(sessionId) {
       minWidth: 420,
       minHeight: 620,
       title: 'Hermes',
-      titleBarStyle: 'hidden',
-      titleBarOverlay: getTitleBarOverlayOptions(),
-      trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
-      vibrancy: IS_MAC ? 'sidebar' : undefined,
+      ...windowChromeOptions(process.platform, getTitleBarOverlayOptions()),
       icon,
       backgroundColor: '#f7f7f7',
       webPreferences: {
@@ -6571,10 +6561,10 @@ function createSessionWindow(sessionId) {
       win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
     }
 
-    win.on('will-enter-full-screen', () => sendWindowStateChanged(true))
-    win.on('enter-full-screen', () => sendWindowStateChanged(true))
-    win.on('will-leave-full-screen', () => sendWindowStateChanged(false))
-    win.on('leave-full-screen', () => sendWindowStateChanged(false))
+    win.on('will-enter-full-screen', () => sendWindowStateChanged(true, win))
+    win.on('enter-full-screen', () => sendWindowStateChanged(true, win))
+    win.on('will-leave-full-screen', () => sendWindowStateChanged(false, win))
+    win.on('leave-full-screen', () => sendWindowStateChanged(false, win))
 
     wireCommonWindowHandlers(win)
 
@@ -6603,10 +6593,8 @@ function createWindow() {
     // inside the same band. On Windows/Linux, titleBarOverlay tells Electron
     // to paint native min/max/close in the top-right of the renderer; on
     // macOS it just reserves a content inset alongside the traffic lights.
-    titleBarStyle: 'hidden',
-    titleBarOverlay: getTitleBarOverlayOptions(),
-    trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
-    vibrancy: IS_MAC ? 'sidebar' : undefined,
+    // Shared with session windows via windowChromeOptions (AIS-798).
+    ...windowChromeOptions(process.platform, getTitleBarOverlayOptions()),
     icon,
     backgroundColor: '#f7f7f7',
     webPreferences: {
@@ -6639,7 +6627,7 @@ function createWindow() {
     if (!nativeThemeListenerInstalled) {
       nativeThemeListenerInstalled = true
       nativeTheme.on('updated', () => {
-        mainWindow?.setTitleBarOverlay?.(getTitleBarOverlayOptions())
+        applyTitleBarOverlayToAllWindows()
       })
     }
   }
@@ -7244,15 +7232,13 @@ ipcMain.handle('hermes:watchPreviewFile', (_event, url) => watchPreviewFile(Stri
 ipcMain.handle('hermes:stopPreviewFileWatch', (_event, id) => stopPreviewFileWatch(String(id || '')))
 
 ipcMain.on('hermes:titlebar-theme', (_event, payload) => {
-  if (!payload || !isHexColor(payload.background) || !isHexColor(payload.foreground)) {
+  const theme = normalizeTitleBarTheme(payload)
+  if (!theme) {
     return
   }
 
-  rendererTitleBarTheme = {
-    background: payload.background,
-    foreground: payload.foreground
-  }
-  mainWindow?.setTitleBarOverlay?.(getTitleBarOverlayOptions())
+  rendererTitleBarTheme = theme
+  applyTitleBarOverlayToAllWindows()
 })
 
 // AIS-482: a fixed target, not a renderer-supplied URL — openExternal stays

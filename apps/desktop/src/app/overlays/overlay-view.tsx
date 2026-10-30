@@ -136,7 +136,12 @@ export function OverlayView({
     <div
       className={cn(
         'fixed inset-0 z-50',
-        showFloating ? 'pointer-events-none' : 'bg-black/22 p-3 backdrop-blur-[0.125rem] sm:p-6'
+        // The card's top edge clears the band where Windows/Linux paint their
+        // native window controls, so the card's close button never sits under
+        // the window's own close button (AIS-798). macOS: band is 0.
+        showFloating
+          ? 'pointer-events-none'
+          : 'bg-black/22 p-3 pt-[max(0.75rem,var(--titlebar-native-band,0px))] backdrop-blur-[0.125rem] sm:p-6 sm:pt-[max(1.5rem,var(--titlebar-native-band,0px))]'
       )}
       data-floating={showFloating ? '' : undefined}
       onClick={event => {

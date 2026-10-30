@@ -163,3 +163,16 @@ test('registry trims the session id before keying', () => {
 
   assert.equal(registry.has('s1'), true)
 })
+
+test('registry lists only live windows (title bar theme broadcast, AIS-798)', () => {
+  const registry = createSessionWindowRegistry()
+  const first = makeFakeWindow()
+  const second = makeFakeWindow()
+
+  registry.openOrFocus('one', () => first)
+  registry.openOrFocus('two', () => second)
+  assert.deepEqual(registry.all(), [first, second])
+
+  second.destroy()
+  assert.deepEqual(registry.all(), [first])
+})
