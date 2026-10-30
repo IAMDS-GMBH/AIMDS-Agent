@@ -23,6 +23,8 @@ export const SIDEBAR_SESSIONS_PAGE_SIZE = 50
 
 const SIDEBAR_PINNED_STORAGE_KEY = 'hermes.desktop.pinnedSessions'
 const SIDEBAR_AGENTS_GROUPED_STORAGE_KEY = 'hermes.desktop.agentsGroupedByWorkspace'
+const SIDEBAR_BACKGROUND_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarBackgroundOpen'
+// Retired with the automations section (AIS-794).
 const SIDEBAR_CRON_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarCronOpen'
 const SIDEBAR_MESSAGING_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarMessagingOpen'
 const SIDEBAR_SESSION_ORDER_STORAGE_KEY = 'hermes.desktop.sessionOrder'
@@ -64,10 +66,11 @@ export const $sidebarPinsOpen = atom(true)
 // rows on `sidebarOpen || this`.
 export const $sidebarOverlayMounted = atom(false)
 export const $sidebarRecentsOpen = atom(true)
-// Cron-job sessions live in their own section below recents, collapsed by
-// default (it only renders at all when cron sessions exist) so the
-// scheduler's `[IMPORTANT: …]` first-message previews don't spam recents.
-export const $sidebarCronOpen = atom(storedBoolean(SIDEBAR_CRON_OPEN_STORAGE_KEY, false))
+// "Im Hintergrund" (AIS-794): agent runs + automations, high up in the
+// sidebar and open by default. It only renders when something runs in the
+// background. Its own key: the old automations section persisted its
+// collapsed default for everyone, which must not carry over.
+export const $sidebarBackgroundOpen = atom(storedBoolean(SIDEBAR_BACKGROUND_OPEN_STORAGE_KEY, true))
 // Messaging platform sections collapse by default (they can be numerous and
 // tall). We persist the ids the user has *explicitly expanded*, so the default
 // stays collapsed unless they've opened a platform before.
@@ -80,12 +83,13 @@ export const $isSidebarResizing = atom(false)
 export const $sessionsLimit = atom(SIDEBAR_SESSIONS_PAGE_SIZE)
 
 $pinnedSessionIds.subscribe(ids => persistStringArray(SIDEBAR_PINNED_STORAGE_KEY, [...ids]))
-$sidebarCronOpen.subscribe(open => persistBoolean(SIDEBAR_CRON_OPEN_STORAGE_KEY, open))
+$sidebarBackgroundOpen.subscribe(open => persistBoolean(SIDEBAR_BACKGROUND_OPEN_STORAGE_KEY, open))
 $sidebarMessagingOpenIds.subscribe(ids => persistStringArray(SIDEBAR_MESSAGING_OPEN_STORAGE_KEY, [...ids]))
 // Recents and workspace groups follow the latest activity. The saved manual
 // orders froze them at first sight (AIS-459), so drop what older builds stored.
 persistString(SIDEBAR_SESSION_ORDER_STORAGE_KEY, null)
 persistString(SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY, null)
+persistString(SIDEBAR_CRON_OPEN_STORAGE_KEY, null)
 $sidebarAgentsGrouped.subscribe(grouped => persistBoolean(SIDEBAR_AGENTS_GROUPED_STORAGE_KEY, grouped))
 $panesFlipped.subscribe(flipped => persistBoolean(PANES_FLIPPED_STORAGE_KEY, flipped))
 
@@ -142,8 +146,8 @@ export function setSidebarRecentsOpen(open: boolean) {
   $sidebarRecentsOpen.set(open)
 }
 
-export function setSidebarCronOpen(open: boolean) {
-  $sidebarCronOpen.set(open)
+export function setSidebarBackgroundOpen(open: boolean) {
+  $sidebarBackgroundOpen.set(open)
 }
 
 export function toggleSidebarMessagingOpen(sourceId: string) {

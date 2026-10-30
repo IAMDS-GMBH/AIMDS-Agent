@@ -108,7 +108,8 @@ export type CommandDispatchResponse =
   | SkillCommandDispatchResponse
   | SendCommandDispatchResponse
 
-export type SidebarNavId = 'artifacts' | 'command-center' | 'discover' | 'new-session' | 'settings' | 'skills' | 'todos'
+// AIS-794: 'start' and 'tasks' are reserved slots (see SIDEBAR_NAV_SLOTS).
+export type SidebarNavId = 'discover' | 'new-session' | 'start' | 'tasks' | 'todos'
 
 export interface SidebarNavItem {
   id: SidebarNavId

@@ -1,9 +1,8 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
-import { SidebarGroup, SidebarGroupContent } from '@/components/ui/sidebar'
 import { Tip } from '@/components/ui/tooltip'
 import { getCronJobRuns, type SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -11,10 +10,11 @@ import { cn } from '@/lib/utils'
 import { $selectedStoredSessionId } from '@/store/session'
 import type { CronJob } from '@/types/hermes'
 
-import { compareByOutputDesc, hasNewOutput, jobState, jobTitle, STATE_DOT } from '../../cron/job-state'
-import { SidebarPanelLabel } from '../../shell/sidebar-label'
+import { hasNewOutput, jobState, jobTitle, STATE_DOT } from '../../cron/job-state'
 
-import { SidebarLoadMoreRow } from './load-more-row'
+// One automation (cron job) row of the sidebar's "Im Hintergrund" section
+// (AIS-794, background-section.tsx): state pip, name, countdown or "New" pill,
+// quick actions on hover and an inline peek at the latest runs.
 
 const INACTIVE_STATES = new Set(['completed', 'disabled', 'error', 'paused', 'waiting'])
 
@@ -25,11 +25,6 @@ const PEEK_RUN_LIMIT = 5
 // Runs are written by the background scheduler tick (no UI signal), so poll the
 // open peek so a freshly-fired run shows up within a few seconds.
 const PEEK_POLL_INTERVAL_MS = 8000
-
-// Keep the section compact: show a few jobs up front, reveal more in larger
-// steps on demand (mirrors the messaging sections in the sidebar).
-const INITIAL_VISIBLE_JOBS = 3
-const LOAD_MORE_STEP = 10
 
 const relativeFmt = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto', style: 'short' })
 
@@ -80,144 +75,7 @@ function formatRunTime(seconds?: null | number): string {
     : date.toLocaleString(undefined, { day: 'numeric', hour: 'numeric', minute: '2-digit', month: 'short' })
 }
 
-interface SidebarCronJobsSectionProps {
-  jobs: CronJob[]
-  label: string
-  max?: number
-  // Open the job's newest artifact in the preview (marks it seen). A run id
-  // targets that run's artifact instead of the newest one.
-  onOpenArtifact: (jobId: string, run?: SessionInfo) => void
-  // Open a run session's chat (1 click to output).
-  onOpenRun: (sessionId: string) => void
-  // Open the full Cron page focused on this job (manage / full history).
-  onManageJob: (jobId: string) => void
-  // Fire the job now.
-  onTriggerJob: (jobId: string) => void
-  onToggle: () => void
-  open: boolean
-}
-
-export function SidebarCronJobsSection({
-  jobs,
-  label,
-  max = 50,
-  onManageJob,
-  onOpenArtifact,
-  onOpenRun,
-  onTriggerJob,
-  onToggle,
-  open
-}: SidebarCronJobsSectionProps) {
-  const { t } = useI18n()
-  const [nowMs, setNowMs] = useState(() => Date.now())
-  // Single-open inline peek so the section stays scannable.
-  const [peekJobId, setPeekJobId] = useState<null | string>(null)
-  // Rows revealed so far; starts compact, grows in steps via "load more".
-  const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE_JOBS)
-
-  // One clock for the whole section (rows are pure) so the countdowns tick
-  // without re-rendering the rest of the sidebar. Only runs while expanded.
-  useEffect(() => {
-    if (!open) {
-      return
-    }
-
-    const id = window.setInterval(() => setNowMs(Date.now()), 1000)
-
-    return () => window.clearInterval(id)
-  }, [open])
-
-  // Unseen output floats to the top (newest artifact first) so a fresh brief is
-  // the first row. Below that: upcoming first (soonest next run), jobs with no
-  // next run sink to the bottom, then alphabetical for stability.
-  const sorted = useMemo(() => {
-    return [...jobs].sort((a, b) => {
-      const aNew = hasNewOutput(a)
-      const bNew = hasNewOutput(b)
-
-      if (aNew !== bNew) {
-        return aNew ? -1 : 1
-      }
-
-      if (aNew && bNew) {
-        return compareByOutputDesc(a, b)
-      }
-
-      const an = nextRunMs(a)
-      const bn = nextRunMs(b)
-
-      if (an !== null && bn !== null && an !== bn) {
-        return an - bn
-      }
-
-      if (an === null && bn !== null) {
-        return 1
-      }
-
-      if (an !== null && bn === null) {
-        return -1
-      }
-
-      return jobTitle(a).localeCompare(jobTitle(b))
-    })
-  }, [jobs])
-
-  const cap = Math.min(visibleCount, max)
-  const shown = sorted.slice(0, cap)
-  const hiddenCount = Math.min(sorted.length, max) - shown.length
-  // When capped, signal "50+" rather than implying the list is complete.
-  const countLabel = jobs.length > max ? `${max}+` : String(jobs.length)
-  const unseenCount = useMemo(() => jobs.filter(hasNewOutput).length, [jobs])
-
-  return (
-    <SidebarGroup className="shrink-0 p-0 pb-1">
-      <div className="group/section flex shrink-0 items-center justify-between pb-1 pt-1.5">
-        <button
-          className="group/section-label flex w-fit items-center gap-1 bg-transparent text-left leading-none"
-          onClick={onToggle}
-          type="button"
-        >
-          <SidebarPanelLabel>{label}</SidebarPanelLabel>
-          <span className="text-[0.6875rem] font-medium text-(--ui-text-quaternary)">{countLabel}</span>
-          {unseenCount > 0 && (
-            <span className="text-[0.6875rem] font-semibold text-(--theme-primary)">
-              {t.cron.unseenCount(unseenCount)}
-            </span>
-          )}
-          <DisclosureCaret
-            className="text-(--ui-text-tertiary) opacity-0 transition group-hover/section-label:opacity-100"
-            open={open}
-          />
-        </button>
-      </div>
-      {open && (
-        <SidebarGroupContent className="flex max-h-72 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75 compact:max-h-none compact:overflow-visible">
-          {shown.map(job => (
-            <CronJobSidebarRow
-              expanded={peekJobId === job.id}
-              job={job}
-              key={job.id}
-              nowMs={nowMs}
-              onManage={() => onManageJob(job.id)}
-              onOpenArtifact={run => onOpenArtifact(job.id, run)}
-              onOpenRun={onOpenRun}
-              onTogglePeek={() => setPeekJobId(prev => (prev === job.id ? null : job.id))}
-              onTrigger={() => onTriggerJob(job.id)}
-            />
-          ))}
-          {hiddenCount > 0 && (
-            <SidebarLoadMoreRow
-              onClick={() => setVisibleCount(count => count + LOAD_MORE_STEP)}
-              step={Math.min(LOAD_MORE_STEP, hiddenCount)}
-            />
-          )}
-        </SidebarGroupContent>
-      )}
-    </SidebarGroup>
-  )
-}
-
-function CronJobSidebarRow({
+export function CronJobSidebarRow({
   expanded,
   job,
   nowMs,
@@ -247,7 +105,7 @@ function CronJobSidebarRow({
 
   return (
     <div>
-      <div className="group/cron relative grid min-h-[1.625rem] grid-cols-[minmax(0,1fr)_auto] items-center rounded-md hover:bg-(--chrome-action-hover)">
+      <div className="group/cron relative grid min-h-[1.625rem] grid-cols-[minmax(0,1fr)_auto] items-center rounded-control-sm hover:bg-(--chrome-action-hover)">
         {/* Lead with the dot in the same w-3.5 cell + pl-2 the session rows use
             so the cron dots line up with the sessions above; the caret sits next
             to the label (matching the other sidebar disclosures) and the whole
@@ -313,7 +171,7 @@ function CronJobSidebarRow({
             <Tip label={c.triggerNow}>
               <button
                 aria-label={c.triggerNow}
-                className="grid size-5 place-items-center rounded-sm text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground"
+                className="grid size-5 place-items-center rounded-control-sm text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground"
                 onClick={onTrigger}
                 type="button"
               >
@@ -323,7 +181,7 @@ function CronJobSidebarRow({
             <Tip label={c.manage}>
               <button
                 aria-label={c.manage}
-                className="grid size-5 place-items-center rounded-sm text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground"
+                className="grid size-5 place-items-center rounded-control-sm text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground"
                 onClick={onManage}
                 type="button"
               >
@@ -398,7 +256,7 @@ function CronJobSidebarRuns({
             return (
               <button
                 className={cn(
-                  'flex items-center gap-1 truncate rounded-md px-1.5 py-0.5 text-left text-[0.6875rem] tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
+                  'flex items-center gap-1 truncate rounded-control-sm px-1.5 py-0.5 text-left text-[0.6875rem] tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
                   run.id === selectedSessionId
                     ? 'bg-(--ui-row-active-background) text-foreground'
                     : 'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'

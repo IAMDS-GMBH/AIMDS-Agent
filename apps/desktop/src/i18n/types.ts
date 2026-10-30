@@ -1127,6 +1127,22 @@ export interface Translations {
     pinned: string
     sessions: string
     cronJobs: string
+    background: string
+    backgroundActive: (count: number) => string
+    backgroundRun: Record<'done' | 'failed' | 'running', string>
+    openBackgroundAgents: string
+    openAutomations: string
+    timeGroups: Record<'older' | 'today' | 'week' | 'yesterday', string>
+    account: {
+      menu: string
+      profiles: string
+      allProfiles: string
+      newProfile: string
+      manageProfiles: string
+      settings: string
+      accounts: string
+      helpFeedback: string
+    }
     groupAriaGrouped: string
     groupAriaUngrouped: string
     groupTitleGrouped: string

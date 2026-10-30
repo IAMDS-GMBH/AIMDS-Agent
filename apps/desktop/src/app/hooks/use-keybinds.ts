@@ -48,7 +48,7 @@ import {
   PROFILES_ROUTE,
   sessionRoute,
   SETTINGS_ROUTE,
-  SKILLS_ROUTE
+  SETTINGS_SKILLS_ROUTE
 } from '../routes'
 
 export interface KeybindRuntimeDeps {
@@ -117,7 +117,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'nav.commandCenter': deps.toggleCommandCenter,
     'nav.settings': () => navigate(SETTINGS_ROUTE),
     'nav.profiles': () => navigate(PROFILES_ROUTE),
-    'nav.skills': () => navigate(SKILLS_ROUTE),
+    'nav.skills': () => navigate(SETTINGS_SKILLS_ROUTE),
     'nav.artifacts': () => navigate(ARTIFACTS_ROUTE),
     'nav.cron': () => navigate(CRON_ROUTE),
     'nav.agents': () => navigate(AGENTS_ROUTE),

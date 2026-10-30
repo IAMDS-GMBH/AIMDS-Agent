@@ -55,7 +55,7 @@ import {
   PROFILES_ROUTE,
   sessionRoute,
   SETTINGS_ROUTE,
-  SKILLS_ROUTE
+  SETTINGS_SKILLS_ROUTE
 } from '../routes'
 import { FIELD_LABELS, SECTIONS } from '../settings/constants'
 import { fieldCopyForSchemaKey } from '../settings/field-copy'
@@ -305,7 +305,7 @@ export function CommandPalette() {
             id: 'nav-skills',
             keywords: ['tools', 'toolsets'],
             label: cc.nav.skills.title,
-            run: go(SKILLS_ROUTE)
+            run: go(SETTINGS_SKILLS_ROUTE)
           },
           {
             action: 'nav.artifacts',
