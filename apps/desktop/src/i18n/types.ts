@@ -314,6 +314,13 @@ export interface Translations {
       intro: string
       colorMode: string
       colorModeDesc: string
+      threadWidth: {
+        label: string
+        description: string
+        normal: string
+        wide: string
+        full: string
+      }
       toolViewTitle: string
       toolViewDesc: string
       product: string

@@ -14,7 +14,6 @@ import {
 
 import { setMutableRef } from '@/lib/mutable-ref'
 import { createSmoothScroller, type SmoothScrollController } from '@/lib/smooth-scroll'
-import { cn } from '@/lib/utils'
 import { setThreadScrolledUp } from '@/store/thread-scroll'
 
 const ESTIMATED_ITEM_HEIGHT = 220
@@ -174,16 +173,14 @@ const VirtualizedThreadInner: FC<VirtualizedThreadProps> = ({
       >
         {renderEmpty ? (
           <div
-            className="mx-auto grid h-full w-full max-w-(--composer-width) grid-rows-[minmax(0,1fr)_auto] min-w-0 gap-(--conversation-turn-gap) px-6 py-8"
+            className="mx-auto grid h-full w-(--thread-width) max-w-full grid-rows-[minmax(0,1fr)_auto] min-w-0 gap-(--conversation-turn-gap) py-8"
             data-slot="aui_thread-content"
           >
             {emptyPlaceholder}
           </div>
         ) : (
           <div
-            className={cn(
-              'mx-auto flex w-full max-w-(--composer-width) min-w-0 flex-col px-6 pt-[calc(var(--titlebar-height)+1.5rem)]'
-            )}
+            className="mx-auto flex w-(--thread-width) max-w-full min-w-0 flex-col pt-[calc(var(--titlebar-height)+1.5rem)]"
             data-slot="aui_thread-content"
             ref={contentRef}
           >

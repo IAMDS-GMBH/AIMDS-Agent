@@ -401,6 +401,14 @@ export const en: Translations = {
         'These are desktop-only display preferences. Mode controls brightness; theme controls the accent palette and chat surface styling.',
       colorMode: 'Color Mode',
       colorModeDesc: 'Pick a fixed mode or let Hermes follow your system setting.',
+      threadWidth: {
+        label: 'Chat width',
+        description:
+          'How wide answers and the input field may grow. Wide shows more per line, Full uses the whole window.',
+        normal: 'Normal',
+        wide: 'Wide',
+        full: 'Full'
+      },
       toolViewTitle: 'Tool Call Display',
       toolViewDesc: 'Product hides raw tool payloads; Technical shows full input/output.',
       product: 'Product',
