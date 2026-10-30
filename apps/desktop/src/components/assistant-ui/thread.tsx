@@ -71,6 +71,7 @@ import {
 } from '@/components/assistant-ui/tool-fallback'
 import { liveStepLineAtEnd, selectMessageRunning } from '@/components/assistant-ui/tool-fallback-model'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
+import { UnderstoodNotice } from '@/components/assistant-ui/understood-notice'
 import { UserMessageText } from '@/components/assistant-ui/user-message-text'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
@@ -173,6 +174,14 @@ export const Thread: FC<{
     [cwd, gateway, onBranchInNewChat, onCancel, sessionId]
   )
 
+  // AIS-789: what the model understood, pinned while its question is out of view.
+  const turnNotice = useCallback(
+    (userMessageIndex: number) => (
+      <UnderstoodNotice key={userMessageIndex} messageIndex={userMessageIndex} sessionId={sessionId} />
+    ),
+    [sessionId]
+  )
+
   const emptyPlaceholder = intro ? (
     <div className="flex min-h-0 w-full flex-col items-center justify-center pt-[var(--composer-measured-height)]">
       <Intro {...intro} />
@@ -188,6 +197,7 @@ export const Thread: FC<{
           emptyPlaceholder={emptyPlaceholder}
           loadingIndicator={loading === 'response' ? <ResponseLoadingIndicator sessionId={sessionId} /> : null}
           sessionKey={sessionKey}
+          turnNotice={turnNotice}
         />
         {loading === 'session' && <CenteredThreadSpinner />}
       </div>
@@ -262,7 +272,7 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
       ref={enterRef}
     >
       <div
-        className="wrap-anywhere min-w-0 max-w-full overflow-hidden text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground"
+        className="wrap-anywhere min-w-0 max-w-full overflow-hidden text-pretty text-[length:var(--thread-text-font-size)] leading-(--dt-line-height) text-foreground"
         data-slot="aui_assistant-message-content"
       >
         {hoistedTodos.length > 0 && <HoistedTodoPanel todos={hoistedTodos} />}
@@ -757,10 +767,13 @@ function messageAttachmentRefs(value: unknown): string[] {
   return value.every(ref => typeof ref === 'string') ? value : EMPTY_ATTACHMENT_REFS
 }
 
-function StickyHumanMessageContainer({ children }: { children: ReactNode }) {
+// The question scrolls with its answer (AIS-789). It used to stay sticky at
+// the top and covered the start of a long answer; the pinned understood
+// notice (UnderstoodNotice) takes that place now, one line high.
+function HumanMessageContainer({ children }: { children: ReactNode }) {
   return (
     <div
-      className="group/user-message sticky z-40 -mx-4 flex w-[calc(100%+2rem)] min-w-0 max-w-none flex-col items-stretch gap-0 self-end overflow-visible bg-(--ui-chat-surface-background) px-4 pb-(--conversation-turn-gap) pt-2"
+      className="group/user-message flex w-full min-w-0 max-w-none flex-col items-stretch gap-0 self-end overflow-visible pb-(--conversation-turn-gap) pt-2"
       data-role="user"
       data-slot="aui_user-message-root"
     >
@@ -774,11 +787,11 @@ function StickyHumanMessageContainer({ children }: { children: ReactNode }) {
 // they only differ in border weight, cursor, and padding-right (the
 // read-only view reserves room for the restore icon).
 //
-// no-drag: sticky bubbles park at --sticky-human-top (~4px), sliding under the
-// titlebar's [-webkit-app-region:drag] strips (app-shell.tsx). Electron resolves
-// drag regions at the compositor level — z-index and pointer-events don't help —
-// so without the carve-out, clicking a stuck bubble drags the window instead of
-// opening the edit composer.
+// no-drag: a bubble scrolled up to the top edge can slide under the titlebar's
+// [-webkit-app-region:drag] strips (app-shell.tsx). Electron resolves drag
+// regions at the compositor level — z-index and pointer-events don't help —
+// so without the carve-out, clicking it drags the window instead of opening
+// the edit composer.
 const USER_BUBBLE_BASE_CLASS =
   'composer-human-message standalone-glass relative flex w-full min-w-0 max-w-full flex-col gap-1.5 overflow-hidden rounded-xl border bg-(--dt-user-bubble) px-3 py-2 text-left [-webkit-app-region:no-drag]'
 
@@ -816,9 +829,9 @@ const UserMessage: FC<{
     return messageAttachmentRefs(custom.attachmentRefs)
   })
 
-  // Sticky human bubbles clamp to ~2 lines with a soft fade so a long prompt
-  // doesn't dominate the viewport while the response streams underneath; the
-  // clamp lifts on hover / focus (see styles.css). We measure the *unclamped*
+  // Human bubbles clamp to ~2 lines with a soft fade so a long prompt doesn't
+  // dominate the thread; the clamp lifts on focus (see styles.css), and the
+  // pinned understood notice shows the whole question on demand. We measure the *unclamped*
   // inner wrapper so the ResizeObserver only fires on real content / width
   // changes, not on every frame while the outer max-height animates open.
   const clampInnerRef = useRef<HTMLDivElement | null>(null)
@@ -849,7 +862,7 @@ const UserMessage: FC<{
 
   const bubbleClassName = cn(
     USER_BUBBLE_BASE_CLASS,
-    'border-(--ui-stroke-tertiary) pr-9 text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground/95 transition-colors',
+    'border-(--ui-stroke-tertiary) pr-9 text-[length:var(--thread-text-font-size)] leading-(--dt-line-height) text-foreground/95 transition-colors',
     !threadRunning && 'cursor-pointer hover:border-(--ui-stroke-secondary)'
   )
 
@@ -875,7 +888,7 @@ const UserMessage: FC<{
 
   return (
     <MessagePrimitive.Root asChild>
-      <StickyHumanMessageContainer>
+      <HumanMessageContainer>
         <ActionBarPrimitive.Root className="relative w-full max-w-full" data-slot="aui_user-bubble-actions">
           <div className="human-message-with-todos-wrapper flex w-full flex-col gap-0">
             <div className="relative w-full">
@@ -945,7 +958,7 @@ const UserMessage: FC<{
             </BranchPickerPrimitive.Root>
           </div>
         </ActionBarPrimitive.Root>
-      </StickyHumanMessageContainer>
+      </HumanMessageContainer>
     </MessagePrimitive.Root>
   )
 }
@@ -1580,7 +1593,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
 
   return (
     <ComposerPrimitive.Root className="contents" data-slot="aui_edit-composer-root">
-      <StickyHumanMessageContainer>
+      <HumanMessageContainer>
         <div
           className="composer-human-message-container human-execution-message-top relative flex w-full items-start rounded-md bg-(--ui-chat-surface-background)"
           onBlur={handleEditBlur}
@@ -1614,7 +1627,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
               aria-label={copy.editMessage}
               autoFocus
               className={cn(
-                'ui-prompt-input-editor__input max-h-48 w-full resize-none bg-transparent p-0 pr-7 text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground/95 outline-none',
+                'ui-prompt-input-editor__input max-h-48 w-full resize-none bg-transparent p-0 pr-7 text-[length:var(--thread-text-font-size)] leading-(--dt-line-height) text-foreground/95 outline-none',
                 'empty:before:content-[attr(data-placeholder)] empty:before:text-muted-foreground/60',
                 '**:data-ref-text:cursor-default',
                 expanded ? 'min-h-16' : 'min-h-[1.25rem]'
@@ -1663,7 +1676,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
             </button>
           </div>
         </div>
-      </StickyHumanMessageContainer>
+      </HumanMessageContainer>
     </ComposerPrimitive.Root>
   )
 }

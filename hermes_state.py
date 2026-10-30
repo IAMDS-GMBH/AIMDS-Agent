@@ -517,7 +517,11 @@ CREATE TABLE IF NOT EXISTS messages (
     codex_message_items TEXT,
     platform_message_id TEXT,
     observed INTEGER DEFAULT 0,
-    active INTEGER NOT NULL DEFAULT 1
+    active INTEGER NOT NULL DEFAULT 1,
+    -- AIS-789: on a user message, the one-line restatement of what the model
+    -- understood (agent/understood.py). Display only: never sent to a model,
+    -- not part of the transcript sync.
+    understood TEXT
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (
@@ -2612,9 +2616,19 @@ class SessionDB:
         Used by transcript-rewrite flows such as /retry, /undo, and /compress.
         The delete + reinsert sequence must commit as one transaction so a
         mid-rewrite failure does not leave SQLite with a partial transcript.
+
+        A user message that comes back with the same content keeps its
+        ``understood`` line (AIS-789); the in-memory history never carries it.
         """
 
         def _do(conn):
+            kept_understood: Dict[str, List[str]] = {}
+            for row in conn.execute(
+                "SELECT content, understood FROM messages WHERE session_id = ? "
+                "AND role = 'user' AND understood IS NOT NULL ORDER BY id",
+                (session_id,),
+            ).fetchall():
+                kept_understood.setdefault(row[0] or "", []).append(row[1])
             conn.execute(
                 "DELETE FROM messages WHERE session_id = ?", (session_id,)
             )
@@ -2652,17 +2666,23 @@ class SessionDB:
                 platform_msg_id = (
                     msg.get("platform_message_id") or msg.get("message_id")
                 )
+                encoded_content = self._encode_content(msg.get("content"))
+                understood = None
+                if role == "user":
+                    queue = kept_understood.get(encoded_content or "")
+                    if queue:
+                        understood = queue.pop(0)
 
                 conn.execute(
                     """INSERT INTO messages (session_id, role, content, tool_call_id,
                        tool_calls, tool_name, timestamp, token_count, finish_reason,
                        reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                       codex_message_items, platform_message_id, observed)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       codex_message_items, platform_message_id, observed, understood)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         session_id,
                         role,
-                        self._encode_content(msg.get("content")),
+                        encoded_content,
                         msg.get("tool_call_id"),
                         tool_calls_json,
                         msg.get("tool_name"),
@@ -2676,6 +2696,7 @@ class SessionDB:
                         codex_message_items_json,
                         platform_msg_id,
                         1 if msg.get("observed") else 0,
+                        understood,
                     ),
                 )
                 total_messages += 1
@@ -3004,6 +3025,7 @@ class SessionDB:
         session_id: str,
         include_ancestors: bool = False,
         include_inactive: bool = False,
+        include_understood: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Load messages in the OpenAI conversation format (role + content dicts).
@@ -3012,6 +3034,10 @@ class SessionDB:
         By default only active messages are returned. Pass
         ``include_inactive=True`` to load soft-deleted (rewound) rows
         as well. See :meth:`rewind_to_message`.
+
+        ``include_understood=True`` adds the ``understood`` line to user
+        messages (AIS-789) — for display histories only: a model must never
+        receive the key.
         """
         session_ids = [session_id]
         if include_ancestors:
@@ -3023,7 +3049,8 @@ class SessionDB:
             rows = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
-                "codex_reasoning_items, codex_message_items, platform_message_id, observed "
+                "codex_reasoning_items, codex_message_items, platform_message_id, observed, "
+                "understood "
                 f"FROM messages WHERE session_id IN ({placeholders})"
                 f"{active_clause} ORDER BY id",
                 tuple(session_ids),
@@ -3054,6 +3081,8 @@ class SessionDB:
                 msg["message_id"] = row["platform_message_id"]
             if row["observed"]:
                 msg["observed"] = True
+            if include_understood and row["role"] == "user" and row["understood"]:
+                msg["understood"] = row["understood"]
             # Restore reasoning fields on assistant messages so providers
             # that replay reasoning (OpenRouter, OpenAI, Nous) receive
             # coherent multi-turn reasoning context.
@@ -3122,6 +3151,89 @@ class SessionDB:
             if prev.get("role") == "assistant" and (prev.get("content") or prev.get("tool_calls")):
                 return False
         return False
+
+    # =========================================================================
+    # What the model understood (AIS-789) — see agent/understood.py
+    # =========================================================================
+
+    def max_message_id(self) -> int:
+        """Highest message row id so far (0 for an empty store)."""
+        with self._lock:
+            row = self._conn.execute("SELECT MAX(id) FROM messages").fetchone()
+        return int((row[0] if row else 0) or 0)
+
+    def _conversation_session_ids(self, session_id: str) -> List[str]:
+        """Every session of one conversation: compression root to tip."""
+        tip = self.get_compression_tip(session_id) or session_id
+        return self._session_lineage_root_to_tip(tip)
+
+    def set_turn_understood(self, session_id: str, after_message_id: int, text: str) -> bool:
+        """Store a turn's understood line on its user message.
+
+        The turn's user message is the first active user row written after
+        ``after_message_id`` (the store's :meth:`max_message_id` when the turn
+        began), anywhere in the conversation — a compression mid-turn writes
+        it into the continuation. Later copies of the same message (the
+        compacted transcript repeats it) get the line too. Returns False while
+        the row does not exist yet.
+        """
+        text = (text or "").strip()
+        if not session_id or not text:
+            return False
+        session_ids = self._conversation_session_ids(session_id)
+        placeholders = ",".join("?" for _ in session_ids)
+
+        def _do(conn):
+            row = conn.execute(
+                f"SELECT id, content FROM messages WHERE session_id IN ({placeholders}) "
+                "AND role = 'user' AND active = 1 AND id > ? ORDER BY id LIMIT 1",
+                (*session_ids, int(after_message_id or 0)),
+            ).fetchone()
+            if row is None:
+                return False
+            conn.execute(
+                f"UPDATE messages SET understood = ? WHERE session_id IN ({placeholders}) "
+                "AND role = 'user' AND (id = ? OR (id > ? AND content IS ? AND understood IS NULL))",
+                (text, *session_ids, row[0], row[0], row[1]),
+            )
+            return True
+
+        return bool(self._execute_write(_do))
+
+    def inherit_understood(self, session_id: str) -> int:
+        """Copy understood lines onto the user messages a compression replayed.
+
+        The continuation session starts with a compacted copy of the recent
+        transcript; its user messages are new rows. Each one without a line
+        takes the line of the newest identical user message in an earlier
+        session of the conversation. Returns the number of rows updated.
+        """
+        session_ids = self._conversation_session_ids(session_id)
+        if len(session_ids) < 2:
+            return 0
+        placeholders = ",".join("?" for _ in session_ids)
+
+        def _do(conn):
+            rows = conn.execute(
+                f"SELECT id, session_id, content, understood FROM messages "
+                f"WHERE session_id IN ({placeholders}) AND role = 'user' AND content IS NOT NULL",
+                tuple(session_ids),
+            ).fetchall()
+            order = {sid: index for index, sid in enumerate(session_ids)}
+            rows = sorted(rows, key=lambda r: (order.get(r[1], 0), r[0]))
+            known: Dict[str, Tuple[str, str]] = {}
+            updated = 0
+            for row_id, sid, content, understood in rows:
+                if understood:
+                    known[content] = (sid, understood)
+                    continue
+                source = known.get(content)
+                if source and source[0] != sid:
+                    conn.execute("UPDATE messages SET understood = ? WHERE id = ?", (source[1], row_id))
+                    updated += 1
+            return updated
+
+        return int(self._execute_write(_do) or 0)
 
     # =========================================================================
     # Rewind (soft-delete) — see /rewind slash command + issue #21910

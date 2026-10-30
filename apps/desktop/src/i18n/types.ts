@@ -314,6 +314,13 @@ export interface Translations {
       intro: string
       colorMode: string
       colorModeDesc: string
+      threadWidth: {
+        label: string
+        description: string
+        normal: string
+        wide: string
+        full: string
+      }
       toolViewTitle: string
       toolViewDesc: string
       product: string
@@ -1667,6 +1674,13 @@ export interface Translations {
       attachingFile: string
       taskListResumed: string
       contextSummarized: string
+      /** AIS-789: the pinned notice of what was understood. */
+      understood: {
+        label: string
+        question: string
+        expand: string
+        collapse: string
+      }
     }
     approval: {
       gatewayDisconnected: string

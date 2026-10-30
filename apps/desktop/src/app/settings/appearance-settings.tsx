@@ -8,6 +8,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { Check, Download, Loader2, Palette, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
+import { $threadWidth, setThreadWidth, THREAD_WIDTHS } from '@/store/thread-width'
 import { useTheme } from '@/themes/context'
 import { installVscodeThemeFromMarketplace } from '@/themes/install'
 import { isUserTheme, removeUserTheme, resolveTheme } from '@/themes/user-themes'
@@ -145,6 +146,8 @@ export function AppearanceSettings() {
     profiles.find(profile => normalizeProfileKey(profile.name) === activeProfileKey)?.name ?? activeProfileKey
 
   const modeOptions = MODE_OPTIONS.map(({ id, icon }) => ({ icon, id, label: t.settings.modeOptions[id].label }))
+  const threadWidth = useStore($threadWidth)
+  const threadWidthOptions = THREAD_WIDTHS.map(id => ({ id, label: a.threadWidth[id] }))
 
   return (
     <SettingsContent>
@@ -174,6 +177,21 @@ export function AppearanceSettings() {
             }
             description={a.colorModeDesc}
             title={a.colorMode}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('crisp')
+                  setThreadWidth(id)
+                }}
+                options={threadWidthOptions}
+                value={threadWidth}
+              />
+            }
+            description={a.threadWidth.description}
+            title={a.threadWidth.label}
           />
 
           <ListRow

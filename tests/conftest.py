@@ -843,6 +843,8 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
     # tui_gateway and ACP tests). Process-wide, because a per-test monkeypatch
     # is undone before such a thread looks. Title tests unset it themselves.
     os.environ["HERMES_DISABLE_AUTO_TITLE"] = "1"
+    # Same for the per-turn "understood" line (AIS-789); its tests unset it.
+    os.environ["HERMES_DISABLE_UNDERSTOOD"] = "1"
     # Session-wide baseline of _hermetic_environment 4c/4f for threads that
     # outlive their test (its monkeypatch is undone by then) and for
     # subprocesses: no developer GitHub CLI / Codex CLI login either way.

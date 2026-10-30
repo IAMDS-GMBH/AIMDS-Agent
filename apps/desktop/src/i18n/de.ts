@@ -402,6 +402,14 @@ export const de
         'Nur Desktop-Anzeigeeinstellungen. Modus steuert Helligkeit; Theme steuert Akzentpalette und Chat-Oberfläche.',
       colorMode: 'Farbmodus',
       colorModeDesc: 'Festen Modus wählen oder Hermes der Systemeinstellung folgen lassen.',
+      threadWidth: {
+        label: 'Chat-Breite',
+        description:
+          'Wie breit Antworten und das Eingabefeld werden dürfen. Breit zeigt mehr pro Zeile, Voll nutzt das ganze Fenster.',
+        normal: 'Normal',
+        wide: 'Breit',
+        full: 'Voll'
+      },
       toolViewTitle: 'Tool-Aufruf-Anzeige',
       toolViewDesc: 'Produkt verbirgt rohe Tool-Daten; Technisch zeigt vollständige Ein-/Ausgabe.',
       product: 'Produkt',
@@ -1935,7 +1943,13 @@ export const de
       sendEdited: 'Bearbeitete Nachricht senden',
       attachingFile: 'Wird angehängt…',
       taskListResumed: 'Aufgabenliste wiederhergestellt',
-      contextSummarized: 'Kontext zusammengefasst'
+      contextSummarized: 'Kontext zusammengefasst',
+      understood: {
+        label: 'Verstanden',
+        question: 'Ursprüngliche Frage',
+        expand: 'Verstandenes und ursprüngliche Frage zeigen',
+        collapse: 'Ausblenden'
+      }
     },
     approval: {
       gatewayDisconnected: 'Hermes-Gateway ist nicht verbunden',

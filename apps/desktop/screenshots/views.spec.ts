@@ -52,7 +52,11 @@ async function settle(page: Page, view: ScreenshotView) {
     await page
       .locator(view.scrollToTop)
       .first()
-      .evaluate(element => element.scrollTo({ top: 0 }))
+      .evaluate((element, top) => element.scrollTo({ top }), view.scrollOffset ?? 0)
+  }
+
+  if (view.settled) {
+    await page.locator(view.settled).first().waitFor({ state: 'visible', timeout: READY_TIMEOUT_MS })
   }
 
   // Two frames for layout that reacts to the scroll / late measurements.

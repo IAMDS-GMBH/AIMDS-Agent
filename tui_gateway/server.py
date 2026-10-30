@@ -2407,6 +2407,15 @@ def _sync_session_key_after_compress(
         except Exception:
             pass
 
+    # AIS-789: the continuation replays recent user messages as new rows;
+    # they keep the understood line of the message they copy.
+    try:
+        _db = getattr(agent, "_session_db", None) or _get_db()
+        if _db is not None and hasattr(_db, "inherit_understood"):
+            _db.inherit_understood(new_session_id)
+    except Exception:
+        logger.debug("understood: inheriting across the rotation failed", exc_info=True)
+
     # Tell the client the DB session id rotated so it can remap its stored
     # id / route; without this the desktop keeps routing (and later resuming)
     # by the ended parent id (AIS-275). All three sync call sites (manual
@@ -3962,6 +3971,20 @@ def _coerce_message_text(content: Any) -> str:
     return str(content)
 
 
+def _display_conversation(db, session_key: str) -> list[dict]:
+    """Root-to-tip history for display, with the AIS-789 understood lines.
+
+    Display only: the agent's own history is loaded without them.
+    """
+    try:
+        return db.get_messages_as_conversation(
+            session_key, include_ancestors=True, include_understood=True
+        )
+    except TypeError:
+        # Minimal session stores (tests, plugins) without the keyword.
+        return db.get_messages_as_conversation(session_key, include_ancestors=True)
+
+
 def _history_to_messages(history: list[dict]) -> list[dict]:
     messages = []
     tool_call_args = {}
@@ -3997,6 +4020,9 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         if not content_text.strip():
             continue
         msg = {"role": role, "text": content_text}
+        # AIS-789: what the model understood, shown as the pinned notice.
+        if role == "user" and isinstance(m.get("understood"), str) and m["understood"].strip():
+            msg["understood"] = m["understood"].strip()
         if role == "assistant":
             for key in (
                 "reasoning",
@@ -4412,9 +4438,7 @@ def _(rid, params: dict) -> dict:
     try:
         db.reopen_session(target)
         history = db.get_messages_as_conversation(target)
-        display_history = db.get_messages_as_conversation(
-            target, include_ancestors=True
-        )
+        display_history = _display_conversation(db, target)
         # AIS-469: slimmed messages come back from the Suite memory so the
         # resumed agent and the transcript see the full text.
         try:
@@ -5120,9 +5144,7 @@ def _(rid, params: dict) -> dict:
     db = _get_db()
     if db is not None and session.get("session_key"):
         try:
-            history = db.get_messages_as_conversation(
-                session["session_key"], include_ancestors=True
-            )
+            history = _display_conversation(db, session["session_key"])
         except Exception:
             pass
     return _ok(
@@ -5977,6 +5999,59 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     return stop
 
 
+def _desktop_client() -> bool:
+    return (os.getenv("HERMES_DESKTOP") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _typed_request(text: Any, display_text: Any) -> Any:
+    """What the user typed: the display text when the client sent one (a
+    slash-expanded prompt), else the prompt text — the desktop sends an empty
+    display_text for an ordinary message."""
+    if isinstance(display_text, str) and display_text.strip():
+        return display_text
+    return text
+
+
+def _start_turn_understanding(sid: str, session: dict, agent: Any, user_text: Any, history: list):
+    """AIS-789: restate the request beside the turn for the desktop's notice.
+
+    Only the desktop shows the line, so only a desktop backend spends the
+    auxiliary call. Returns the running :class:`TurnUnderstanding` or None.
+    """
+    if not _desktop_client():
+        return None
+    try:
+        from agent.understood import TurnUnderstanding, last_assistant_text
+
+        db = getattr(agent, "_session_db", None) or _get_db()
+        if db is None or not hasattr(db, "set_turn_understood"):
+            return None
+        # The turn's user message is the first user row written after this.
+        after_id = db.max_message_id()
+
+        def _persist(line: str) -> bool:
+            key = getattr(agent, "session_id", None) or session.get("session_key") or ""
+            return bool(db.set_turn_understood(key, after_id, line))
+
+        turn = TurnUnderstanding(
+            emit=lambda line: _emit("message.understood", sid, {"text": line}),
+            persist=_persist,
+        )
+        main_runtime = {
+            "model": getattr(agent, "model", None),
+            "provider": getattr(agent, "provider", None),
+            "base_url": getattr(agent, "base_url", None),
+            "api_key": getattr(agent, "api_key", None),
+            "api_mode": getattr(agent, "api_mode", None),
+        }
+        if not turn.start(user_text, last_assistant_text(history), main_runtime=main_runtime):
+            return None
+        return turn
+    except Exception:
+        logger.debug("understood: could not start", exc_info=True)
+        return None
+
+
 def _run_prompt_submit(
     rid,
     sid: str,
@@ -6029,6 +6104,10 @@ def _run_prompt_submit(
             # Emit message.start at the START of the turn so frontend stream state initializes
             # before message.delta events arrive.
             _emit("message.start", sid)
+            # AIS-789: what the model understood, generated beside the turn.
+            understanding = _start_turn_understanding(
+                sid, session, agent, _typed_request(text, display_text), history
+            )
 
             if isinstance(prompt, str) and "@" in prompt:
                 from agent.context_references import preprocess_context_references
@@ -6192,6 +6271,11 @@ def _run_prompt_submit(
                 _sync_session_key_after_compress(
                     sid, session, clear_pending_title=False, restart_slash_worker=True,
                 )
+                # The turn's rows are stored now: a line that arrived before
+                # its user message existed is written here (before
+                # message.complete, so a reload right after sees it).
+                if understanding is not None:
+                    understanding.turn_stored()
 
                 raw = result.get("final_response", "")
                 status = (

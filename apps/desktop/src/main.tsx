@@ -11,9 +11,11 @@ import { HapticsProvider } from './components/haptics-provider'
 import { I18nProvider } from './i18n'
 import { installClipboardShim } from './lib/clipboard'
 import { queryClient } from './lib/query-client'
+import { installThreadWidth } from './store/thread-width'
 import { ThemeProvider } from './themes/context'
 
 installClipboardShim()
+installThreadWidth()
 
 // Dev-only: install __PERF_DRIVE__ + __PERF_PROBE__ on window so the
 // scripts/ harnesses can drive a synthetic stream + record render cost.
