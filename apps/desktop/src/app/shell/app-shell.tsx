@@ -22,8 +22,9 @@ import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '../layout-constants'
 
 import { KeybindPanel } from './keybind-panel'
 import { StatusbarControls, type StatusbarItem } from './statusbar-controls'
-import { TITLEBAR_HEIGHT, titlebarControlsPosition } from './titlebar'
+import { nativeControlsBand, TITLEBAR_HEIGHT, titlebarControlsPosition } from './titlebar'
 import { TitlebarControls, type TitlebarTool } from './titlebar-controls'
+import { useNativeControlsWidth } from './use-native-controls-width'
 
 interface AppShellProps {
   children: ReactNode
@@ -83,8 +84,9 @@ export function AppShell({
   const titlebarControls = titlebarControlsPosition(connection?.windowButtonPosition, isFullscreen)
   // Width Windows/Linux reserve for the OS-painted min/max/close overlay (zero
   // on macOS, where window controls sit on the left and are reported via
-  // windowButtonPosition instead). The right tool cluster has to clear them.
-  const nativeOverlayWidth = connection?.nativeOverlayWidth ?? 0
+  // windowButtonPosition instead). The right tool cluster has to clear them;
+  // the width is measured from the Window Controls Overlay where available.
+  const nativeOverlayWidth = useNativeControlsWidth(connection?.nativeOverlayWidth ?? 0)
   const titlebarToolsRight = nativeOverlayWidth > 0 ? `${nativeOverlayWidth}px` : '0.75rem'
 
   // The inset clears the top-left titlebar buttons when nothing covers the
@@ -149,6 +151,9 @@ export function AppShell({
           // pane track via PaneShell's emitted --pane-chat-sidebar-width.
           '--sidebar-width': 'var(--pane-chat-sidebar-width)',
           '--titlebar-height': `${TITLEBAR_HEIGHT}px`,
+          // Band the OS window controls cover at the top-right (Windows/Linux);
+          // full-window overlays start below it so their chrome stays clickable.
+          '--titlebar-native-band': `${nativeControlsBand(nativeOverlayWidth)}px`,
           '--titlebar-content-inset': `${titlebarContentInset}px`,
           '--titlebar-controls-left': `${titlebarControls.left}px`,
           '--titlebar-controls-top': `${titlebarControls.top}px`,

@@ -1,5 +1,8 @@
 import type { HermesConnection } from '@/global'
 
+// Mirrors electron/titlebar.cjs: one frameless 34px band on every OS. macOS
+// insets its traffic lights at the top left; Windows/Linux paint native
+// min/max/close over the top-right corner (AIS-798).
 export const TITLEBAR_HEIGHT = 34
 export const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
 export const TITLEBAR_ICON_SIZE = 12
@@ -42,4 +45,45 @@ export function titlebarControlsPosition(
     left: (windowButtonPosition?.x ?? TITLEBAR_FALLBACK_WINDOW_BUTTON_X) + TITLEBAR_CONTROL_OFFSET_X,
     top
   }
+}
+
+// Upper bound for a measured native-controls width; anything wider is a bogus
+// rect (e.g. before the first layout) and the reported constant wins.
+const MAX_NATIVE_CONTROLS_WIDTH = 320
+
+interface TitlebarAreaRect {
+  width: number
+  x: number
+}
+
+/**
+ * Width of the OS window controls on the right edge, in CSS px.
+ *
+ * `reported` is the main process's constant (0 on macOS, whose controls sit on
+ * the left). Windows/Linux measure the real cluster via the Window Controls
+ * Overlay titlebar rect when it is available — the constant is wrong under
+ * page zoom (the native buttons don't scale) and on Linux window managers
+ * whose buttons are narrower or wider than Windows'.
+ */
+export function nativeControlsWidth(reported: number, rect: TitlebarAreaRect | null, viewportWidth: number): number {
+  if (reported <= 0) {
+    return 0
+  }
+
+  if (!rect || rect.width <= 0) {
+    return reported
+  }
+
+  const measured = Math.round(viewportWidth - (rect.x + rect.width))
+
+  return measured > 0 && measured <= MAX_NATIVE_CONTROLS_WIDTH ? measured : reported
+}
+
+/**
+ * Top inset an element at the window edge needs so the OS controls never cover
+ * it: the band height where the controls sit on the right (Windows/Linux),
+ * zero on macOS where the traffic lights float over the drag strip.
+ */
+export function nativeControlsBand(controlsWidth: number): number {
+  return controlsWidth > 0 ? TITLEBAR_HEIGHT : 0
 }

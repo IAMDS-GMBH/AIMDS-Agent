@@ -10,6 +10,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Clock, HelpCircle, Loader2 } from '@/lib/icons'
+import { formatCombo, isModKey } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
 import { $clarifyRequest, clearClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
@@ -264,7 +265,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
 
   const handleTextareaKey = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
-      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+      if (event.key === 'Enter' && isModKey(event)) {
         event.preventDefault()
         const trimmed = draft.trim()
 
@@ -374,7 +375,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
             value={draft}
           />
           <div className="flex items-center justify-between gap-2">
-            <span className="text-[0.6875rem] text-muted-foreground/85">{copy.shortcut}</span>
+            <span className="text-[0.6875rem] text-muted-foreground/85">{copy.shortcut(formatCombo('mod+enter'))}</span>
             <div className="flex items-center gap-1.5">
               {hasChoices && (
                 <Button

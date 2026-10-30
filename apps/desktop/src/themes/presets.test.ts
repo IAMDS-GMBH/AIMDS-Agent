@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { BUILTIN_THEME_LIST, DEFAULT_TYPOGRAPHY, EMOJI_FALLBACK } from './presets'
+import {
+  BUILTIN_THEME_LIST,
+  BUNDLED_MONO_FAMILY,
+  BUNDLED_SANS_FAMILY,
+  DEFAULT_TYPOGRAPHY,
+  EMOJI_FALLBACK
+} from './presets'
 
 // #40364: none of the UI text/mono fonts carry emoji glyphs, so every font
 // stack must end with a color-emoji fallback or emoji render as tofu on
@@ -30,4 +36,30 @@ describe('theme typography emoji fallback (#40364)', () => {
     expect(EMOJI_FALLBACK).toContain('Segoe UI Emoji')
     expect(EMOJI_FALLBACK).toContain('Noto Color Emoji')
   })
+})
+
+// AIS-798: text must look the same on Windows, macOS and Linux, so every
+// built-in stack leads with a bundled face and no built-in theme pulls a font
+// from the network.
+describe('theme typography uses the bundled faces (AIS-798)', () => {
+  const firstFamily = (stack: string) => stack.split(',')[0]?.trim()
+  const bundled = [BUNDLED_SANS_FAMILY, BUNDLED_MONO_FAMILY]
+
+  it('defaults to the bundled sans and mono', () => {
+    expect(firstFamily(DEFAULT_TYPOGRAPHY.fontSans)).toBe(BUNDLED_SANS_FAMILY)
+    expect(firstFamily(DEFAULT_TYPOGRAPHY.fontMono)).toBe(BUNDLED_MONO_FAMILY)
+  })
+
+  it.each(BUILTIN_THEME_LIST.map(theme => [theme.name, theme] as const))(
+    '%s leads with a bundled face',
+    (_name, theme) => {
+      for (const stack of [theme.typography?.fontSans, theme.typography?.fontMono]) {
+        if (stack) {
+          expect(bundled).toContain(firstFamily(stack))
+        }
+      }
+
+      expect(theme.typography?.fontUrl).toBeUndefined()
+    }
+  )
 })

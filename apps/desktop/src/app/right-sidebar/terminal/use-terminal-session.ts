@@ -8,6 +8,7 @@ import type { CSSProperties } from 'react'
 
 import { triggerHaptic } from '@/lib/haptics'
 import { useTheme } from '@/themes/context'
+import { BUNDLED_MONO_FAMILY } from '@/themes/presets'
 
 import { makeTerminalReader, setActiveTerminalReader } from './buffer'
 import {
@@ -21,6 +22,8 @@ import {
 type TerminalStatus = 'closed' | 'open' | 'starting'
 
 const HERMES_PATHS_MIME = 'application/x-hermes-paths'
+const TERMINAL_FONT_FAMILY = `${BUNDLED_MONO_FAMILY}, ui-monospace, monospace`
+const TERMINAL_FONT_SIZE = 11
 
 function readEscapeSequence(data: string, index: number) {
   if (data.charCodeAt(index) !== 0x1b || index + 1 >= data.length) {
@@ -315,8 +318,9 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
       allowTransparency: true,
       convertEol: true,
       cursorBlink: true,
-      fontFamily: "'SF Mono', 'Menlo', 'Cascadia Code', 'JetBrains Mono', monospace",
-      fontSize: 11,
+      // The bundled mono (AIS-798): the same cell metrics on every OS.
+      fontFamily: TERMINAL_FONT_FAMILY,
+      fontSize: TERMINAL_FONT_SIZE,
       lineHeight: 1.12,
       // Full-screen TUIs (hermes --tui, vim) grab the mouse, so a plain drag
       // can't select — ⌥-drag (macOS) / Shift-drag (else) forces a native
@@ -601,7 +605,10 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
     const fonts = typeof document !== 'undefined' ? document.fonts : undefined
 
     if (fonts?.ready) {
-      void fonts.ready.then(mount, mount)
+      // `ready` only covers faces already requested; the bundled mono may not
+      // be in use anywhere yet, so ask for it explicitly before measuring.
+      const monoLoaded = fonts.load ? fonts.load(`${TERMINAL_FONT_SIZE}px ${BUNDLED_MONO_FAMILY}`) : Promise.resolve()
+      void Promise.all([monoLoaded, fonts.ready]).then(mount, mount)
     } else {
       mount()
     }

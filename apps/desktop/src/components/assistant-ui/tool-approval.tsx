@@ -16,6 +16,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { ChevronDown, Loader2 } from '@/lib/icons'
+import { formatCombo, isModKey } from '@/lib/keybinds/combo'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import { $approvalRequest, type ApprovalRequest, clearApprovalRequest } from '@/store/prompts'
@@ -87,8 +88,6 @@ export const PendingApprovalNotice: FC = () => {
   )
 }
 
-const isMac = typeof navigator !== 'undefined' && /Mac|iP(hone|ad|od)/.test(navigator.platform)
-
 const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
   const { t } = useI18n()
   const copy = t.assistant.approval
@@ -145,7 +144,7 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
     }
 
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+      if (event.key === 'Enter' && isModKey(event)) {
         event.preventDefault()
         void respond('once')
       } else if (event.key === 'Escape') {
@@ -170,7 +169,7 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
           variant="ghost"
         >
           {submitting === 'once' ? <Loader2 className="size-3 animate-spin" /> : copy.run}
-          {submitting !== 'once' && <span className="text-[0.625rem] text-primary/60">{isMac ? '⌘⏎' : 'Ctrl⏎'}</span>}
+          {submitting !== 'once' && <span className="text-[0.625rem] text-primary/60">{formatCombo('mod+enter')}</span>}
         </Button>
         <span aria-hidden className="w-px self-stretch bg-primary/20" />
         <DropdownMenu>

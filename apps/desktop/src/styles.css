@@ -3,6 +3,13 @@
 @import 'tw-shimmer';
 @import 'katex/dist/katex.min.css';
 @import '@vscode/codicons/dist/codicon.css';
+/* AIS-798: the UI and mono fonts ship with the app (SIL OFL 1.1), so text has
+   the same face, metrics and line breaks on Windows, macOS and Linux and never
+   waits on the network. Families: --dt-font-sans / --dt-font-mono below. */
+@import '@fontsource-variable/inter';
+@import '@fontsource-variable/inter/wght-italic.css';
+@import '@fontsource-variable/jetbrains-mono';
+@import '@fontsource-variable/jetbrains-mono/wght-italic.css';
 @custom-variant dark (&:is(.dark *));
 
 /* Sidebar sections: tall viewports give each its own scroller; compact ones
@@ -270,12 +277,15 @@
     --dt-user-bubble: var(--ui-chat-bubble-background);
     --dt-user-bubble-border: var(--ui-stroke-tertiary);
 
+    /* Bundled faces first (identical on every OS); the system stack only
+       fills scripts the bundled fonts lack (CJK, Arabic, …) and emoji.
+       Mirrors UI_SANS / UI_MONO in src/themes/presets.ts. */
     --dt-font-sans:
-      'Segoe WPC', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif,
-      'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
+      'Inter Variable', system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol',
+      'Noto Color Emoji', emoji;
     --dt-font-mono:
-      'Cascadia Code', 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, Consolas, monospace, 'Apple Color Emoji',
-      'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
+      'JetBrains Mono Variable', ui-monospace, monospace, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol',
+      'Noto Color Emoji', emoji;
     --dt-base-size: 1rem;
     --dt-line-height: 1.5;
     --dt-letter-spacing: 0;

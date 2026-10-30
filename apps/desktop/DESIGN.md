@@ -109,6 +109,21 @@ Notes:
   Every place we surface raw logs uses it.
 - **Empty:** `EmptyState` / `EmptyPanel` — don't hand-roll centered empties.
 
+## Typography
+
+- **Bundled faces only.** UI text is Inter, code and key caps are JetBrains
+  Mono — both ship with the app (`@fontsource-variable/*`, SIL OFL 1.1) and are
+  imported at the top of `src/styles.css`. Same face, metrics and line breaks
+  on Windows, macOS and Linux; nothing loads from the network.
+- **Use the tokens:** `font-sans` / `font-mono` (Tailwind) or
+  `var(--dt-font-sans)` / `var(--dt-font-mono)`. Canvas/xterm code that needs
+  a family string uses `BUNDLED_SANS_FAMILY` / `BUNDLED_MONO_FAMILY` from
+  `src/themes/presets.ts`. Never name a system font (`Segoe UI`, `SF Pro`,
+  `Arial`, `Menlo`, …) in a component.
+- The system stack behind the bundled face only fills scripts it lacks (CJK,
+  Arabic, …) and emoji. Sizes are rem tokens, identical on every OS.
+- The brand display face `Collapse` (intro wordmark) is bundled too.
+
 ## Iconography & brand
 
 - **`Codicon`** is the icon set. No mixing icon libraries inline.
@@ -134,6 +149,18 @@ Notes:
   key silently falls back to English. A string change in `en.ts` that skips
   `de.ts` is a regression (drifted punctuation, stale labels). Keep
   trailing-punctuation and tone consistent across both.
+
+## Shortcuts
+
+- One logic for every OS: `mod` is ⌘ on macOS and Ctrl on Windows/Linux
+  (`src/lib/keybinds/combo.ts`). Rebindable hotkeys live in
+  `src/lib/keybinds/actions.ts`.
+- Hand-written key/pointer checks use `isModKey(event)` — never
+  `event.metaKey || event.ctrlKey` (that fires on Control on macOS and on the
+  Windows key elsewhere).
+- Labels come from `formatCombo('mod+k')` / `comboTokens(…)` (`⌘K` on macOS,
+  `Ctrl+K` elsewhere). Never hardcode `⌘`, `Cmd`, `Ctrl` or `Strg` in JSX or
+  i18n strings — pass the formatted combo into the string instead.
 
 ## State (TypeScript)
 
@@ -167,3 +194,7 @@ Mirrors the repo TS style (see root `AGENTS.md`):
 - [ ] Flat — no card-in-card, no gratuitous row dividers?
 - [ ] Both locales (`en`, `de`) updated for any new/changed string?
 - [ ] `cursor-pointer`, focus ring, and `Esc`-to-close behave?
+- [ ] Bundled fonts, `isModKey` / `formatCombo` — nothing OS-specific?
+- [ ] Screenshot check green on macOS, Linux and Windows, or its baselines
+      re-recorded on purpose (README → "Screenshot check"); a new view is one
+      line in `screenshots/views.ts`?

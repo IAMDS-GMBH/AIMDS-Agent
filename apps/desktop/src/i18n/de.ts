@@ -47,6 +47,7 @@ export const de
     withdrawn: 'Meldung zurückgezogen.',
     caseClosed: 'Diese Meldung ist bereits abgeschlossen und kann nicht mehr geändert werden.',
     caseProcessing: 'Die Meldung wird noch verarbeitet. Bitte gleich noch einmal versuchen.',
+    pasteScreenshot: combo => `Screenshot einfügen (${combo}) oder Datei auswählen`,
     categories: {
       chat_issue: 'Chat & Antworten (Problem im Chat / KI antwortet nicht)',
       mcp_tools: 'MCP & Tools (Werkzeug oder Server nicht gefunden / fehlerhaft)',
@@ -845,7 +846,7 @@ export const de
       loading: 'Lade archivierte Sitzungen…',
       archivedTitle: 'Archivierte Sitzungen',
       archivedIntro:
-        'Archivierte Chats werden in der Seitenleiste ausgeblendet, behalten aber alle Nachrichten. Strg/⌘-Klick auf einen Chat in der Seitenleiste zum Archivieren.',
+        'Archivierte Chats werden in der Seitenleiste ausgeblendet, behalten aber alle Nachrichten. Archivieren über das ⋯- oder Rechtsklick-Menü eines Chats in der Seitenleiste.',
       emptyArchivedTitle: 'Nichts archiviert',
       emptyArchivedDesc: 'Chat archivieren, um ihn hier auszublenden.',
       unarchive: 'Aus Archiv holen',
@@ -856,7 +857,8 @@ export const de
       defaultDirTitle: 'Standard-Projektverzeichnis',
       defaultDirDesc:
         'Neue Sitzungen starten in diesem Ordner, es sei denn, ein anderer wird gewählt. Leer lassen für das Home-Verzeichnis.',
-      defaultDirUpdated: 'Standard-Projektverzeichnis aktualisiert — neuen Chat starten (Strg/⌘+N), damit es wirksam wird',
+      defaultDirUpdated: combo =>
+        `Standard-Projektverzeichnis aktualisiert — neuen Chat starten (${combo}), damit es wirksam wird`,
       defaultsTo: label => `Standard: ${label}.`,
       change: 'Ändern',
       choose: 'Auswählen',
@@ -1960,7 +1962,7 @@ export const de
       loadingQuestion: 'Frage wird geladen…',
       other: 'Andere (Antwort eingeben)',
       placeholder: 'Antwort eingeben…',
-      shortcut: '⌘/Strg + Enter zum Senden',
+      shortcut: combo => `${combo} zum Senden`,
       back: 'Zurück',
       skip: 'Überspringen',
       send: 'Senden',

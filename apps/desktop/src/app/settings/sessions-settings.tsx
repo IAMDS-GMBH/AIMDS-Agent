@@ -7,6 +7,7 @@ import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { Archive, ArchiveOff, FolderOpen, Loader2, Trash2 } from '@/lib/icons'
+import { formatCombo } from '@/lib/keybinds/combo'
 import { notify, notifyError } from '@/store/notifications'
 import { applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
@@ -223,7 +224,7 @@ function DefaultProjectDirSetting() {
       const result = await settings.setDefaultProjectDir(picked.dir)
       setDir(result.dir)
       applyConfiguredDefaultProjectDir(result.dir)
-      notify({ durationMs: 4_000, kind: 'success', message: s.defaultDirUpdated })
+      notify({ durationMs: 4_000, kind: 'success', message: s.defaultDirUpdated(formatCombo('mod+n')) })
     } catch (err) {
       notifyError(err, s.updateDirFailed)
     } finally {

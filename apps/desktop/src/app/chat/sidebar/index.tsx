@@ -38,6 +38,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Tip } from '@/components/ui/tooltip'
 import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
+import { comboTokens } from '@/lib/keybinds/combo'
 import { profileColor } from '@/lib/profile-color'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
@@ -106,11 +107,9 @@ const VIRTUALIZE_THRESHOLD = 25
 const NON_SESSION_INITIAL_ROWS = 3
 const NON_SESSION_LOAD_STEP = 10
 
-// Render the modifier key the user actually presses on this platform. The
-// global accelerator is bound to both Cmd+N (macOS) and Ctrl+N (everywhere
-// else) in desktop-controller.tsx, but the hint should match muscle memory.
-const NEW_SESSION_KBD: readonly string[] =
-  typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac') ? ['⌘', 'N'] : ['Ctrl', 'N']
+// Render the modifier key the user actually presses on this platform: ⌘N on
+// macOS, Ctrl+N on Windows/Linux — the `session.new` binding's `mod+n`.
+const NEW_SESSION_KBD: readonly string[] = comboTokens('mod+n')
 
 export const SIDEBAR_NAV: SidebarNavItem[] = [
   {

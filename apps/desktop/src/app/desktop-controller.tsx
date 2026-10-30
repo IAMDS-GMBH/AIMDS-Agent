@@ -10,6 +10,7 @@ import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overla
 import { Pane, PaneMain } from '@/components/pane-shell'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { translateNow } from '@/i18n'
+import { isModKey } from '@/lib/keybinds/combo'
 import { signInToSuiteEnvironment } from '@/lib/suite-relogin'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
@@ -322,7 +323,7 @@ export function DesktopController() {
         return
       }
 
-      if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'w') {
+      if (isModKey(event) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'w') {
         event.preventDefault()
         event.stopPropagation()
         closeActiveRightRailTab()

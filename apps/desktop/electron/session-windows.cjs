@@ -75,6 +75,8 @@ function createSessionWindowRegistry() {
 
   return {
     openOrFocus,
+    // Live windows only, for broadcasts like the title bar theme (AIS-798).
+    all: () => [...windows.values()].filter(win => !win.isDestroyed()),
     get: key => windows.get(key),
     has: key => windows.has(key),
     get size() {

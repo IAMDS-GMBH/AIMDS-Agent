@@ -1,0 +1,7 @@
+/* Applied only while the screenshot check captures (AIS-798). Hides purely
+   decorative layers: the low-opacity backdrop photo is blended per GPU and
+   would dominate every baseline's file size without saying anything about
+   layout or type. Keep this list short — everything else must be real UI. */
+img[src*='ds-assets/filler-bg'] {
+  visibility: hidden !important;
+}

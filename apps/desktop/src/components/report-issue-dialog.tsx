@@ -17,6 +17,7 @@ import { Textarea } from '@/components/ui/textarea'
 import type { DesktopSupportLogSendResult } from '@/global'
 import { useI18n } from '@/i18n'
 import { AlertCircle, CheckCircle2, Globe, HelpCircle, ImageIcon, X } from '@/lib/icons'
+import { formatCombo } from '@/lib/keybinds/combo'
 import { $feedbackPromptsEnabled, enableFeedbackPrompts } from '@/store/feedback-prompts'
 import { notify } from '@/store/notifications'
 import { addSupportTicket, editSupportTicket, type SavedSupportTicket } from '@/store/support-tickets'
@@ -92,6 +93,7 @@ export function ReportIssueDialog({
     withdrawn: 'Meldung zurückgezogen.',
     caseClosed: 'Diese Meldung ist bereits abgeschlossen und kann nicht mehr geändert werden.',
     caseProcessing: 'Die Meldung wird noch verarbeitet. Bitte gleich noch einmal versuchen.',
+    pasteScreenshot: (combo: string) => `Screenshot einfügen (${combo}) oder Datei auswählen`,
     categories: {
       chat_issue: 'Chat & Antworten (Problem im Chat / KI antwortet nicht)',
       mcp_tools: 'MCP & Tools (Werkzeug oder Server nicht gefunden / fehlerhaft)',
@@ -584,7 +586,7 @@ export function ReportIssueDialog({
                     className="flex items-center justify-center rounded border border-dashed border-border/70 bg-muted/10 py-2 text-center text-[11px] text-muted-foreground cursor-pointer hover:bg-muted/20"
                     onClick={() => fileInputRef.current?.click()}
                   >
-                    <span>Screenshot einfügen (Strg+V / Cmd+V) oder Datei auswählen</span>
+                    <span>{copy.pasteScreenshot(formatCombo('mod+v'))}</span>
                   </div>
                 )}
               </div>

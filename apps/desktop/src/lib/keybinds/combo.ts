@@ -9,8 +9,23 @@
 // where `mod` is Cmd and Cmd+Tab is OS-reserved — so `ctrl+tab` is literally
 // Control+Tab. Off macOS, Control already *is* `mod`, so `canonicalizeCombo`
 // folds `ctrl` → `mod`.
+//
+// `meta` is the Windows / Super key off macOS. It is never `mod` (AIS-798):
+// Win+K must not fire the ⌘K palette, and Win+Shift+N must not read as the
+// bare `shift+n`.
 
-export const IS_MAC = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform || navigator.userAgent || '')
+const PLATFORM_HINT = typeof navigator !== 'undefined' ? navigator.platform || navigator.userAgent || '' : ''
+
+export const IS_MAC = /mac/i.test(PLATFORM_HINT)
+const IS_WINDOWS = /win/i.test(PLATFORM_HINT)
+
+// The primary accelerator of a key or pointer event — ⌘ on macOS, Ctrl on
+// Windows/Linux (AIS-798). Every hand-written shortcut check goes through this
+// so one gesture means the same thing on every OS (Control on macOS stays the
+// separate `ctrl` modifier; Windows' Win key never counts).
+export function isModKey(event: Pick<KeyboardEvent, 'ctrlKey' | 'metaKey'>): boolean {
+  return IS_MAC ? event.metaKey : event.ctrlKey
+}
 
 // event.code → canonical base token. Letters/digits map to their lowercase
 // character; everything else uses an explicit name so combos read cleanly.
@@ -86,13 +101,18 @@ export function comboFromEvent(event: KeyboardEvent): string | null {
   const parts: string[] = []
 
   // macOS reports Cmd (`mod`) and Control (`ctrl`) separately; elsewhere
-  // Control IS the accelerator, so it folds into `mod`.
-  if (event.metaKey || (event.ctrlKey && !IS_MAC)) {
+  // Control IS the accelerator, so it folds into `mod`, and the Windows/Super
+  // key stays its own `meta`.
+  if (isModKey(event)) {
     parts.push('mod')
   }
 
   if (event.ctrlKey && IS_MAC) {
     parts.push('ctrl')
+  }
+
+  if (event.metaKey && !IS_MAC) {
+    parts.push('meta')
   }
 
   if (event.altKey) {
@@ -154,6 +174,10 @@ function labelForMod(mod: string): string {
 
   if (mod === 'shift') {
     return IS_MAC ? '⇧' : 'Shift'
+  }
+
+  if (mod === 'meta') {
+    return IS_MAC ? '⌘' : IS_WINDOWS ? 'Win' : 'Super'
   }
 
   return mod

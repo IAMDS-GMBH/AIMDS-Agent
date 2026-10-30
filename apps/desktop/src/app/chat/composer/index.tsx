@@ -23,6 +23,7 @@ import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { desktopSlashCommandTakesArgs } from '@/lib/desktop-slash-commands'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
+import { isModKey } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
 import {
   $composerAttachments,
@@ -775,7 +776,7 @@ export function ChatBar({
 
     // Cmd/Ctrl+Shift+K drains the next queued message. Plain Cmd/Ctrl+K is
     // reserved for the global command palette.
-    if ((event.metaKey || event.ctrlKey) && !event.altKey && event.shiftKey && event.key.toLowerCase() === 'k') {
+    if (isModKey(event) && !event.altKey && event.shiftKey && event.key.toLowerCase() === 'k') {
       event.preventDefault()
 
       if (!busy) {
@@ -894,7 +895,7 @@ export function ChatBar({
     // Cmd/Ctrl+Enter is reserved for steering the live run — never a send.
     // Steer when there's a steerable draft, otherwise swallow it so it can't
     // surprise-send. (Plain Enter still queues while busy / sends when idle.)
-    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey) {
+    if (event.key === 'Enter' && isModKey(event) && !event.shiftKey) {
       event.preventDefault()
 
       if (canSteer) {
