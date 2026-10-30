@@ -365,6 +365,17 @@ _MAX_BACKOFF_SECONDS = 60
 # A session that stayed up this long counts as healthy: its drop starts a new
 # reconnect streak instead of continuing the previous one.
 _STABLE_SESSION_SECONDS = 60
+# AIS-785: a server that gave up (or never connected) is tried again in the
+# background. A refusal (401/403) or a broken config only changes when
+# someone fixes it on that host, so it is tried rarely; a network error may
+# clear any minute, so it is tried sooner, backing off to a cap.
+_UNAVAILABLE_RETRY_REFUSED_SECONDS = 600.0
+_UNAVAILABLE_RETRY_FIRST_SECONDS = 30.0
+_UNAVAILABLE_RETRY_MAX_SECONDS = 300.0
+# How much of a server's own error answer reaches the log and the model, and
+# the largest error body read to find it.
+_ERROR_BODY_EXCERPT_CHARS = 200
+_ERROR_BODY_MAX_READ_BYTES = 64 * 1024
 
 # Call-local ceiling for MCP tool calls (AIS-744). A caller that stops waiting
 # early (memory facade, session sync) sets it so the call itself ends at the
@@ -997,7 +1008,11 @@ def _format_connect_error(exc: BaseException) -> str:
     for item in _flatten_messages(exc):
         if item not in deduped:
             deduped.append(item)
-    return _sanitize_error("; ".join(deduped[:3]))
+    rendered = _sanitize_error("; ".join(deduped[:3]))
+    server_says = _server_error_message(exc)
+    if server_says and server_says not in rendered:
+        rendered = f"{rendered} — server says: {server_says}"
+    return rendered
 
 
 # ---------------------------------------------------------------------------
@@ -2079,7 +2094,7 @@ class MCPServerTask:
                 "follow_redirects": True,
                 "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
                 "verify": ssl_verify,
-                "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect]},
+                "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect, _read_error_body]},
             }
             if headers:
                 client_kwargs["headers"] = headers
@@ -2411,13 +2426,14 @@ class MCPServerTask:
                         # without MCP access on that host). Retrying only
                         # hid the real error behind minutes of backoff and
                         # held up every other server in the same discovery
-                        # run (AIS-446 / SUP-20260929-024835).
+                        # run (AIS-446 / SUP-20260929-024835). The server's
+                        # own reason is quoted when it gave one (AIS-785) —
+                        # a hub that only serves loopback is not a bad key.
                         logger.warning(
-                            "MCP server '%s' refused the connection (HTTP 403), "
-                            "not retrying: the credential is not allowed to use "
-                            "this endpoint — check its MCP access on that host: %s",
+                            "MCP server '%s' refused the connection (HTTP 403), not retrying: %s",
                             self.name,
-                            _unwrap_exception(exc),
+                            _server_error_message(exc)
+                            or f"no reason given ({_unwrap_exception(exc)}) — check this client's MCP access on that host",
                         )
                         self._error = exc
                         self._ready.set()
@@ -2475,11 +2491,33 @@ class MCPServerTask:
                     _flag_iamds_mcp_auth_failure(self.name, exc, getattr(self, "_config", None))
                     return
 
-                retries += 1
                 # ExceptionGroup text ("unhandled errors in a TaskGroup") says
-                # nothing; name the sub-exception that actually broke the link.
+                # nothing; name the sub-exception that actually broke the link,
+                # and what the server itself said (AIS-785).
                 root = _unwrap_exception(exc)
                 cause = f"{type(root).__name__}: {root}" if root is not exc else str(exc)
+                server_says = _server_error_message(exc)
+                if server_says:
+                    cause = f"{cause} — server says: {server_says}"
+
+                # A 403 is an answer, not a dropped link: five reconnects in a
+                # row only repeat it (AIS-785, as AIS-446 for the first connect).
+                if _is_forbidden_error(exc):
+                    logger.warning(
+                        "MCP server '%s' refused the reconnect (HTTP 403), not retrying: %s",
+                        self.name,
+                        server_says or cause,
+                    )
+                    try:
+                        from hermes_cli.auto_incidents import report_bundled_mcp_failure
+
+                        report_bundled_mcp_failure(self.name, "reconnect-refused", cause)
+                    except Exception:
+                        pass
+                    _drop_given_up_server(self, exc)
+                    return
+
+                retries += 1
                 if retries > _MAX_RECONNECT_RETRIES:
                     logger.warning(
                         "MCP server '%s' failed after %d reconnection attempts, "
@@ -2494,6 +2532,7 @@ class MCPServerTask:
                         report_bundled_mcp_failure(self.name, "reconnect-give-up", cause)
                     except Exception:
                         pass
+                    _drop_given_up_server(self, exc)
                     return
 
                 logger.warning(
@@ -2842,6 +2881,315 @@ def _is_forbidden_error(exc: BaseException) -> bool:
         isinstance(unwrapped, httpx.HTTPStatusError)
         and getattr(unwrapped.response, "status_code", None) == 403
     )
+
+
+# ---------------------------------------------------------------------------
+# AIS-785: the server's own error message, and servers that are down
+# ---------------------------------------------------------------------------
+
+
+async def _read_error_body(response) -> None:
+    """httpx response hook: load a small error body so the error can quote it.
+
+    The MCP SDK streams its requests and raises on the status before the
+    body is read, so "internal MCP endpoint requires loopback connection"
+    never reached the log or the model — Hermes guessed a reason instead.
+    """
+    if getattr(response, "status_code", 0) < 400:
+        return
+    try:
+        length = int(response.headers.get("content-length") or 0)
+    except (TypeError, ValueError):
+        length = 0
+    if length > _ERROR_BODY_MAX_READ_BYTES:
+        return
+    try:
+        await response.aread()
+    except Exception:
+        pass
+
+
+def _http_status(exc: BaseException) -> Optional[int]:
+    """HTTP status of an (ExceptionGroup-wrapped) HTTP error, else None."""
+    code = getattr(getattr(_unwrap_exception(exc), "response", None), "status_code", None)
+    return code if isinstance(code, int) else None
+
+
+def _server_error_message(exc: BaseException) -> str:
+    """The server's own reason from an HTTP error body: bounded, scrubbed, one line.
+
+    JSON bodies give their ``message`` (or ``error_description`` / ``detail``
+    / ``error``); anything else is the text with markup removed. Headers are
+    never looked at. "" when there is no body or it was not read.
+    """
+    response = getattr(_unwrap_exception(exc), "response", None)
+    if response is None:
+        return ""
+    try:
+        text = str(response.text or "").strip()
+    except Exception:  # httpx.ResponseNotRead: streamed and never loaded
+        return ""
+    if not text:
+        return ""
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        for key in ("message", "error_description", "detail", "error"):
+            value = payload.get(key)
+            if isinstance(value, dict):
+                value = value.get("message")
+            if isinstance(value, str) and value.strip():
+                text = value
+                break
+    elif text.startswith("<"):
+        text = re.sub(r"<[^>]+>", " ", text)
+    text = _sanitize_error(" ".join(text.split()))
+    if len(text) > _ERROR_BODY_EXCERPT_CHARS:
+        text = text[: _ERROR_BODY_EXCERPT_CHARS - 1].rstrip() + "…"
+    return text
+
+
+def _unavailable_kind(exc: BaseException) -> str:
+    """``refused`` (401/403), ``error`` (other HTTP answer), ``misconfigured`` or ``unreachable``."""
+    status = _http_status(exc)
+    if status in (401, 403):
+        return "refused"
+    if status is not None:
+        return "error"
+    if isinstance(_unwrap_exception(exc), (InvalidMcpUrlError, NonMcpEndpointError, FileNotFoundError, ValueError)):
+        return "misconfigured"
+    return "unreachable"
+
+
+def _unavailable_reason(exc: BaseException) -> str:
+    """Short reason a person can be told: what the server answered, in its words."""
+    kind = _unavailable_kind(exc)
+    status = _http_status(exc)
+    message = _server_error_message(exc)
+    if kind == "refused":
+        return f"refused the connection (HTTP {status}{': ' + message if message else ''})"
+    if kind == "error":
+        return f"answered with an error (HTTP {status}{': ' + message if message else ''})"
+    summary = _format_connect_error(exc)
+    if len(summary) > _ERROR_BODY_EXCERPT_CHARS:
+        summary = summary[: _ERROR_BODY_EXCERPT_CHARS - 1].rstrip() + "…"
+    if kind == "misconfigured":
+        return f"cannot be started as configured ({summary})"
+    return f"is unreachable ({summary})"
+
+
+# ``{server: {"kind", "reason", "tools", "since", "retry_in"}}`` for configured
+# servers that are down; their tools are out of the registry meanwhile.
+_unavailable_servers: Dict[str, Dict[str, Any]] = {}
+# One background reconnect task per unavailable server, on the MCP loop.
+_unavailable_retry_tasks: Dict[str, "asyncio.Task"] = {}
+
+
+def _background_reconnect_enabled() -> bool:
+    """Background reconnects run unless HERMES_MCP_BACKGROUND_RECONNECT=0 (the test suite sets it)."""
+    return os.environ.get("HERMES_MCP_BACKGROUND_RECONNECT", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _mark_server_unavailable(name: str, exc: BaseException, tools: Iterable[str] = ()) -> Dict[str, Any]:
+    """Record why *name* is down and when to try it next."""
+    kind = _unavailable_kind(exc)
+    reason = _unavailable_reason(exc)
+    with _lock:
+        previous = _unavailable_servers.get(name) or {}
+        if kind in ("refused", "misconfigured"):
+            retry_in = _UNAVAILABLE_RETRY_REFUSED_SECONDS
+        elif previous.get("kind") in (None, "refused", "misconfigured"):
+            retry_in = _UNAVAILABLE_RETRY_FIRST_SECONDS
+        else:
+            retry_in = min(float(previous.get("retry_in") or 0) * 2, _UNAVAILABLE_RETRY_MAX_SECONDS)
+        state = {
+            "kind": kind,
+            "reason": reason,
+            "tools": set(previous.get("tools") or ()) | set(tools),
+            "since": previous.get("since") or time.time(),
+            "retry_in": retry_in,
+        }
+        _unavailable_servers[name] = state
+    return state
+
+
+def get_unavailable_mcp_servers() -> List[Dict[str, Any]]:
+    """``[{"server", "reason", "retry_in"}]`` for configured servers that are down (AIS-785)."""
+    with _lock:
+        rows = sorted(_unavailable_servers.items())
+    return [{"server": name, "reason": state["reason"], "retry_in": int(state["retry_in"])} for name, state in rows]
+
+
+def mcp_server_unavailable_reason(name: str) -> str:
+    """Why *name* is down right now ("" when it is not known to be down)."""
+    with _lock:
+        state = _unavailable_servers.get(str(name or ""))
+    return str(state["reason"]) if state else ""
+
+
+def _unavailable_server_message(name: str, reason: str) -> str:
+    return (
+        f"MCP server '{name}' {reason}, so its tools are unavailable right now. Hermes connects "
+        "it again on its own once it answers. Do not retry or search for its tools now; tell the "
+        "user that this integration is down and why."
+    )
+
+
+def _unavailable_call_result(name: str, reason: str) -> str:
+    return json.dumps(
+        {"error": _unavailable_server_message(name, reason), "server": name, "unavailable": True},
+        ensure_ascii=False,
+    )
+
+
+def unavailable_tool_error(tool_name: str) -> Optional[str]:
+    """Error text for a call to a tool whose server is down, else None (AIS-785).
+
+    The tool left the registry with its server, so the call would otherwise
+    end in "Unknown tool" — which the model reads as "never existed".
+    """
+    lowered = str(tool_name or "").lower()
+    if not lowered.startswith("mcp_"):
+        return None
+    with _lock:
+        rows = list(_unavailable_servers.items())
+    if not rows:
+        return None
+    prefixes = get_mcp_server_prefixes()
+    for name, state in rows:
+        heads = {f"mcp_{sanitize_mcp_name_component(name).lower()}_"}
+        if prefixes.get(name):
+            heads.add(f"mcp_{str(prefixes[name]).lower()}_")
+        if tool_name in state["tools"] or any(lowered.startswith(h) for h in heads):
+            return _unavailable_server_message(name, state["reason"])
+    return None
+
+
+def _withdraw_server_tools(server: "MCPServerTask") -> List[str]:
+    """Take a server's tools out of the registry (tool_search, deferred loads, prompts)."""
+    from tools.registry import registry
+
+    withdrawn = list(getattr(server, "_registered_tool_names", []) or [])
+    for tool_name in withdrawn:
+        registry.deregister(tool_name)
+        _forget_mcp_tool_server(tool_name)
+    server._registered_tool_names = []
+    return withdrawn
+
+
+def _drop_given_up_server(server: "MCPServerTask", exc: BaseException) -> None:
+    """A registered server stopped reconnecting: withdraw it and retry later (AIS-785).
+
+    It used to stay registered with no session: tool_search kept offering
+    its tools, a call answered "not connected", the reconnect the call
+    started removed the tools mid-turn ("Unknown tool"), and nothing tried
+    again when the server came back. Only servers this module registered
+    are dropped; a standalone ``MCPServerTask`` is left alone.
+    """
+    with _lock:
+        registered = _servers.get(server.name) is server
+        if registered:
+            _servers.pop(server.name, None)
+    if not registered:
+        return
+    tools = _withdraw_server_tools(server)
+    state = _mark_server_unavailable(server.name, exc, tools)
+    logger.warning(
+        "MCP server '%s' %s — withdrew its %d tool(s) until it answers again; next attempt in %ds",
+        server.name, state["reason"], len(tools), int(state["retry_in"]),
+    )
+    _schedule_unavailable_retry(server.name)
+
+
+def _schedule_unavailable_retry(name: str) -> None:
+    """Start the background reconnect for *name* (on the MCP loop, once per server)."""
+    if not _background_reconnect_enabled():
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    with _lock:
+        if loop is not _mcp_loop:
+            return
+        task = _unavailable_retry_tasks.get(name)
+        if task is not None and not task.done():
+            return
+        _unavailable_retry_tasks[name] = loop.create_task(_retry_unavailable_server(name))
+
+
+def _retry_pending(name: str) -> bool:
+    with _lock:
+        task = _unavailable_retry_tasks.get(name)
+    return task is not None and not task.done()
+
+
+async def _retry_unavailable_server(name: str) -> None:
+    """Try a down server again with backoff until it answers, then register it anew."""
+    try:
+        while True:
+            with _lock:
+                state = _unavailable_servers.get(name)
+            if state is None:
+                return
+            await asyncio.sleep(float(state["retry_in"]))
+            with _lock:
+                if name in _servers:  # a reload connected it meanwhile
+                    _unavailable_servers.pop(name, None)
+                    return
+            cfg = (_load_mcp_config() or {}).get(name)
+            if cfg is None or not _parse_boolish(cfg.get("enabled", True), default=True):
+                with _lock:
+                    _unavailable_servers.pop(name, None)
+                logger.info("MCP server '%s' is no longer configured or enabled — stopped retrying", name)
+                return
+            if _suite_reauth_block(name, cfg):
+                continue  # the re-login reconnects it (AIS-756)
+            try:
+                registered = await _discover_and_register_server(name, cfg)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise asyncio.CancelledError() from exc  # cancelled inside an anyio group
+                state = _mark_server_unavailable(name, exc)
+                logger.info(
+                    "MCP server '%s' still %s; next attempt in %ds", name, state["reason"], int(state["retry_in"])
+                )
+                continue
+            with _lock:
+                _unavailable_servers.pop(name, None)
+            _reset_server_error(name)
+            logger.warning("MCP server '%s' answers again — registered %d tool(s)", name, len(registered))
+            return
+    finally:
+        with _lock:
+            if _unavailable_retry_tasks.get(name) is asyncio.current_task():
+                _unavailable_retry_tasks.pop(name, None)
+
+
+def _cancel_unavailable_retry(name: str) -> None:
+    """A manual connect/reload takes over: forget the down state and its retry."""
+    with _lock:
+        _unavailable_servers.pop(name, None)
+        task = _unavailable_retry_tasks.pop(name, None)
+        loop = _mcp_loop
+    if task is not None and not task.done() and loop is not None and loop.is_running():
+        loop.call_soon_threadsafe(task.cancel)
+
+
+async def _cancel_all_unavailable_retries() -> None:
+    with _lock:
+        tasks = list(_unavailable_retry_tasks.values())
+        _unavailable_retry_tasks.clear()
+        _unavailable_servers.clear()
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def _handle_auth_error_and_retry(
@@ -4429,6 +4777,12 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, pr
                     ensure_ascii=False,
                 )
         if not server or not server.session:
+            # AIS-785: a server that is down with a background reconnect
+            # pending is not reconnected per call — that only repeated the
+            # refusal (and took its tools out mid-turn); say why instead.
+            down = mcp_server_unavailable_reason(server_name)
+            if down and _retry_pending(server_name):
+                return _unavailable_call_result(server_name, down)
             try:
                 reconnect_mcp_server(server_name)
                 with _lock:
@@ -4439,6 +4793,9 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, pr
         if not server or not server.session:
             if not _background_call.get():
                 _bump_server_error(server_name)
+            down = mcp_server_unavailable_reason(server_name)
+            if down:
+                return _unavailable_call_result(server_name, down)
             return json.dumps(
                 {"error": f"MCP server '{server_name}' is not connected"},
                 ensure_ascii=False,
@@ -6270,6 +6627,12 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
     )
     with _lock:
         _servers[name] = server
+        # Connected, by whichever path (AIS-785): no longer down, and a
+        # pending background reconnect has nothing left to do.
+        _unavailable_servers.pop(name, None)
+        retry = _unavailable_retry_tasks.get(name)
+    if retry is not None and retry is not asyncio.current_task() and not retry.done():
+        retry.get_loop().call_soon_threadsafe(retry.cancel)
 
     server._config = config
     # Trigger initial discovery with retry logic (handles delayed tool registration)
@@ -6371,6 +6734,11 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
                     f" (command={command})" if command else "",
                     _format_connect_error(result),
                 )
+                # AIS-785: tried again in the background, and calls to its
+                # tools say why it is down instead of "Unknown tool".
+                if isinstance(result, Exception):
+                    _mark_server_unavailable(name, result)
+                    _schedule_unavailable_retry(name)
                 if _is_connect_timeout(result):
                     streak = _connect_timeout_streaks.get(name, 0) + 1
                     _connect_timeout_streaks[name] = streak
@@ -6465,6 +6833,7 @@ def disconnect_mcp_server(name: str) -> bool:
     if not _MCP_AVAILABLE:
         return False
 
+    _cancel_unavailable_retry(name)
     with _lock:
         existing = _servers.pop(name, None)
 
@@ -6580,6 +6949,11 @@ def discover_mcp_tools() -> List[str]:
 
     if _reconcile_suite_mcp_url(servers):
         servers = _load_mcp_config()
+    # A server that is down and has its background reconnect pending is left
+    # to it (AIS-785): every new session paid a full connect attempt
+    # (up to connect_timeout) for an answer that had not changed. A manual
+    # reconnect/reload still connects it at once.
+    servers = {name: cfg for name, cfg in servers.items() if not _retry_pending(name)}
 
     with _lock:
         new_server_names = [
@@ -6669,15 +7043,19 @@ def get_mcp_status() -> List[dict]:
             # A server with enabled: false is intentionally not connected — it is
             # disabled, not failed. Surface that distinction so consumers (banner,
             # TUI) can render "disabled" rather than an alarming "failed".
-            result.append(
-                {
-                    "name": name,
-                    "transport": transport,
-                    "tools": 0,
-                    "connected": False,
-                    "disabled": not enabled,
-                }
-            )
+            entry = {
+                "name": name,
+                "transport": transport,
+                "tools": 0,
+                "connected": False,
+                "disabled": not enabled,
+            }
+            reason = mcp_server_unavailable_reason(name) if enabled else ""
+            if reason:
+                # AIS-785: the server's own reason, and that Hermes keeps trying.
+                entry["error"] = reason
+                entry["retrying"] = _retry_pending(name)
+            result.append(entry)
 
     return result
 
@@ -6759,12 +7137,13 @@ def shutdown_mcp_servers():
     with _lock:
         servers_snapshot = list(_servers.values())
 
-    # Fast path: nothing to shut down.
+    # Fast path: nothing to shut down (_stop_mcp_loop ends background reconnects).
     if not servers_snapshot:
         _stop_mcp_loop()
         return
 
     async def _shutdown():
+        await _cancel_all_unavailable_retries()
         results = await asyncio.gather(
             *(server.shutdown() for server in servers_snapshot),
             return_exceptions=True,
@@ -6896,6 +7275,16 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
 def _stop_mcp_loop():
     """Stop the background event loop and join its thread."""
     global _mcp_loop, _mcp_thread
+    with _lock:
+        loop = _mcp_loop
+        retrying = bool(_unavailable_retry_tasks)
+    if loop is not None and loop.is_running() and retrying:
+        # Background reconnects (AIS-785) end with the loop, not as
+        # "Task was destroyed but it is pending" when it closes.
+        try:
+            asyncio.run_coroutine_threadsafe(_cancel_all_unavailable_retries(), loop).result(timeout=5)
+        except Exception:
+            pass
     with _lock:
         loop = _mcp_loop
         thread = _mcp_thread

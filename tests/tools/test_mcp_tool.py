@@ -5782,3 +5782,289 @@ class TestRefreshMcpServerTools:
         with patch("tools.mcp_tool._MCP_AVAILABLE", True), patch("tools.mcp_tool._servers", {"S": MagicMock()}), \
                 patch("tools.mcp_tool._run_on_mcp_loop", side_effect=RuntimeError("loop gone")):
             assert mcp_tool.refresh_mcp_server_tools("S") is False
+
+
+# ---------------------------------------------------------------------------
+# AIS-785: a server that drops is withdrawn, says why, and comes back alone
+# ---------------------------------------------------------------------------
+
+_HUB_403_BODY = {"error": "forbidden", "message": "internal MCP endpoint requires loopback connection"}
+
+
+def _hub_403(body=None):
+    import httpx
+
+    request = httpx.Request("POST", "http://192.0.2.86:8086/mcp")
+    response = httpx.Response(403, request=request, json=_HUB_403_BODY if body is None else body)
+    return ExceptionGroup(
+        "unhandled errors in a TaskGroup",
+        [httpx.HTTPStatusError("Client error '403 Forbidden' for url 'http://192.0.2.86:8086/mcp'",
+                               request=request, response=response)],
+    )
+
+
+class TestServerErrorMessage:
+    def test_json_message_is_quoted(self):
+        from tools.mcp_tool import _server_error_message, _unavailable_reason
+
+        assert _server_error_message(_hub_403()) == "internal MCP endpoint requires loopback connection"
+        assert _unavailable_reason(_hub_403()) == (
+            "refused the connection (HTTP 403: internal MCP endpoint requires loopback connection)")
+
+    def test_body_is_bounded_scrubbed_and_one_line(self):
+        import httpx
+        from tools.mcp_tool import _ERROR_BODY_EXCERPT_CHARS, _server_error_message
+
+        request = httpx.Request("GET", "http://example.invalid/mcp")
+        long_html = "<html><body><h1>Denied</h1>\n" + "Bearer sk-abc123 " + "x" * 500 + "</body></html>"
+        exc = httpx.HTTPStatusError("x", request=request, response=httpx.Response(502, request=request, text=long_html))
+        text = _server_error_message(exc)
+        assert len(text) <= _ERROR_BODY_EXCERPT_CHARS and "\n" not in text
+        assert text.startswith("Denied") and "sk-abc123" not in text and "<" not in text
+
+    def test_unread_stream_gives_no_message(self):
+        import httpx
+        from tools.mcp_tool import _server_error_message
+
+        request = httpx.Request("POST", "http://example.invalid/mcp")
+        response = httpx.Response(403, request=request, stream=httpx.ByteStream(b"nope"))
+        assert _server_error_message(httpx.HTTPStatusError("x", request=request, response=response)) == ""
+
+    def test_response_hook_loads_a_streamed_error_body(self):
+        """The SDK streams its POST and raises on the status; the hook loads the body first."""
+        import httpx
+        from tools.mcp_tool import _read_error_body, _server_error_message
+
+        def handler(request):
+            return httpx.Response(403, json=_HUB_403_BODY)
+
+        async def _go():
+            async with httpx.AsyncClient(transport=httpx.MockTransport(handler),
+                                         event_hooks={"response": [_read_error_body]}) as client:
+                async with client.stream("POST", "http://192.0.2.86:8086/mcp") as response:
+                    try:
+                        response.raise_for_status()
+                    except httpx.HTTPStatusError as exc:
+                        return _server_error_message(exc)
+
+        assert asyncio.run(_go()) == "internal MCP endpoint requires loopback connection"
+
+    def test_connect_error_names_the_server_message(self):
+        from tools.mcp_tool import _format_connect_error
+
+        assert _format_connect_error(_hub_403()).endswith(
+            "— server says: internal MCP endpoint requires loopback connection")
+
+    def test_initial_403_quotes_the_server_instead_of_guessing(self, caplog):
+        from tools.mcp_tool import MCPServerTask
+
+        async def fake_run_stdio(self_srv, config):
+            raise _hub_403()
+
+        async def _go():
+            server = MCPServerTask("hub403")
+            with patch.object(MCPServerTask, "_run_stdio", fake_run_stdio):
+                await server.run({"command": "fake"})
+            return server
+
+        with caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
+            server = asyncio.run(_go())
+        assert server._error is not None
+        assert "internal MCP endpoint requires loopback connection" in caplog.text
+        assert "credential is not allowed" not in caplog.text
+
+
+class TestDroppedServerAIS785:
+    """A registered server whose link breaks for good leaves the catalog and explains itself."""
+
+    @pytest.fixture
+    def hub(self):
+        """A registered fake server with one tool, in a fresh registry."""
+        from tools.registry import ToolRegistry
+        import tools.mcp_tool as mt
+
+        reg = ToolRegistry()
+        with patch("tools.registry.registry", reg), \
+                patch.object(mt, "_unavailable_servers", {}), \
+                patch.object(mt, "_unavailable_retry_tasks", {}):
+            server = mt.MCPServerTask("hub")
+            yield SimpleNamespace(mt=mt, reg=reg, server=server, tool="mcp_hub_op_time")
+            mt._servers.pop("hub", None)
+
+    @staticmethod
+    def _connect_then(hub, failures):
+        """_run_stdio fake: the first call connects and registers; every call raises the next failure."""
+        calls = []
+
+        async def fake_run_stdio(self_srv, config):
+            calls.append(1)
+            if len(calls) == 1:
+                self_srv.session = MagicMock()
+                self_srv._tools = [_make_mcp_tool("op_time", "Track time on OpenProject work packages")]
+                self_srv._registered_tool_names = hub.mt._register_server_tools("hub", self_srv, config)
+                self_srv._ready.set()
+            raise failures[min(len(calls) - 1, len(failures) - 1)]
+
+        return fake_run_stdio, calls
+
+    def test_a_403_on_reconnect_fails_fast_and_withdraws_the_tools(self, hub, caplog):
+        fake, calls = self._connect_then(hub, [_hub_403()])
+
+        async def _go():
+            hub.mt._servers["hub"] = hub.server
+            with patch.object(hub.mt.MCPServerTask, "_run_stdio", fake), \
+                    patch("asyncio.sleep", new_callable=AsyncMock) as sleep:
+                await hub.server.run({"command": "fake"})
+            return sleep
+
+        with caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
+            sleep = asyncio.run(_go())
+        assert len(calls) == 1 and sleep.await_count == 0  # no 5x backoff on a 403
+        assert "hub" not in hub.mt._servers
+        assert hub.reg.get_entry(hub.tool) is None  # out of the catalog at once
+        reason = hub.mt.mcp_server_unavailable_reason("hub")
+        assert reason == "refused the connection (HTTP 403: internal MCP endpoint requires loopback connection)"
+        assert hub.mt._unavailable_servers["hub"]["retry_in"] == hub.mt._UNAVAILABLE_RETRY_REFUSED_SECONDS
+        assert "internal MCP endpoint requires loopback connection" in caplog.text
+        assert "credential is not allowed" not in caplog.text
+
+        # A call to the withdrawn tool says why — not "Unknown tool".
+        error = json.loads(hub.reg.dispatch(hub.tool, {}))["error"]
+        assert error.startswith("MCP server 'hub' refused the connection (HTTP 403: internal MCP endpoint")
+        assert "Unknown tool" not in error
+        from agent.deferred_tools import unavailable_tool_error
+
+        assert unavailable_tool_error(hub.tool) == error
+        assert unavailable_tool_error("mcp_other_tool") is None
+        assert json.loads(hub.reg.dispatch("mcp_other_tool", {}))["error"] == "Unknown tool: mcp_other_tool"
+
+    def test_network_errors_give_up_after_retries_and_withdraw(self, hub):
+        fake, calls = self._connect_then(hub, [ConnectionResetError("peer reset")])
+
+        async def _go():
+            hub.mt._servers["hub"] = hub.server
+            with patch.object(hub.mt.MCPServerTask, "_run_stdio", fake), \
+                    patch.object(hub.mt, "_STABLE_SESSION_SECONDS", 3600), \
+                    patch("asyncio.sleep", new_callable=AsyncMock), \
+                    patch("hermes_cli.auto_incidents.report_bundled_mcp_failure"):
+                await hub.server.run({"command": "fake"})
+
+        asyncio.run(_go())
+        assert len(calls) == hub.mt._MAX_RECONNECT_RETRIES + 1
+        assert hub.reg.get_entry(hub.tool) is None and "hub" not in hub.mt._servers
+        state = hub.mt._unavailable_servers["hub"]
+        assert state["kind"] == "unreachable" and state["reason"].startswith("is unreachable (")
+        assert state["retry_in"] == hub.mt._UNAVAILABLE_RETRY_FIRST_SECONDS
+        assert hub.tool in state["tools"]
+
+    def test_a_standalone_server_task_is_left_alone(self, hub):
+        """Only servers this module registered are dropped (tests, probes)."""
+        fake, _calls = self._connect_then(hub, [_hub_403()])
+
+        async def _go():
+            with patch.object(hub.mt.MCPServerTask, "_run_stdio", fake):
+                await hub.server.run({"command": "fake"})
+
+        asyncio.run(_go())
+        assert hub.mt._unavailable_servers == {}
+
+    def test_status_names_the_reason(self, hub):
+        hub.mt._mark_server_unavailable("hub", _hub_403())
+        with patch.object(hub.mt, "_load_mcp_config", return_value={"hub": {"url": "http://192.0.2.86:8086/mcp"}}):
+            (row,) = hub.mt.get_mcp_status()
+        assert row["connected"] is False and row["retrying"] is False
+        assert row["error"].endswith("internal MCP endpoint requires loopback connection)")
+
+
+class TestBackgroundReconnectAIS785:
+    """A down server is retried on the MCP loop and registered again when it answers."""
+
+    @pytest.fixture
+    def env(self, monkeypatch):
+        from tools.registry import ToolRegistry
+        import tools.mcp_tool as mt
+
+        reg = ToolRegistry()
+        state = {"up": False, "attempts": 0}
+
+        async def fake_run_stdio(self_srv, config):
+            state["attempts"] += 1
+            if not state["up"]:
+                raise _hub_403()
+            self_srv.session = MagicMock()
+            self_srv._tools = [_make_mcp_tool("op_time", "Track time on OpenProject work packages")]
+            self_srv._ready.set()
+            await self_srv._shutdown_event.wait()
+
+        monkeypatch.setenv("HERMES_MCP_BACKGROUND_RECONNECT", "1")
+        monkeypatch.setattr(mt, "_UNAVAILABLE_RETRY_REFUSED_SECONDS", 0.05)
+        monkeypatch.setattr(mt, "_UNAVAILABLE_RETRY_FIRST_SECONDS", 0.05)
+        monkeypatch.setattr(mt, "_load_mcp_config", lambda: {"hub": {"command": "fake"}})
+        monkeypatch.setattr(mt, "_reconcile_suite_mcp_url", lambda servers: False)
+        monkeypatch.setattr(mt, "_unavailable_servers", {})
+        monkeypatch.setattr(mt, "_unavailable_retry_tasks", {})
+        monkeypatch.setattr(mt.MCPServerTask, "_run_stdio", fake_run_stdio)
+        monkeypatch.setattr("tools.registry.registry", reg)
+        monkeypatch.setattr("hermes_cli.auto_incidents.report_bundled_mcp_failure", lambda *a, **k: None)
+        try:
+            yield SimpleNamespace(mt=mt, reg=reg, state=state, tool="mcp_hub_op_time")
+        finally:
+            mt.shutdown_mcp_servers()
+            assert mt._unavailable_retry_tasks == {}
+            assert not any(t.name == "mcp-event-loop" and t.is_alive() for t in threading.enumerate())
+
+    @staticmethod
+    def _wait(predicate, timeout=5.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.02)
+        return False
+
+    def test_comes_back_on_its_own(self, env):
+        mt = env.mt
+        mt.register_mcp_servers({"hub": {"command": "fake"}})
+        assert "hub" not in mt._servers and env.reg.get_entry(env.tool) is None
+        assert mt._retry_pending("hub")
+        assert self._wait(lambda: env.state["attempts"] >= 2)  # retried in the background
+        assert env.reg.get_entry(env.tool) is None
+
+        env.state["up"] = True
+        assert self._wait(lambda: env.reg.get_entry(env.tool) is not None)
+        assert "hub" in mt._servers
+        assert mt.mcp_server_unavailable_reason("hub") == ""
+        assert self._wait(lambda: not mt._retry_pending("hub"))
+        (row,) = mt.get_mcp_status()
+        assert row["connected"] is True and "error" not in row
+
+    def test_while_down_calls_explain_and_discovery_waits(self, env):
+        """No connect attempt per tool call or per new session while the retry is pending."""
+        mt = env.mt
+        mt._UNAVAILABLE_RETRY_REFUSED_SECONDS = 3600
+        mt.register_mcp_servers({"hub": {"command": "fake"}})
+        assert env.state["attempts"] == 1 and mt._retry_pending("hub")
+        out = json.loads(mt._make_tool_handler("hub", "op_time", 10)({}))
+        assert out["unavailable"] is True and "requires loopback connection" in out["error"]
+        mt.discover_mcp_tools()
+        assert env.state["attempts"] == 1
+        (row,) = mt.get_mcp_status()
+        assert row["retrying"] is True and "loopback" in row["error"]
+
+    def test_a_manual_reload_takes_over(self, env):
+        """/mcp reload and the desktop's reload connect at once and end the retry."""
+        mt = env.mt
+        mt._UNAVAILABLE_RETRY_REFUSED_SECONDS = 3600  # the background would wait an hour
+        mt.register_mcp_servers({"hub": {"command": "fake"}})
+        assert mt._retry_pending("hub")
+        env.state["up"] = True
+        mt.reconnect_mcp_server("hub")
+        assert "hub" in mt._servers and env.reg.get_entry(env.tool) is not None
+        assert mt.mcp_server_unavailable_reason("hub") == ""
+        assert self._wait(lambda: not mt._retry_pending("hub"))
+
+    def test_disabled_by_env(self, env, monkeypatch):
+        monkeypatch.setenv("HERMES_MCP_BACKGROUND_RECONNECT", "0")
+        env.mt.register_mcp_servers({"hub": {"command": "fake"}})
+        assert not env.mt._retry_pending("hub")
+        assert env.mt.mcp_server_unavailable_reason("hub").startswith("refused the connection (HTTP 403")

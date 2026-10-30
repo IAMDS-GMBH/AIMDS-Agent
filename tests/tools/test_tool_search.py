@@ -2220,3 +2220,26 @@ class TestAIS785ToolDiscoveryAcrossServers:
         assert self._names(search("github pull request"))[0] == "mcp_GithubMCP_create_pull_request"
         assert self._names(search("op_ board create", limit=20))[:2] == [
             f"{_AIS785_SUITE_PREFIX}pm_get_board", f"{_AIS785_SUITE_PREFIX}pm_list_boards"]
+
+    def test_down_servers_are_reported(self, search, monkeypatch):
+        import tools.mcp_tool as mt
+
+        monkeypatch.setattr(mt, "_unavailable_servers", {"MCPUnifiedHub": {
+            "kind": "refused", "reason": "refused the connection (HTTP 403: loopback only)",
+            "tools": set(), "since": 0.0, "retry_in": 600.0}})
+        out = search("openproject board create")
+        assert out["unavailable_servers"] == [
+            {"server": "MCPUnifiedHub", "reason": "refused the connection (HTTP 403: loopback only)"}]
+        monkeypatch.setattr(mt, "_unavailable_servers", {})
+        assert "unavailable_servers" not in search("openproject board create")
+
+    def test_missing_tool_of_a_down_server_names_the_reason(self, monkeypatch):
+        import tools.mcp_tool as mt
+        from tools.tool_search import _describe_missing_tool
+
+        monkeypatch.setattr(mt, "_unavailable_servers", {"MCPUnifiedHub": {
+            "kind": "refused", "reason": "refused the connection (HTTP 403: loopback only)",
+            "tools": set(), "since": 0.0, "retry_in": 600.0}})
+        msg = _describe_missing_tool(f"{_AIS785_HUB_PREFIX}hub_find_tools")
+        assert "MCP server 'MCPUnifiedHub' refused the connection (HTTP 403: loopback only)" in msg
+        assert "Use tool_search" not in msg

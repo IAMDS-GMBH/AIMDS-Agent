@@ -18,6 +18,7 @@ import ast
 import importlib
 import json
 import logging
+import sys
 import threading
 import time
 from pathlib import Path
@@ -146,6 +147,24 @@ def invalidate_check_fn_cache() -> None:
     affect tool availability (e.g. ``hermes tools enable``)."""
     with _check_fn_cache_lock:
         _check_fn_cache.clear()
+
+
+def _missing_tool_error(name: str) -> str:
+    """Error for a call to a name the registry does not hold.
+
+    An MCP tool whose server went down left the registry with it; its server
+    says why (AIS-785) instead of "Unknown tool", which reads as "never
+    existed". Only asks the MCP module when it is already loaded.
+    """
+    mcp_tool = sys.modules.get("tools.mcp_tool")
+    if mcp_tool is not None and str(name or "").startswith("mcp_"):
+        try:
+            explained = mcp_tool.unavailable_tool_error(name)
+        except Exception:
+            explained = None
+        if explained:
+            return explained
+    return f"Unknown tool: {name}"
 
 
 class ToolRegistry:
@@ -407,7 +426,7 @@ class ToolRegistry:
         """
         entry = self.get_entry(name)
         if not entry:
-            return json.dumps({"error": f"Unknown tool: {name}"})
+            return json.dumps({"error": _missing_tool_error(name)}, ensure_ascii=False)
         try:
             if entry.is_async:
                 from model_tools import _run_async

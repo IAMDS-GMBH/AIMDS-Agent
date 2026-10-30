@@ -5825,11 +5825,14 @@ def run_conversation(
 
                     assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
                     messages.append(assistant_msg)
-                    from agent.deferred_tools import unknown_tool_hint
+                    from agent.deferred_tools import unavailable_tool_error, unknown_tool_hint
                     _unknown_hint = unknown_tool_hint(agent)
                     for tc in assistant_message.tool_calls:
                         if tc.function.name not in agent.valid_tool_names:
-                            content = f"Tool '{tc.function.name}' does not exist. Available tools: {available}{_unknown_hint}"
+                            # AIS-785: a tool whose server is down is not "nonexistent".
+                            content = unavailable_tool_error(tc.function.name) or (
+                                f"Tool '{tc.function.name}' does not exist. Available tools: {available}{_unknown_hint}"
+                            )
                         else:
                             content = "Skipped: another tool call in this turn used an invalid name. Please retry this tool call."
                         messages.append({

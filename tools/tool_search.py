@@ -2126,10 +2126,13 @@ def dispatch_tool_search(args: Dict[str, Any],
     finder_hint = _finder_hint(catalog, tool_hits)
     if finder_hint:
         payload["finder_hint"] = finder_hint
+    unavailable = _unavailable_servers_note()
+    if unavailable:
+        payload["unavailable_servers"] = unavailable
     return json.dumps(payload, ensure_ascii=False)
 
 
-# At most this many servers are named per finder hint.
+# At most this many servers are named per finder hint / unavailability note.
 _SEARCH_NOTE_MAX_SERVERS = 3
 
 
@@ -2151,6 +2154,27 @@ def _finder_hint(catalog: List[CatalogEntry], tool_hits: List[CatalogEntry]) -> 
     if not named:
         return ""
     return "These servers have their own tool finder that searches their full catalog — " + "; ".join(named)
+
+
+def _unavailable_servers_note() -> List[Dict[str, str]]:
+    """Configured MCP servers that are down right now, with the reason (AIS-785).
+
+    Their tools are out of the catalog while they are down; saying so keeps
+    the model from concluding the tools never existed.
+    """
+    import sys as _sys
+
+    mcp_tool = _sys.modules.get("tools.mcp_tool")
+    if mcp_tool is None:
+        return []
+    try:
+        rows = mcp_tool.get_unavailable_mcp_servers()
+    except Exception:
+        return []
+    return [
+        {"server": str(r.get("server", "")), "reason": str(r.get("reason", ""))}
+        for r in rows[:_SEARCH_NOTE_MAX_SERVERS]
+    ]
 
 
 def _resolve_tool_entry(name: str):
@@ -2215,9 +2239,17 @@ def _describe_missing_tool(name: str) -> str:
             get_mcp_server_registered_tool_names,
             get_mcp_status,
             sanitize_mcp_name_component,
+            unavailable_tool_error,
         )
     except Exception:
         return generic
+    try:
+        # AIS-785: its server is down — say what the server answered.
+        down = unavailable_tool_error(name)
+    except Exception:
+        down = None
+    if down:
+        return f"{base} {down}"
     try:
         status_rows = get_mcp_status() or []
     except Exception:
