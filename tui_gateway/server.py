@@ -6003,6 +6003,15 @@ def _desktop_client() -> bool:
     return (os.getenv("HERMES_DESKTOP") or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _typed_request(text: Any, display_text: Any) -> Any:
+    """What the user typed: the display text when the client sent one (a
+    slash-expanded prompt), else the prompt text — the desktop sends an empty
+    display_text for an ordinary message."""
+    if isinstance(display_text, str) and display_text.strip():
+        return display_text
+    return text
+
+
 def _start_turn_understanding(sid: str, session: dict, agent: Any, user_text: Any, history: list):
     """AIS-789: restate the request beside the turn for the desktop's notice.
 
@@ -6096,7 +6105,9 @@ def _run_prompt_submit(
             # before message.delta events arrive.
             _emit("message.start", sid)
             # AIS-789: what the model understood, generated beside the turn.
-            understanding = _start_turn_understanding(sid, session, agent, auto_text, history)
+            understanding = _start_turn_understanding(
+                sid, session, agent, _typed_request(text, display_text), history
+            )
 
             if isinstance(prompt, str) and "@" in prompt:
                 from agent.context_references import preprocess_context_references

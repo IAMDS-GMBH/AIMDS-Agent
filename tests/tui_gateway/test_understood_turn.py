@@ -62,6 +62,13 @@ def test_emits_and_stores_the_line_on_the_turns_user_message(server, db, monkeyp
     assert rows == [("earlier", None), ("Do X", "You want X.")]
 
 
+def test_restates_what_the_user_typed(server):
+    # The desktop sends display_text="" for an ordinary message.
+    assert server._typed_request("Vergleiche die Optionen", "") == "Vergleiche die Optionen"
+    assert server._typed_request("expanded skill prompt …", "/plan the rollout") == "/plan the rollout"
+    assert server._typed_request("Do X", None) == "Do X"
+
+
 def test_display_histories_carry_the_line(server, db):
     db.create_session("s", "tui")
     after = db.max_message_id()
