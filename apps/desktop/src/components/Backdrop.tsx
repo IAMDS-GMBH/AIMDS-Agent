@@ -89,14 +89,19 @@ export function Backdrop() {
     <>
       <Leva collapsed hidden={!import.meta.env.DEV || !controlsOpen} titleBar={{ title: 'backdrop', drag: true }} />
 
-      {/* The skin's radial glow (AIS-794, `--ui-backdrop-glow`). Behind the
-          content (-z-1 inside the chat view's isolated stacking context), over
-          the surface colour; transparent for skins without a glow. */}
+      {/* The skin's radial glow (AIS-794, `--ui-backdrop-glow`), transparent for
+          skins without one. The chat column paints its own opaque surface, so
+          the glow lies on top and blends (`--ui-backdrop-glow-blend`: lighten
+          in dark, darken in light): it tints the surfaces and leaves text,
+          icons and accents as they are. */}
       <div
         aria-hidden
-        className="pointer-events-none absolute inset-0 -z-1"
+        className="pointer-events-none absolute inset-0 z-1"
         data-slot="backdrop-glow"
-        style={{ backgroundImage: 'var(--ui-backdrop-glow)' }}
+        style={{
+          backgroundImage: 'var(--ui-backdrop-glow)',
+          mixBlendMode: 'var(--ui-backdrop-glow-blend)' as CSSProperties['mixBlendMode']
+        }}
       />
 
       {statue.enabled && (

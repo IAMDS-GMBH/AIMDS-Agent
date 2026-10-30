@@ -315,6 +315,9 @@
        the skin (`colors.glow`); skins without one paint no glow. */
     --theme-glow: transparent;
     --ui-backdrop-glow: radial-gradient(75rem 37.5rem at 20% -10%, var(--theme-glow) 0%, transparent 60%);
+    /* The glow lies over opaque surfaces: darken (light) / lighten (dark) tint
+       the surfaces only — text and accents stay as they are. */
+    --ui-backdrop-glow-blend: darken;
 
     /* Space under last message vs overlay composer — driven by the measured composer height (see composer/index.tsx). */
     --thread-last-message-clearance: calc(var(--composer-measured-height) + 2rem);
@@ -410,6 +413,7 @@
     --sidebar-edge-border: color-mix(in srgb, var(--ui-base) 12%, transparent);
     --composer-ring-strength: 1.3;
     --backdrop-invert-mul: 0;
+    --ui-backdrop-glow-blend: lighten;
 
     --ui-inline-code-background: color-mix(in srgb, #ffffff 7%, transparent);
     --ui-inline-code-border: color-mix(in srgb, #ffffff 10%, transparent);
