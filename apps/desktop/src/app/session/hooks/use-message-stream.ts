@@ -14,6 +14,7 @@ import {
   type GatewayEventPayload,
   reasoningPart,
   renderMediaTags,
+  settleAssistantTextParts,
   upsertToolPart
 } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
@@ -568,21 +569,7 @@ export function useMessageStream({
             return parts
           }
 
-          const kept = parts.filter(part => {
-            if (part.type === 'text') {
-              return false
-            }
-
-            if (part.type !== 'reasoning' || !dedupeReference) {
-              return true
-            }
-
-            const r = normalize(part.text)
-
-            return !(r && (dedupeReference.startsWith(r) || r.startsWith(dedupeReference)))
-          })
-
-          return [...kept, assistantTextPart(finalText)]
+          return settleAssistantTextParts(parts, finalText)
         }
 
         const completeMessage = (message: ChatMessage): ChatMessage =>

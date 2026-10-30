@@ -121,6 +121,42 @@ export function assistantTextPart(text: string): ChatMessagePart {
   return textPart(renderMediaTags(text))
 }
 
+const normalizeForDedupe = (value: string) => value.replace(/\s+/g, ' ').trim()
+
+/**
+ * Settle a streamed assistant message on its final text. The final text is the
+ * copy of what was streamed after the last step, so only that trailing text is
+ * replaced; text before a step (a lead-in, a clarify card's context, a whole
+ * answer written before a question) stays unless it repeats the final text
+ * (AIS-788). Reasoning that duplicates the final text is dropped as before.
+ */
+export function settleAssistantTextParts(parts: ChatMessagePart[], finalText: string): ChatMessagePart[] {
+  const reference = normalizeForDedupe(finalText)
+  let lastStep = -1
+
+  parts.forEach((part, index) => {
+    if (part.type !== 'text' && part.type !== 'reasoning') {
+      lastStep = index
+    }
+  })
+
+  const kept = parts.filter((part, index) => {
+    if (part.type === 'text') {
+      return index < lastStep && normalizeForDedupe(part.text) !== reference
+    }
+
+    if (part.type !== 'reasoning' || !reference) {
+      return true
+    }
+
+    const r = normalizeForDedupe(part.text)
+
+    return !(r && (reference.startsWith(r) || r.startsWith(reference)))
+  })
+
+  return [...kept, assistantTextPart(finalText)]
+}
+
 export function chatMessageText(message: ChatMessage): string {
   return message.parts
     .filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text')
