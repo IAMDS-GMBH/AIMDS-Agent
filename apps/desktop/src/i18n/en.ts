@@ -1941,7 +1941,13 @@ export const en: Translations = {
       sendEdited: 'Send edited message',
       attachingFile: 'Attaching…',
       taskListResumed: 'task list resumed',
-      contextSummarized: 'context summarized'
+      contextSummarized: 'context summarized',
+      understood: {
+        label: 'Understood',
+        question: 'Original question',
+        expand: 'Show what was understood and the original question',
+        collapse: 'Hide'
+      }
     },
     approval: {
       gatewayDisconnected: 'Hermes gateway is not connected',

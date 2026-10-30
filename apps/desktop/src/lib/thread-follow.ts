@@ -56,3 +56,25 @@ export function isScrollUpKey(event: Pick<KeyboardEvent, 'key' | 'shiftKey' | 't
 
   return SCROLL_UP_KEYS.has(event.key) || (event.key === ' ' && event.shiftKey)
 }
+
+export interface TurnBox {
+  /** The turn (question + answer) on screen. */
+  bottom: number
+  top: number
+  /** Bottom edge of the turn's user message. */
+  questionBottom: number
+  /** Index of the turn's user message in the thread. */
+  userIndex: number
+}
+
+/**
+ * The turn whose answer the reader is in while its question has scrolled
+ * away above `edge` (the viewport's top). Its understood notice replaces the
+ * question there. Null when the question is still (partly) in view or no
+ * turn spans the edge.
+ */
+export function pinnedTurnIndex(turns: readonly TurnBox[], edge: number): null | number {
+  const turn = turns.find(box => box.top <= edge && box.bottom > edge)
+
+  return turn && turn.questionBottom <= edge ? turn.userIndex : null
+}

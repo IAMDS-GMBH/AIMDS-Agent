@@ -1674,6 +1674,13 @@ export interface Translations {
       attachingFile: string
       taskListResumed: string
       contextSummarized: string
+      /** AIS-789: the pinned notice of what was understood. */
+      understood: {
+        label: string
+        question: string
+        expand: string
+        collapse: string
+      }
     }
     approval: {
       gatewayDisconnected: string

@@ -1943,7 +1943,13 @@ export const de
       sendEdited: 'Bearbeitete Nachricht senden',
       attachingFile: 'Wird angehängt…',
       taskListResumed: 'Aufgabenliste wiederhergestellt',
-      contextSummarized: 'Kontext zusammengefasst'
+      contextSummarized: 'Kontext zusammengefasst',
+      understood: {
+        label: 'Verstanden',
+        question: 'Ursprüngliche Frage',
+        expand: 'Verstandenes und ursprüngliche Frage zeigen',
+        collapse: 'Ausblenden'
+      }
     },
     approval: {
       gatewayDisconnected: 'Hermes-Gateway ist nicht verbunden',

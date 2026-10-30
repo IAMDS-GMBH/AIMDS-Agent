@@ -17,6 +17,8 @@ export type ChatMessage = {
   hidden?: boolean
   /** Composer attachment ref strings (`@file:...`, `@image:...`) sent with this user message. */
   attachmentRefs?: string[]
+  /** AIS-789: on a user message, what the model understood it to ask (one line). */
+  understood?: string
 }
 
 export type GatewayEventPayload = {
@@ -943,11 +945,15 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       flushPendingTools(index)
     }
 
+    const understood =
+      message.role === 'user' && typeof message.understood === 'string' ? message.understood.trim() : ''
+
     result.push({
       id: `${message.timestamp || Date.now()}-${index}-${message.role}`,
       role: message.role,
       parts,
-      timestamp: message.timestamp
+      timestamp: message.timestamp,
+      ...(understood ? { understood } : {})
     })
 
     activeAssistantIndex = message.role === 'assistant' ? result.length - 1 : null
@@ -1218,7 +1224,8 @@ export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean 
     a.pending !== b.pending ||
     a.error !== b.error ||
     a.hidden !== b.hidden ||
-    a.branchGroupId !== b.branchGroupId
+    a.branchGroupId !== b.branchGroupId ||
+    a.understood !== b.understood
   ) {
     return false
   }

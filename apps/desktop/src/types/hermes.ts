@@ -303,6 +303,8 @@ export interface SessionMessage {
   tool_call_id?: null | string
   tool_calls?: unknown
   tool_name?: string
+  /** AIS-789: on a user message, what the model understood it to ask. */
+  understood?: null | string
 }
 
 export interface SessionMessagesResponse {

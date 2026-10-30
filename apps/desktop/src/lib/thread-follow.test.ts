@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { isScrollUpKey, threadScrollTarget } from './thread-follow'
+import { isScrollUpKey, pinnedTurnIndex, threadScrollTarget } from './thread-follow'
 
 const parkedBox = { clientHeight: 200, scrollHeight: 1000, scrollTop: 800 }
 const readingBox = { clientHeight: 200, scrollHeight: 1000, scrollTop: 300 }
@@ -51,5 +51,26 @@ describe('isScrollUpKey', () => {
     expect(isScrollUpKey({ key: 'Home', shiftKey: false, target: target('div', { contenteditable: 'true' }) })).toBe(
       false
     )
+  })
+})
+
+describe('pinnedTurnIndex (AIS-789)', () => {
+  const turns = [
+    { bottom: 100, questionBottom: -300, top: -400, userIndex: 0 },
+    { bottom: 900, questionBottom: 160, top: 100, userIndex: 2 }
+  ]
+
+  it('pins the turn the reader is in once its question has scrolled away', () => {
+    expect(pinnedTurnIndex(turns, 50)).toBe(0)
+  })
+
+  it('pins nothing while the question is still in view', () => {
+    expect(pinnedTurnIndex(turns, 120)).toBeNull()
+    expect(pinnedTurnIndex(turns, 160)).toBe(2)
+  })
+
+  it('pins nothing when no turn spans the top edge', () => {
+    expect(pinnedTurnIndex(turns, 950)).toBeNull()
+    expect(pinnedTurnIndex([], 0)).toBeNull()
   })
 })

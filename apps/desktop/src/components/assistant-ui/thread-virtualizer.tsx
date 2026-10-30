@@ -9,12 +9,19 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
-  useRef
+  useRef,
+  useState
 } from 'react'
 
 import { setMutableRef } from '@/lib/mutable-ref'
 import { createSmoothScroller, type SmoothScrollController } from '@/lib/smooth-scroll'
-import { AT_BOTTOM_THRESHOLD, isScrollUpKey, threadScrollTarget } from '@/lib/thread-follow'
+import {
+  AT_BOTTOM_THRESHOLD,
+  isScrollUpKey,
+  pinnedTurnIndex,
+  threadScrollTarget,
+  type TurnBox
+} from '@/lib/thread-follow'
 import { setThreadScrolledUp } from '@/store/thread-scroll'
 
 const ESTIMATED_ITEM_HEIGHT = 220
@@ -33,6 +40,11 @@ interface VirtualizedThreadProps {
   emptyPlaceholder?: ReactNode
   loadingIndicator?: ReactNode
   sessionKey?: string | null
+  /**
+   * AIS-789: pinned above the viewport while the reader is inside a turn
+   * whose question has scrolled away — gets that question's message index.
+   */
+  turnNotice?: (userMessageIndex: number) => ReactNode
 }
 
 function buildGroups(signature: string): MessageGroup[] {
@@ -74,7 +86,8 @@ const VirtualizedThreadInner: FC<VirtualizedThreadProps> = ({
   components,
   emptyPlaceholder,
   loadingIndicator,
-  sessionKey
+  sessionKey,
+  turnNotice
 }) => {
   const messageSignature = useAuiState(s =>
     s.thread.messages
@@ -156,6 +169,8 @@ const VirtualizedThreadInner: FC<VirtualizedThreadProps> = ({
     virtualizer
   })
 
+  const pinnedUserIndex = usePinnedTurn({ contentRef, enabled: Boolean(turnNotice) && !renderEmpty, scrollerRef })
+
   const virtualItems = virtualizer.getVirtualItems()
   const totalSize = virtualizer.getTotalSize()
   const paddingTop = virtualItems[0]?.start ?? 0
@@ -185,9 +200,9 @@ const VirtualizedThreadInner: FC<VirtualizedThreadProps> = ({
             ref={contentRef}
           >
             {/* Natural-flow virtualization: mounted items render as normal
-                flex siblings so `position: sticky` on the human bubble
-                resolves against the scroller without transform interference.
-                Padding spacers reserve scroll space for unmounted items. */}
+                flex siblings (no transforms), so measuring a turn and
+                compensating scrollTop stay exact. Padding spacers reserve
+                scroll space for unmounted items. */}
             <div style={{ paddingBottom: `${paddingBottom}px`, paddingTop: `${paddingTop}px` }}>
               {virtualItems.map(virtualItem => {
                 const group = groups[virtualItem.index]
@@ -207,6 +222,7 @@ const VirtualizedThreadInner: FC<VirtualizedThreadProps> = ({
                       <div
                         className="composer-human-ai-pair-container relative flex min-w-0 flex-col gap-(--conversation-turn-gap)"
                         data-slot="aui_turn-pair"
+                        data-user-index={group.indices[0]}
                       >
                         {group.indices.map(index => (
                           <ThreadPrimitive.MessageByIndex components={components} index={index} key={index} />
@@ -231,11 +247,90 @@ const VirtualizedThreadInner: FC<VirtualizedThreadProps> = ({
           </div>
         )}
       </div>
+      {turnNotice && pinnedUserIndex !== null && (
+        <div className="pointer-events-none absolute inset-x-0 top-0 z-40" data-slot="aui_turn-notice-layer">
+          {turnNotice(pinnedUserIndex)}
+        </div>
+      )}
     </div>
   )
 }
 
 export const VirtualizedThread = memo(VirtualizedThreadInner)
+
+interface PinnedTurnOptions {
+  contentRef: React.RefObject<HTMLDivElement | null>
+  enabled: boolean
+  scrollerRef: React.RefObject<HTMLDivElement | null>
+}
+
+// AIS-789: the turn the reader is in while its question has scrolled away
+// above the viewport — its notice takes the question's place at the top.
+// Measured from the mounted turns after each scroll / layout change, once
+// per frame.
+function usePinnedTurn({ contentRef, enabled, scrollerRef }: PinnedTurnOptions): null | number {
+  const [pinned, setPinned] = useState<null | number>(null)
+
+  useEffect(() => {
+    const el = scrollerRef.current
+
+    if (!enabled || !el) {
+      setPinned(null)
+
+      return undefined
+    }
+
+    let frame: null | number = null
+
+    const measure = () => {
+      frame = null
+      const edge = el.getBoundingClientRect().top
+      const turns: TurnBox[] = []
+
+      for (const pair of el.querySelectorAll<HTMLElement>('[data-slot="aui_turn-pair"][data-user-index]')) {
+        const box = pair.getBoundingClientRect()
+        const question = pair.querySelector('[data-slot="aui_user-message-root"]')
+
+        turns.push({
+          bottom: box.bottom,
+          questionBottom: question ? question.getBoundingClientRect().bottom : box.top,
+          top: box.top,
+          userIndex: Number(pair.dataset.userIndex)
+        })
+      }
+
+      const next = pinnedTurnIndex(turns, edge)
+
+      setPinned(previous => (previous === next ? previous : next))
+    }
+
+    const schedule = () => {
+      frame ??= requestAnimationFrame(measure)
+    }
+
+    const observer = new ResizeObserver(schedule)
+
+    observer.observe(el)
+
+    if (contentRef.current) {
+      observer.observe(contentRef.current)
+    }
+
+    el.addEventListener('scroll', schedule, { passive: true })
+    schedule()
+
+    return () => {
+      el.removeEventListener('scroll', schedule)
+      observer.disconnect()
+
+      if (frame !== null) {
+        cancelAnimationFrame(frame)
+      }
+    }
+  }, [contentRef, enabled, scrollerRef])
+
+  return pinned
+}
 
 interface ScrollAnchorOptions {
   contentRef: React.RefObject<HTMLDivElement | null>

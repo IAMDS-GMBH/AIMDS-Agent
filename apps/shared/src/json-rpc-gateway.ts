@@ -4,6 +4,8 @@ export type GatewayEventName =
   | 'message.start'
   | 'message.delta'
   | 'message.complete'
+  // AIS-789: what the model understood the turn's request to be ({ text }).
+  | 'message.understood'
   | 'thinking.delta'
   | 'reasoning.delta'
   | 'reasoning.available'

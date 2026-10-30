@@ -42,6 +42,7 @@ import {
 import { clearSessionSubagents, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
 import { recordToolDiff } from '@/store/tool-diffs'
 import { applyTurnPhaseEvent, setTurnPhase } from '@/store/turn-phase'
+import { applyUnderstoodEvent } from '@/store/understood'
 import type { RpcEvent } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../types'
@@ -741,6 +742,21 @@ export function useMessageStream({
       // or ends; a stale one must not greet the next turn.
       if (event.type === 'turn.phase') {
         applyTurnPhaseEvent(sessionId, payload)
+
+        return
+      }
+
+      // AIS-789: what the model understood, for the turn's newest user message.
+      if (event.type === 'message.understood') {
+        const text = typeof payload?.text === 'string' ? payload.text : ''
+
+        if (sessionId && text.trim()) {
+          updateSessionState(sessionId, state => {
+            const messages = applyUnderstoodEvent(sessionId, state.messages, text)
+
+            return messages === state.messages ? state : { ...state, messages }
+          })
+        }
 
         return
       }
