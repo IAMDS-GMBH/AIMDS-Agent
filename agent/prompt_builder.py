@@ -708,6 +708,8 @@ _LIVE_CHAT_HINT = (
     "line when you change course or a step takes long; no running commentary "
     "and no tool names. If the request is ambiguous in a way that would change "
     "the result, ask with clarify before working instead of guessing."
+    # AIS-789: the desktop shows what was understood; a question only when needed.
+    " A clear request gets no question."
 )
 
 PLATFORM_HINTS = {

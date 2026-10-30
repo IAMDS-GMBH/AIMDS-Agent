@@ -148,3 +148,12 @@ class TestTurnUnderstanding:
         assert turn.start("Do X") is False
         assert turn.thread is None
 
+
+def test_live_chat_hint_asks_only_when_unclear():
+    # AIS-789: ask back on an unclear request, never on a clear one.
+    from agent.prompt_builder import PLATFORM_HINTS
+
+    for platform in ("tui", "desktop"):
+        hint = PLATFORM_HINTS[platform]
+        assert "ask with clarify before working instead of guessing" in hint
+        assert "A clear request gets no question." in hint
