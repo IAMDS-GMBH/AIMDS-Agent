@@ -355,17 +355,17 @@ def build_data_handling_guidance(valid_tool_names: "set[str] | None" = None) -> 
         + "(one worklog retrieval with a date range, not one call per issue)."
     )
     if has_workdays:
+        # AIS-784: the never-type, confirm-before-configure and partial
+        # holiday rules live in the workdays description (always in the
+        # schema, the tool is core); this rung points there and keeps what
+        # the description does not say.
         rungs.append(
-            "Calendar facts and work-time accounting — working days, public holidays (DE/AT/CH per state/canton), "
-            "target hours, actual-vs-target balances, per-day rows, relative periods, absences, presence and the "
-            "report file — come from the `workdays` tool: read its description, pick the action that answers the "
-            "question in one call, and follow the `hints` in its results. Never type calendars, weekday counts, "
-            "week numbers or holiday dates into SQL or prose, never compute Easter yourself, never write a report "
-            "file the tool can render. Never assume a state or week model: on 'worktime profile unknown' propose "
-            "(estimate_profile) and confirm with `clarify` before configure; municipal/partial holidays deduct "
-            "only after the user confirmed them (`partial_holidays_unresolved`). The profile follows the user's "
-            "systems: when report hints name an unread booking source, colleagues' rows or unmatched absences, "
-            "propose the change (estimate_profile) and confirm it instead of answering with incomplete numbers."
+            "Calendar facts and work-time accounting (working days, holidays, target hours, balances, "
+            "absences, presence, the report) come from the `workdays` tool: follow the rules in its "
+            "description, pick the action that answers the question in one call, and follow the `hints` in "
+            "its results. Never type week numbers into SQL or prose either. When report hints name an unread "
+            "booking source, colleagues' rows or unmatched absences, propose the profile change "
+            "(estimate_profile) and confirm it instead of answering with incomplete numbers."
         )
     rungs.append(
         "Personal data is user-first: start with what is assigned to or involves the user, widen only on "
@@ -2078,18 +2078,16 @@ def build_outlook_memory_guidance(valid_tool_names: "set[str] | None" = None) ->
     search_tool = mail_tools.get("search_emails") or mail_tools.get("list_emails")
     contacts_tool = mail_tools.get("read_contacts")
 
+    # AIS-784: rules only; the rationale sentences went.
     return (
         "# Outlook/M365 + Memory\n"
-        f"When you send an email and are waiting on a reply, or agree to check back on an "
-        f"email thread later, save a short note via `{tool_name}` (schema `notes`) capturing "
-        "who you're waiting on, the subject/keywords, and the date sent — this is what lets you "
-        f"(or a later session) find the right thread again with `{search_tool}` instead of "
-        "asking the user to search manually or promising a check you can't actually perform later.\n"
-        f"When you learn a new contact's name, role, company, or email address (from an email, a "
-        f"request to send/reply to someone, or `{contacts_tool}`), save/update it via "
-        f"`{tool_name}` (schema `person`) so a bare first or last name is later enough to find them "
-        f"and any notes about them — don't rely on `{contacts_tool}` alone for people the user "
-        "mentions repeatedly in conversation."
+        "Waiting on a reply to a sent email, or promised to check a thread later: save a short "
+        f"`notes` entry via `{tool_name}` (who, subject/keywords, date sent), so you or a later session "
+        f"find the thread with `{search_tool}` instead of asking the user to search or promising a check "
+        "you cannot perform.\n"
+        "Save or update a new contact's name, role, company or email (from a mail, a send/reply request or "
+        f"`{contacts_tool}`) the same way as a `person` entry, so a bare first or last name finds them "
+        f"later — `{contacts_tool}` alone is not enough."
     )
 
 
@@ -2128,58 +2126,51 @@ def build_outlook_signature_guidance(valid_tool_names: "set[str] | None" = None)
     contact_tool = _resolve_m365_tool_name(names, "m365_find_contact")
     # AIS-289: the MCP derives signature and per-contact register
     # deterministically from sent mail; the model no longer eyeballs mails.
+    # AIS-784: what the tools return is left to their descriptions; the
+    # order (look up, derive, save, then draft) and the rules stay.
     signature_step = (
-        f"If none exists, call `{signature_tool}()` — it returns `closing`, `signature_lines`/`signature_html` "
-        "and `coverage` from the user's own sent mail — and save closing + signature via "
-        f"`{tool_name}` (schema `notes`, title 'Outlook: email signature'). With `confidence: low` ask the "
+        f"If none exists, call `{signature_tool}()` and save its `closing` + `signature_html` via "
+        f"`{tool_name}` (schema `notes`, title 'Outlook: email signature'); with `confidence: low` ask the "
         "user once instead of guessing."
         if signature_tool
         else
-        f"If none exists, call `{list_emails}` with {sent_hint} on a few recent messages "
-        "yourself — do not ask the user to describe their own style, just look it up — infer the "
-        "signature/closing the user actually uses, and save it via "
-        f"`{tool_name}` (schema `notes`, e.g. title 'Outlook: email signature')."
+        f"If none exists, look it up yourself (do not ask the user): `{list_emails}` with {sent_hint} on a "
+        "few recent messages, infer the closing/signature the user actually uses and save it via "
+        f"`{tool_name}` (schema `notes`, title 'Outlook: email signature')."
+    )
+    # The Teams block names find_contact when it has the index paragraph.
+    contact_in_teams = bool(
+        chat_tool and contact_tool and _resolve_m365_tool_name(names, "m365_index_search")
     )
     tone_step = (
-        f"Before writing to a specific person, look for a memory `person` note 'Mail style with <Name>'; if "
-        f"none exists call `{mail_style_tool}(to=<name or email>)` — it returns greeting_line, du/Sie, closing, "
-        "typical length, language and how the person addresses the user — and save the profile on that "
-        f"person's memory entry via `{tool_name}` (schema `person`, tag mail-style). Mirror it: never assume "
-        "the same greeting/register for every recipient."
+        "Before writing to a person, read the memory `person` note 'Mail style with <Name>'; without one, "
+        f"call `{mail_style_tool}(to=<name or email>)` (greeting_line, du/Sie, closing, length, language) and "
+        "save the profile on that person's memory entry (schema `person`, tag mail-style). "
+        "Mirror it."
         + (f" `{contact_tool}(query)` resolves names, nicknames and aliases to an email without directory rights."
-           if contact_tool else "")
+           if contact_tool and not contact_in_teams else "")
         if mail_style_tool
         else
-        "Per-contact tone (casual vs. formal): NEVER assume the same greeting/register for every "
-        "recipient. Before writing to or replying to a specific person, check the existing thread "
-        "(when replying) and/or that person's prior sent/received messages for the tone actually "
-        "used with them — first-name/casual vs. formal 'Sehr geehrte(r) ...' — and mirror it. Once "
-        "inferred for a contact, persist it on that person's memory entry "
-        f"(schema `person`, e.g. `hints.tone = \"casual\"` or `\"formal\"`) via `{tool_name}` so it "
-        "doesn't need to be re-derived every time; only re-infer it when no prior thread/history "
-        "exists yet for that contact."
+        "Before writing to or replying to a person, check the thread (when replying) and/or prior mail with "
+        "them for the tone actually used — first name/casual vs. formal 'Sehr geehrte(r) ...' — and mirror "
+        f"it; persist it on that person's memory entry (schema `person`, e.g. `hints.tone = \"casual\"` or "
+        f"`\"formal\"`) via `{tool_name}` and re-infer it only when there was no history with them yet."
     )
     teams_note = (
-        f" Teams messages (`{chat_tool}`) are different: pass the Markdown you showed the user as "
-        "`content` — the tool renders it to the HTML Teams displays, so do not hand-write HTML "
-        "there and do not add the email signature."
+        f" Teams messages (`{chat_tool}`) take Markdown (see the Teams block) — do not add the email signature."
         if chat_tool
         else ""
     )
 
     return (
         "# Outlook/M365: HTML formatting, signature & per-contact tone\n"
-        f"Always compose emails (`{write_email}`) as HTML, never plain text — this is what makes "
-        "paragraphs, line breaks, and the signature/attribution below render correctly instead "
-        f"of collapsing into one unreadable block.{teams_note}\n"
-        "Global signature (derive once, reuse silently): this is a MANDATORY prerequisite step, "
-        f"not optional polish. Before your FIRST `{write_email}` call for a new email "
-        "(not a reply — replies already show the existing thread) in a session, you MUST first "
-        "check memory for a previously saved note about the user's own email signature/closing. "
-        f"{signature_step} Only draft the "
-        "email after this lookup/save step. From then on in later sessions, reuse the saved note "
-        "automatically — do not ask the user for their signature or re-derive it every time.\n"
-        f"Per-contact tone (casual vs. formal): {tone_step}"
+        f"Always compose emails (`{write_email}`) as HTML, never plain text.{teams_note}\n"
+        "Signature (MANDATORY, derive once, reuse silently): before the FIRST new email of a session "
+        "(not a reply), check memory for the user's saved signature/closing note. "
+        f"{signature_step} Draft the email only after this step; later sessions reuse the saved note "
+        "without asking the user or re-deriving it.\n"
+        "Per-contact tone (casual vs. formal): never assume the same greeting/register for every "
+        f"recipient. {tone_step}"
     )
 
 
@@ -2219,29 +2210,28 @@ def build_ai_attribution_guidance(valid_tool_names: "set[str] | None" = None) ->
 
     write_email = mail_tools.get("write_email")
     chat_tool = mail_tools.get("send_chat_message")
-    scope_bits = [b for b in (f"emails (`{write_email}`)" if write_email else None,
-                              f"Teams messages (`{chat_tool}`)" if chat_tool else None) if b]
-    scope = " and ".join(scope_bits)
+    # AIS-784: one rule per sentence, the rationale went.
+    email_rule = (
+        f"Append a short attribution line to emails (`{write_email}`) you compose, on its own line right "
+        "after the signature/closing."
+        if write_email
+        else ""
+    )
     teams_rule = (
-        f" For Teams messages (`{chat_tool}`) the default is NO attribution line — Teams is chat, "
-        "not mail; add it only when the saved style profile for that person shows the user does, "
-        "or the user asked for it."
+        f"For Teams messages (`{chat_tool}`) the default is NO attribution line; add it only when the "
+        "person's saved style profile shows the user does, or the user asked for it."
         if chat_tool
         else ""
     )
 
     return (
         "# AI attribution footer\n"
-        f"Append a short attribution line to {scope} you compose: for emails, on its own line "
-        f"right after the signature/closing.{teams_rule} "
-        f"Default format: '(Erstellt von {default_name})' (translate/adapt naturally to the "
-        "conversation's language). Before your first such message in a session, check memory "
-        "(schema `notes`) for a previously saved custom name or format for this — the user may "
-        "have renamed the assistant, changed the wording, or asked to drop the line entirely — "
-        f"and use that instead of the '{default_name}' default. If the user gives such an "
-        f"instruction (a new name, a different phrasing, or to omit it), persist it immediately "
-        f"via `{tool_name}` (schema `notes`, e.g. title 'Assistant: attribution preference') so "
-        "it's remembered in later sessions without asking again."
+        + " ".join(rule for rule in (email_rule, teams_rule) if rule)
+        + f" Default wording: '(Erstellt von {default_name})', adapted to the "
+        "conversation's language. Before the first such message in a session, check memory (schema "
+        "`notes`) for a saved custom name, wording or opt-out and use it instead of the default; when the "
+        f"user gives one, save it at once via `{tool_name}` (schema `notes`, title 'Assistant: attribution "
+        "preference')."
     )
 
 
@@ -2539,21 +2529,21 @@ def build_outlook_contact_profiling_guidance(valid_tool_names: "set[str] | None"
     search_emails = mail_tools.get("search_emails") or list_emails
     contacts_tool = mail_tools.get("read_contacts")
 
+    mail_sources = f"`{list_emails}`" + (f" / `{search_emails}`" if search_emails != list_emails else "")
+
+    # AIS-784: same rules, without the restated reasons.
     return (
         "# Outlook/M365: opt-in contact profiling\n"
-        "If the user hasn't been asked before (check memory first), offer once — using the "
-        "`clarify` tool with choices like ['Ja', 'Nein'] — whether they want memory `person` "
-        "profiles built for the people they correspond with often. Remember that this was asked "
-        f"(a `notes` entry via `{tool_name}` is enough) so you never ask again.\n"
-        f"If they agree: look at the last 14 days of inbox and sent mail (`{list_emails}` / "
-        f"`{search_emails}` with a matching time range), identify correspondents by actual "
-        "interaction frequency, and save each one as a `person` entry (name, email, and "
-        f"organisation inferred from their mail domain) via `{tool_name}`.\n"
-        f"Hard rule: NEVER bulk-import the full Outlook/Org contact directory "
-        f"(`{contacts_tool}` without this activity-based filter) into memory — only people "
-        "the user has actually exchanged mail with recently. This is a one-time backfill; new "
-        "frequent correspondents going forward are picked up incrementally by the normal "
-        "save-as-you-go guidance above, not by re-running this scan."
+        "Unless memory shows it was asked before, offer once via the `clarify` tool (yes/no choices in the "
+        "user's language) to build memory `person` profiles for the people they often correspond with, and "
+        f"record via `{tool_name}` that it was asked (a `notes` entry) so you never ask again.\n"
+        f"If they agree: from the last 14 days of inbox and sent mail ({mail_sources} with that time range), "
+        "save each correspondent picked by actual interaction frequency as a `person` entry (name, email, "
+        "organisation from the mail domain).\n"
+        "Hard rule: NEVER bulk-import the full Outlook/Org contact directory "
+        f"(`{contacts_tool}` without this activity filter) into memory — only people the user recently "
+        "exchanged mail with. This is a one-time backfill; later correspondents are saved as you go "
+        "(Outlook/M365 + Memory), not by re-running this scan."
     )
 
 

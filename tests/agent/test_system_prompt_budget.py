@@ -1,4 +1,4 @@
-"""Token budget of the fixed system prompt (AIS-757).
+"""Token budget of the fixed system prompt (AIS-757, AIS-784).
 
 AIS-740 caps compaction for Suite models at 80k prompt tokens; whatever the
 fixed part (system prompt + tool schemas) takes is gone from every turn. This
@@ -25,10 +25,11 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SOUL = _REPO_ROOT / "installer" / "skills-hidden" / "aimds-loadout" / "identity" / "SOUL.md"
 _VAULT = "/Users/jane.doe/Documents/AIMDS-Suite-Vault"
 
-# AIS-757: after-trim size of the representative stable tier (9,592 tokens;
-# 11,095 before) plus ~3 % headroom. Skills index, environment hints, MCP
-# status and the M365 identity line are environment-dependent and excluded.
-SYSTEM_PROMPT_TOKEN_BUDGET = 9_900
+# AIS-784: after-trim size of the representative stable tier (9,033 tokens;
+# 9,592 after AIS-757, 11,095 before it) plus ~3 % headroom. Skills index,
+# environment hints, MCP status and the M365 identity line are
+# environment-dependent and excluded.
+SYSTEM_PROMPT_TOKEN_BUDGET = 9_300
 
 # AIS-757: the trimmed blocks individually (after-trim size + ~4 % headroom),
 # so a regression names the block that grew.
@@ -37,6 +38,13 @@ BLOCK_TOKEN_BUDGETS = {
     "memory": 1_190,     # 1,144 incl. the workspace block (was 1,591)
     "teams": 885,        # 849 (was 1,157)
     "sharepoint": 555,   # 531 (was 650)
+    # AIS-784: the remaining M365 blocks and the data-handling ladder (its
+    # workdays rung now points to the workdays description).
+    "outlook_memory": 170,       # 163 (was 236)
+    "outlook_signature": 325,    # 311 (was 525)
+    "contact_profiling": 245,    # 234 (was 292)
+    "ai_attribution": 196,       # 188 (was 284)
+    "data_handling": 760,        # 730 (was 847; the workdays rung 250 -> 133)
 }
 # AIS-757: the workdays tool schema rides along with every request (2,168
 # tokens; 2,430 before).
@@ -133,6 +141,11 @@ def test_representative_system_prompt_stays_within_budget(representative):
         "# Teams: send to a person without guessing",
         "# SharePoint: resolve the site, then act",
         "Executive Principal & Chief of Staff",
+        "# Outlook/M365 + Memory",
+        "# Outlook/M365: HTML formatting, signature & per-contact tone",
+        "# Outlook/M365: opt-in contact profiling",
+        "# AI attribution footer",
+        "# Data handling — preferred path first",
     ):
         assert heading in stable, heading
 
@@ -144,6 +157,11 @@ def test_trimmed_blocks_stay_within_their_budgets(representative):
         "memory": pb.build_remote_mcp_memory_prompt(_TOOL_NAMES),
         "teams": pb.build_teams_send_guidance(_TOOL_NAMES),
         "sharepoint": pb.build_sharepoint_guidance(_TOOL_NAMES),
+        "outlook_memory": pb.build_outlook_memory_guidance(_TOOL_NAMES),
+        "outlook_signature": pb.build_outlook_signature_guidance(_TOOL_NAMES),
+        "contact_profiling": pb.build_outlook_contact_profiling_guidance(_TOOL_NAMES),
+        "ai_attribution": pb.build_ai_attribution_guidance(_TOOL_NAMES),
+        "data_handling": pb.build_data_handling_guidance(_TOOL_NAMES),
     }
     over = {
         name: (estimate_tokens_rough(text), BLOCK_TOKEN_BUDGETS[name])
@@ -163,8 +181,8 @@ def test_workdays_schema_stays_within_budget():
 
 def test_trim_kept_the_behavioural_rules(representative):
     """The trim removed repetition and recipes, not rules: approvals, the
-    user's language, safety guardrails and the hard Teams/SharePoint rules are
-    all still in the representative prompt."""
+    user's language, safety guardrails and the hard mail, Teams and
+    SharePoint rules are all still in the representative prompt."""
     stable = _stable_prompt()
     for rule in (
         # SOUL guardrails and communication
@@ -192,6 +210,32 @@ def test_trim_kept_the_behavioural_rules(representative):
         "only when the user explicitly asked to overwrite",
         "do not narrate a plan in prose instead of calling the tool",
         "no workaround with credentials found elsewhere",
+        # AIS-784: Outlook memory
+        "save a short `notes` entry via",
+        "promising a check you cannot perform",
+        "alone is not enough",
+        # signature and per-contact tone
+        "as HTML, never plain text",
+        "do not add the email signature",
+        "Signature (MANDATORY, derive once, reuse silently)",
+        "with `confidence: low` ask the user once instead of guessing",
+        "Draft the email only after this step",
+        "never assume the same greeting/register for every recipient",
+        # contact profiling
+        "offer once via the `clarify` tool (yes/no choices in the user's language)",
+        "so you never ask again",
+        "NEVER bulk-import the full Outlook/Org contact directory",
+        "This is a one-time backfill",
+        # AI attribution
+        "on its own line right after the signature/closing",
+        "the default is NO attribution line",
+        "adapted to the conversation's language",
+        "use it instead of the default",
+        # data handling, workdays rung: the rest lives in the workdays description
+        "follow the rules in its description",
+        "pick the action that answers the question in one call",
+        "Never type week numbers",
+        "confirm it instead of answering with incomplete numbers",
     ):
         assert rule in stable, rule
 
