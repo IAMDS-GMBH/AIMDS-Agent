@@ -106,13 +106,13 @@ class TestRemoteMcpMemoryPrompt:
         stable = _stable_prompt(agent)
         assert "# Memory vault & storage strategy" in stable
         assert "# Workspace (Obsidian vault)" in stable
-        assert f"Memory vault (`{self._PREF_MCP_CONTEXT}`" in stable
+        assert f"**Memory vault** (`{self._PREF_MCP_CONTEXT}`" in stable
 
     def test_uses_prefixed_mcp_memory_context_tool_name(self):
         agent = _make_agent(valid_tool_names=["mcp_memory_memory_context"], platform="cli")
         stable = _stable_prompt(agent)
         assert "# Memory vault & storage strategy" in stable
-        assert "Memory vault (`mcp_memory_memory_context`" in stable
+        assert "**Memory vault** (`mcp_memory_memory_context`" in stable
 
     def test_not_emitted_when_memory_context_tool_missing(self):
         agent = _make_agent(valid_tool_names=["read_file"], platform="cli")

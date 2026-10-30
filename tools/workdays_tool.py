@@ -2232,76 +2232,71 @@ def execute_workdays(args: Dict[str, Any], db_path: Optional[Path] = None) -> st
 
 WORKDAYS_SCHEMA = {
     "name": "workdays",
+    # AIS-757: the description keeps every rule; value lists and file paths
+    # live once, in the parameter that takes them.
     "description": (
         "Deterministic calendar facts and work-time accounting: working days, public holidays for DE/AT/CH "
         "(per state/canton), target hours, half days (24./31.12.), week models incl. explicit work_weekdays "
         "(e.g. Mo-We), and a one-call actual-vs-target report.\n"
         "MANDATORY for target hours, overtime, working days, public holidays, bridge days: NEVER type calendars, weekday "
         "counts or holiday dates into SQL or prose, never compute Easter yourself.\n"
-        "Actions: 'report' (THE one-call actual-vs-target balance up to today: target, actual from ingested worklogs "
-        "in mcp_records via the profile's worklog_source_tool pattern(s) — several time-tracking systems combine — "
-        "scoped to worklog_user, absence credit from the absences table (vacation, special leave, sick; absences "
-        "booked as time entries are refreshed from the booking patterns on every report), "
-        "delta, office/home-office days — all math in SQLite; include_days=true adds one row per day with first "
-        "start, last end, hours, presence and status; period='ytd'|'mtd'|'this_month'|'last_month'|'this_week'|"
-        "'last_week'|'through_last_week' resolves relative ranges deterministically; write='vault' renders the "
-        "canonical Markdown report into the vault (reports/worklog/worktime-<period>.md, overwritten in place) — "
-        "never write that file yourself; follow its hints — they name unread booking sources and colleagues' rows), "
-        "'estimate_profile' (propose week model, booking sources, the booking user and absence patterns from "
-        "ingested bookings when the profile is unknown or incomplete — present the proposal and let the user CONFIRM "
-        "before configure; region is never estimated), 'absences' (source-neutral vacation/sick store in state.db: op=add/list/remove/"
-        "import_from_bookings — days can come from booking tickets, the user directly, a vault note, or a document), "
-        "'presence' (office/homeoffice/travel days: op=add/list/remove/import_from_calendar — days from ingested "
-        "calendar events; without match= the entries involving the signed-in user count (involves_me), match=… "
-        "widens; calendar= accepts name, key, substring or mailbox address; other people's entries are reported as "
-        "colleagues in `others`; coverage.gaps names months without a complete fetch; kind=what the entries mean; "
-        "a booked working day without presence entry or absence counts as the profile's presence_default in report), "
-        "'target_hours' (per-month working days + target hours, default), 'days' (the same plus EVERY calendar day "
-        "of the range in one call — ask once for the whole range, never month by month), 'workdays', 'holidays', "
-        "'materialize' (writes table workday_calendar into ~/.hermes/state.db for manual sql JOINs — advanced path), "
-        "'profile' (show the saved work-time profile), 'configure' (save region/week model/source patterns to "
-        "memory as 'Arbeitszeit-Profil').\n"
-        "If the answer is 'worktime profile unknown': try action='estimate_profile', present the proposal, and ask "
-        "the user with `clarify` (in their language) — never assume a state or week model. Municipal/partial "
-        "holidays (e.g. Augsburger Friedensfest — city of Augsburg only) deduct ONLY after the user confirmed "
-        "them: when a result carries 'partial_holidays_unresolved', ask once (municipality/PLZ helps) and persist "
-        "via configure partial_holidays=[…] or []. Present results in the user's language."
+        "Actions: 'report' (THE one-call actual-vs-target balance up to today: target; actual from the ingested "
+        "worklogs matching worklog_source_tool — several time-tracking systems combine — scoped to worklog_user; "
+        "absence credit (absences booked as time entries are refreshed from the booking patterns on every report); "
+        "delta; office/home-office days — all math in SQLite. write='vault' renders the canonical report file — never "
+        "write that file yourself; follow its hints — they name unread booking sources and colleagues' rows), "
+        "'estimate_profile' (propose week model, booking sources, the booking user and absence patterns from ingested "
+        "bookings when the profile is unknown or incomplete — present it and let the user CONFIRM before configure; "
+        "region is never estimated), 'absences' (source-neutral vacation/sick store; days from booking tickets, the "
+        "user, a vault note or a document), 'presence' (office/homeoffice/travel days from ingested calendar events; "
+        "without match= the entries involving the signed-in user count; other people's entries come back as "
+        "colleagues in `others`; coverage.gaps names months without a complete fetch; in report a booked working day "
+        "without presence entry or absence counts as presence_default), 'target_hours' (default: per-month working "
+        "days + target hours), 'days' (the same plus EVERY calendar day of the range — ask once for the whole range, "
+        "never month by month), 'workdays', 'holidays', 'materialize' (table workday_calendar in ~/.hermes/state.db "
+        "for manual sql JOINs — advanced path), 'profile' (show the saved work-time profile), 'configure' (save "
+        "region/week model/source patterns to memory as 'Arbeitszeit-Profil').\n"
+        "On 'worktime profile unknown': action='estimate_profile', present the proposal, ask the user with `clarify` "
+        "(in their language) — never assume a state or week model. Municipal/partial holidays (e.g. Augsburger "
+        "Friedensfest — city of Augsburg only) deduct ONLY after the user confirmed them: when a result carries "
+        "'partial_holidays_unresolved', ask once (municipality/PLZ helps) and persist via configure "
+        "partial_holidays=[…] or []. Present results in the user's language."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "action": {"type": "string", "enum": list(ACTIONS), "description": "What to compute (default target_hours)."},
-            "period": {"type": "string", "enum": list(PERIODS), "description": "Relative range resolved from today (ISO weeks, Monday first): ytd, mtd, this_month, last_month, this_week, last_week, through_last_week (1 Jan … last Sunday). Instead of start/end."},
-            "write": {"type": "string", "enum": ["vault"], "description": "report only: also render the Markdown report into the vault (reports/worklog/worktime-<period>.md, one canonical file overwritten on rerun, headings in display.language)."},
-            "calendar": {"type": "string", "description": "presence import: name of the ingested calendar (mcp_records.reference_key of the calendar tool's rows); profile default presence_calendar."},
-            "match": {"type": "string", "description": "presence import: comma-separated LIKE patterns that mark the user's own entries (subject/attendees/organizer), usually their name; profile default presence_match_patterns."},
-            "presence_calendar": {"type": "string", "description": "configure: calendar whose entries record where the user works (used by presence import)."},
+            "period": {"type": "string", "enum": list(PERIODS), "description": "Relative range from today instead of start/end (ISO weeks, Monday first; through_last_week = 1 Jan … last Sunday)."},
+            "write": {"type": "string", "enum": ["vault"], "description": "report only: also render the Markdown report into the vault (reports/worklog/worktime-<period>.md, one file overwritten on rerun)."},
+            "calendar": {"type": "string", "description": "presence import: the ingested calendar by name, key, substring or mailbox address; profile default presence_calendar."},
+            "match": {"type": "string", "description": "presence import: comma-separated LIKE patterns marking the user's own entries (subject/attendees/organizer), usually their name; profile default presence_match_patterns."},
+            "presence_calendar": {"type": "string", "description": "configure: calendar whose entries record where the user works."},
             "presence_match_patterns": {"type": "string", "description": "configure: comma-separated patterns naming the user in that calendar."},
-            "presence_default": {"type": "string", "enum": list(PRESENCE_KINDS), "description": "configure: what a booked working day counts as when no presence entry exists (default homeoffice; 'office' when the user records home-office days instead)."},
+            "presence_default": {"type": "string", "enum": list(PRESENCE_KINDS), "description": "configure: what a booked working day without presence entry counts as (default homeoffice; 'office' when the user records home-office days instead)."},
             "start": {"type": "string", "description": "Range start, YYYY-MM-DD (inclusive)."},
             "end": {"type": "string", "description": "Range end, YYYY-MM-DD (inclusive)."},
             "year": {"type": "integer", "description": "Whole year instead of start/end."},
-            "region": {"type": "string", "description": "DE-BY, DE-BW, …, AT, AT-W, …, CH-ZH, … (or a name like 'Bayern'). Taken from the saved profile when omitted."},
+            "region": {"type": "string", "description": "DE-BY, …, AT-W, …, CH-ZH, … or a name like 'Bayern'; profile default."},
             "weekly_hours": {"type": "number", "description": "Contract hours per week (profile default)."},
-            "days_per_week": {"type": "integer", "enum": [5, 6, 7], "description": "Working days per week (profile default). For other models pass work_weekdays instead."},
-            "work_weekdays": {"type": "array", "items": {"type": "string"}, "description": "Explicit working weekdays for models like Mo-We: mo,tu,we,th,fr,sa,su (German di/mi/do/so or ISO 1-7). Overrides days_per_week."},
-            "employment_label": {"type": "string", "enum": ["vollzeit", "teilzeit"], "description": "configure only: full/part-time label shown in assumptions (math stays weekly_hours/part_time_factor)."},
+            "days_per_week": {"type": "integer", "enum": [5, 6, 7], "description": "Working days per week (profile default); other models via work_weekdays."},
+            "work_weekdays": {"type": "array", "items": {"type": "string"}, "description": "Explicit working weekdays: mo,tu,we,th,fr,sa,su (German di/mi/do/so or ISO 1-7). Overrides days_per_week."},
+            "employment_label": {"type": "string", "enum": ["vollzeit", "teilzeit"], "description": "configure only: label shown in assumptions (math uses weekly_hours/part_time_factor)."},
             "part_time_factor": {"type": "number", "description": "0 < factor <= 1 (default 1)."},
-            "worklog_source_tool": {"type": "string", "description": "SQL LIKE pattern (comma-separated for several) matching mcp_records.tool_name rows that are the user's time bookings — any worklog tool, not vendor-specific. Needed for report/estimate."},
+            "worklog_source_tool": {"type": "string", "description": "SQL LIKE pattern(s), comma-separated, matching mcp_records.tool_name of the user's time bookings — any worklog tool. Needed for report/estimate."},
             "vacation_booking_patterns": {"type": "string", "description": "LIKE pattern(s) for vacation bookings, matched against the booked item's key OR title (mcp_records.reference_key / title), e.g. 'INTERNAL_URLAUB_%' survives the yearly new ticket; comma-separated, additive."},
             "special_leave_booking_patterns": {"type": "string", "description": "Same for special leave (Sonderurlaub); matched before vacation."},
             "sick_booking_patterns": {"type": "string", "description": "Same for sick leave; matched first."},
-            "worklog_user": {"type": "string", "description": "configure: whose bookings count as actual (user name as in the worklog rows) when a source holds the whole team's entries; rows of others are colleagues."},
-            "vacation_hour_factor": {"type": "number", "description": "Credit hours per booked vacation hour for absences import (default 1.0; e.g. 8.0 when 1h booked = one 8h day)."},
-            "op": {"type": "string", "enum": ["add", "list", "remove", "import_from_bookings", "import_from_calendar"], "description": "absences / presence: what to do (default list). import_from_bookings = absences, import_from_calendar = presence."},
-            "days": {"type": "array", "items": {}, "description": "absences add/remove: 'YYYY-MM-DD' strings, {day, portion} objects, or {from, to} ranges (ranges expand to working days only)."},
-            "portion": {"type": "number", "description": "absences add: fraction of a day per entry, 0 < portion <= 1 (default 1.0)."},
+            "worklog_user": {"type": "string", "description": "configure: whose bookings count as actual (user name as in the worklog rows) when a source holds the team's entries; other rows are colleagues."},
+            "vacation_hour_factor": {"type": "number", "description": "Credit hours per booked vacation hour on absences import (default 1.0; 8.0 when 1h booked = one 8h day)."},
+            "op": {"type": "string", "enum": ["add", "list", "remove", "import_from_bookings", "import_from_calendar"], "description": "absences / presence: what to do (default list); import_from_bookings = absences, import_from_calendar = presence."},
+            "days": {"type": "array", "items": {}, "description": "absences add/remove: 'YYYY-MM-DD' strings, {day, portion} objects, or {from, to} ranges (expand to working days only)."},
+            "portion": {"type": "number", "description": "absences add: day fraction per entry, 0 < portion <= 1 (default 1.0)."},
             "kind": {"type": "string", "description": "absences: vacation (default), sick, or other. presence: office (default), homeoffice, or travel."},
-            "source": {"type": "string", "description": "absences: where the days came from, e.g. 'user', 'document:<id>', 'vault:<note>' (default user)."},
+            "source": {"type": "string", "description": "absences: origin of the days, e.g. 'user', 'document:<id>', 'vault:<note>' (default user)."},
             "note": {"type": "string", "description": "absences add: free-text note stored with the entries."},
             "half_days": {"type": "array", "items": {"type": "string"}, "description": "MM-DD or YYYY-MM-DD days counted as half a working day (profile default: 12-24, 12-31)."},
             "extra_holidays": {"type": "array", "items": {"type": "string"}, "description": "Additional company holidays, YYYY-MM-DD."},
-            "municipality": {"type": "string", "description": "configure: the user's city/municipality — evidence for whether municipal partial holidays apply (e.g. 'Augsburg')."},
+            "municipality": {"type": "string", "description": "configure: the user's municipality — evidence for municipal partial holidays (e.g. 'Augsburg')."},
             "plz": {"type": "string", "description": "configure: postal code (4-6 digits) — evidence for municipal partial holidays (Augsburg = 86150-86199)."},
             "partial_holidays": {"type": "array", "items": {"type": "string"}, "description": "Names of the region's municipal/partial holidays that APPLY to this user (deducted like statutory once confirmed); [] = user confirmed none apply. Never set without asking the user."},
             "employment_start": {"type": "string", "description": "YYYY-MM-DD; days before it carry no target time."},
