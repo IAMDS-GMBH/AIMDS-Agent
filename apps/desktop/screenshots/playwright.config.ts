@@ -40,7 +40,8 @@ export default defineConfig({
   webServer: {
     command: `npx vite preview --host 127.0.0.1 --port ${PORT} --strictPort`,
     cwd: '..',
-    reuseExistingServer: !process.env.CI,
+    // CI re-recording after a failed comparison: see desktop-screenshots.yml.
+    reuseExistingServer: !process.env.CI || process.env.SCREENSHOTS_REUSE_SERVER === '1',
     url: `http://127.0.0.1:${PORT}`
   },
   workers: process.env.CI ? 1 : undefined

@@ -125,12 +125,19 @@ jobs:
 
       # A failed comparison (or a dispatch with update_baselines) records the
       # current rendering as this OS's baselines, ready to review and commit.
+      # A dispatch skips the comparison, so the renderer is built here then.
+      # On Windows the comparison's `vite preview` can outlive Playwright and
+      # keep the port; it serves the same build, so the recording reuses it.
       - name: Record baselines
         if: always() && (inputs.update_baselines == true || steps.compare.outcome == 'failure')
         working-directory: apps/desktop
+        shell: bash
         env:
           CI: 'true'
-        run: npx playwright test -c screenshots/playwright.config.ts --update-snapshots=all
+          SCREENSHOTS_REUSE_SERVER: '1'
+        run: |
+          if [ ! -f dist/index.html ]; then npx vite build; fi
+          npx playwright test -c screenshots/playwright.config.ts --update-snapshots=all
 
       - name: Upload recorded baselines
         if: always() && (inputs.update_baselines == true || steps.compare.outcome == 'failure')
