@@ -46,6 +46,7 @@ export const en: Translations = {
     withdrawn: 'Report withdrawn.',
     caseClosed: 'This report is already closed and can no longer be changed.',
     caseProcessing: 'The report is still being processed. Please try again in a moment.',
+    pasteScreenshot: combo => `Paste a screenshot (${combo}) or choose a file`,
     categories: {
       chat_issue: 'Chat & AI Responses (Chat problem / AI not responding)',
       mcp_tools: 'MCP & Tools (Tool or MCP Server missing / error)',
@@ -844,7 +845,7 @@ export const en: Translations = {
       loading: 'Loading archived sessions…',
       archivedTitle: 'Archived sessions',
       archivedIntro:
-        'Archived chats are hidden from the sidebar but keep all their messages. Ctrl/⌘-click a chat in the sidebar to archive it.',
+        'Archived chats are hidden from the sidebar but keep all their messages. Archive a chat from its ⋯ or right-click menu in the sidebar.',
       emptyArchivedTitle: 'Nothing archived',
       emptyArchivedDesc: 'Archive a chat to hide it here.',
       unarchive: 'Unarchive',
@@ -855,7 +856,8 @@ export const en: Translations = {
       defaultDirTitle: 'Default project directory',
       defaultDirDesc:
         'New sessions start in this folder unless you pick another. Leave it unset to use your home directory.',
-      defaultDirUpdated: 'Default project directory updated — start a new chat (Ctrl/⌘+N) for it to take effect',
+      defaultDirUpdated: combo =>
+        `Default project directory updated — start a new chat (${combo}) for it to take effect`,
       defaultsTo: label => `Defaults to ${label}.`,
       change: 'Change',
       choose: 'Choose',
@@ -1958,7 +1960,7 @@ export const en: Translations = {
       loadingQuestion: 'Loading question…',
       other: 'Other (type your answer)',
       placeholder: 'Type your answer…',
-      shortcut: '⌘/Ctrl + Enter to send',
+      shortcut: combo => `${combo} to send`,
       back: 'Back',
       skip: 'Skip',
       send: 'Send',

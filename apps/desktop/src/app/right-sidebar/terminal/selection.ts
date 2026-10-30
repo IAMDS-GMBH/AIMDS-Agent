@@ -1,7 +1,11 @@
 import type { ITheme, Terminal } from '@xterm/xterm'
 import type { CSSProperties } from 'react'
 
+import { formatCombo, isModKey } from '@/lib/keybinds/combo'
 import type { DesktopTerminalPalette } from '@/themes/types'
+
+// Listed read-only in the keybind panel as `view.terminalSelection`.
+const ADD_SELECTION_COMBO = 'mod+l'
 
 // VS Code's default integrated-terminal palette (terminalColorRegistry.ts) — a
 // fixed table per theme type, not luminance-derived. Light/dark diverge on
@@ -97,14 +101,10 @@ export function resolveSurfaceColor(fallback: string): string {
   return resolved && resolved !== 'rgba(0, 0, 0, 0)' ? resolved : fallback
 }
 
-export const isMacPlatform = () => navigator.platform.toLowerCase().includes('mac')
-
-export const addSelectionShortcutLabel = () => (isMacPlatform() ? '⌘L' : 'Ctrl+L')
+export const addSelectionShortcutLabel = () => formatCombo(ADD_SELECTION_COMBO)
 
 export function isAddSelectionShortcut(event: KeyboardEvent) {
-  const mod = isMacPlatform() ? event.metaKey : event.ctrlKey
-
-  return mod && !event.shiftKey && event.key.toLowerCase() === 'l'
+  return isModKey(event) && !event.shiftKey && event.key.toLowerCase() === 'l'
 }
 
 export function terminalSelectionLabel(term: Terminal, shellName: string, text: string) {

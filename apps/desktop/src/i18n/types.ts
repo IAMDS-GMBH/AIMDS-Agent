@@ -60,6 +60,8 @@ export interface Translations {
     withdrawn: string
     caseClosed: string
     caseProcessing: string
+    /** Paste-or-pick hint; `combo` is the paste shortcut for this OS (⌘V / Ctrl+V). */
+    pasteScreenshot: (combo: string) => string
     categories: {
       chat_issue: string
       mcp_tools: string
@@ -733,7 +735,8 @@ export interface Translations {
       deleteConfirm: (title: string) => string
       defaultDirTitle: string
       defaultDirDesc: string
-      defaultDirUpdated: string
+      /** `combo` is the new-chat shortcut for this OS (⌘N / Ctrl+N). */
+      defaultDirUpdated: (combo: string) => string
       defaultsTo: (label: string) => string
       change: string
       choose: string
@@ -1690,7 +1693,8 @@ export interface Translations {
       loadingQuestion: string
       other: string
       placeholder: string
-      shortcut: string
+      /** `combo` is the send shortcut for this OS (⌘↵ / Ctrl+↵). */
+      shortcut: (combo: string) => string
       back: string
       skip: string
       send: string

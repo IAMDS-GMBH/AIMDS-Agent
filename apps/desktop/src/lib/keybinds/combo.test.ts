@@ -84,3 +84,87 @@ describe('comboAllowedInInput', () => {
     expect(comboAllowedInInput('shift+x')).toBe(false)
   })
 })
+
+// AIS-798: one shortcut logic for every OS — `mod` is ⌘ on macOS and Ctrl on
+// Windows/Linux, and each OS shows its own labels.
+const PLATFORMS = [
+  { name: 'macOS', platform: 'MacIntel', mac: true },
+  { name: 'Windows', platform: 'Win32', mac: false },
+  { name: 'Linux', platform: 'Linux x86_64', mac: false }
+] as const
+
+describe.each(PLATFORMS)('Mod mapping on $name', ({ mac, platform }) => {
+  it('treats only the OS accelerator as Mod', async () => {
+    const { isModKey } = await loadCombo(platform)
+
+    expect(isModKey({ ctrlKey: false, metaKey: true })).toBe(mac)
+    expect(isModKey({ ctrlKey: true, metaKey: false })).toBe(!mac)
+    expect(isModKey({ ctrlKey: false, metaKey: false })).toBe(false)
+  })
+
+  it('reads the accelerator chord as "mod+…"', async () => {
+    const { comboFromEvent } = await loadCombo(platform)
+    const accelerator = mac ? { metaKey: true } : { ctrlKey: true }
+
+    expect(comboFromEvent(keydown({ code: 'KeyK', ...accelerator }))).toBe('mod+k')
+    expect(comboFromEvent(keydown({ code: 'KeyK', shiftKey: true, ...accelerator }))).toBe('mod+shift+k')
+    expect(comboFromEvent(keydown({ code: 'Digit1', altKey: true, ...accelerator }))).toBe('mod+alt+1')
+  })
+})
+
+describe('the Windows/Super key is never Mod', () => {
+  it.each(['Win32', 'Linux x86_64'])('keeps Win/Super as "meta" on %s', async platform => {
+    const { comboFromEvent } = await loadCombo(platform)
+
+    expect(comboFromEvent(keydown({ code: 'KeyK', metaKey: true }))).toBe('meta+k')
+    // Win+Shift+N must not read as the bare `shift+n` (new chat).
+    expect(comboFromEvent(keydown({ code: 'KeyN', metaKey: true, shiftKey: true }))).toBe('meta+shift+n')
+  })
+
+  it('labels it per OS', async () => {
+    expect((await loadCombo('Win32')).formatCombo('meta+k')).toBe('Win+K')
+    expect((await loadCombo('Linux x86_64')).formatCombo('meta+k')).toBe('Super+K')
+  })
+})
+
+describe.each(PLATFORMS)('shortcut labels on $name', ({ mac, platform }) => {
+  const expected: Array<[string, string, string]> = [
+    // combo, macOS label, Windows/Linux label
+    ['mod+k', '⌘K', 'Ctrl+K'],
+    ['mod+n', '⌘N', 'Ctrl+N'],
+    ['mod+shift+k', '⌘⇧K', 'Ctrl+Shift+K'],
+    ['mod+alt+1', '⌘⌥1', 'Ctrl+Alt+1'],
+    ['mod+enter', '⌘↵', 'Ctrl+↵'],
+    ['mod+/', '⌘/', 'Ctrl+/'],
+    ['shift+enter', '⇧↵', 'Shift+↵'],
+    ['escape', 'Esc', 'Esc']
+  ]
+
+  it.each(expected)('formats %s', async (combo, macLabel, otherLabel) => {
+    const { formatCombo } = await loadCombo(platform)
+
+    expect(formatCombo(combo)).toBe(mac ? macLabel : otherLabel)
+  })
+
+  it('splits labels into one key cap per token', async () => {
+    const { comboTokens } = await loadCombo(platform)
+
+    expect(comboTokens('mod+shift+k')).toEqual(mac ? ['⌘', '⇧', 'K'] : ['Ctrl', 'Shift', 'K'])
+  })
+
+  it('never shows the other OS’s modifiers for a shipped binding', async () => {
+    const { canonicalizeCombo, formatCombo } = await loadCombo(platform)
+    const { KEYBIND_ACTIONS, KEYBIND_READONLY } = await import('./actions')
+    const combos = [...KEYBIND_ACTIONS.flatMap(action => action.defaults), ...KEYBIND_READONLY.flatMap(r => r.keys)]
+
+    for (const combo of combos) {
+      const label = formatCombo(canonicalizeCombo(combo))
+
+      if (mac) {
+        expect(label, combo).not.toMatch(/Ctrl|Alt|Shift|Win|Super/)
+      } else {
+        expect(label, combo).not.toMatch(/[⌘⌥⇧⌃]/)
+      }
+    }
+  })
+})

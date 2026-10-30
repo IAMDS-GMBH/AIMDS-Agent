@@ -150,6 +150,18 @@ Notes:
   `de.ts` is a regression (drifted punctuation, stale labels). Keep
   trailing-punctuation and tone consistent across both.
 
+## Shortcuts
+
+- One logic for every OS: `mod` is ⌘ on macOS and Ctrl on Windows/Linux
+  (`src/lib/keybinds/combo.ts`). Rebindable hotkeys live in
+  `src/lib/keybinds/actions.ts`.
+- Hand-written key/pointer checks use `isModKey(event)` — never
+  `event.metaKey || event.ctrlKey` (that fires on Control on macOS and on the
+  Windows key elsewhere).
+- Labels come from `formatCombo('mod+k')` / `comboTokens(…)` (`⌘K` on macOS,
+  `Ctrl+K` elsewhere). Never hardcode `⌘`, `Cmd`, `Ctrl` or `Strg` in JSX or
+  i18n strings — pass the formatted combo into the string instead.
+
 ## State (TypeScript)
 
 Mirrors the repo TS style (see root `AGENTS.md`):
