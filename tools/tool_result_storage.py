@@ -350,6 +350,54 @@ def maybe_persist_tool_result(
     )
 
 
+def persist_full_result(content: str, tool_use_id: str, env=None) -> Optional[str]:
+    """Save a result's full text where read_file can reach it; return the path.
+
+    The sandbox write (``env``) mirrors :func:`maybe_persist_tool_result`.
+    Without an environment the file goes to the local temp dir, which is
+    where the local backend keeps its results too. No ingest, no shaping:
+    the caller only needs the full text out of the context (AIS-786).
+    """
+    safe_id = "".join(ch for ch in str(tool_use_id or "") if ch.isalnum() or ch in "-_") or uuid.uuid4().hex
+    view = _file_view(content)
+    if env is not None:
+        remote_path = f"{_resolve_storage_dir(env)}/{safe_id}.txt"
+        try:
+            if _write_to_sandbox(view, remote_path, env):
+                return remote_path
+        except Exception as exc:
+            logger.warning("Sandbox write failed for %s: %s", safe_id, exc)
+        return None
+    try:
+        import tempfile
+
+        storage_dir = os.path.join(tempfile.gettempdir(), "hermes-results")
+        os.makedirs(storage_dir, exist_ok=True)
+        local_path = os.path.join(storage_dir, f"{safe_id}.txt")
+        with open(local_path, "w", encoding="utf-8") as handle:
+            handle.write(view)
+        return local_path
+    except OSError as exc:
+        logger.warning("Local result write failed for %s: %s", safe_id, exc)
+        return None
+
+
+def bounded_result_with_pointer(content: str, file_path: Optional[str], preview_chars: int) -> str:
+    """A bounded preview of ``content`` plus where its full text lives.
+
+    Same block as a persisted tool result, so the model reads it the same
+    way. Without a path the preview says the rest is gone instead of
+    pointing nowhere.
+    """
+    preview, has_more = generate_preview(content, max_chars=preview_chars)
+    if file_path:
+        return _build_persisted_message(preview, has_more, len(content), file_path)
+    return (
+        f"{preview}\n\n[Trimmed: this result had {len(content):,} characters and its full text "
+        "could not be saved. Run the step again if the rest is needed.]"
+    )
+
+
 def enforce_turn_budget(
     tool_messages: list[dict],
     env=None,
