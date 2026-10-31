@@ -25,16 +25,16 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SOUL = _REPO_ROOT / "installer" / "skills-hidden" / "aimds-loadout" / "identity" / "SOUL.md"
 _VAULT = "/Users/jane.doe/Documents/AIMDS-Suite-Vault"
 
-# AIS-784: after-trim size of the representative stable tier (9,033 tokens;
-# 9,592 after AIS-757, 11,095 before it) plus ~3 % headroom. Skills index,
-# environment hints, MCP status and the M365 identity line are
+# AIS-795: size of the representative stable tier (8,820 tokens; 9,033 after
+# AIS-784, 9,592 after AIS-757, 11,095 before it) plus ~3 % headroom. Skills
+# index, environment hints, MCP status and the M365 identity line are
 # environment-dependent and excluded.
-SYSTEM_PROMPT_TOKEN_BUDGET = 9_300
+SYSTEM_PROMPT_TOKEN_BUDGET = 9_100
 
 # AIS-757: the trimmed blocks individually (after-trim size + ~4 % headroom),
 # so a regression names the block that grew.
 BLOCK_TOKEN_BUDGETS = {
-    "soul": 810,         # 778 (was 1,408)
+    "soul": 680,         # 652 after AIS-795 (778 after AIS-757, 1,408 before)
     "memory": 1_190,     # 1,144 incl. the workspace block (was 1,591)
     "teams": 885,        # 849 (was 1,157)
     "sharepoint": 555,   # 531 (was 650)
@@ -191,6 +191,12 @@ def test_trim_kept_the_behavioural_rules(representative):
         "never exfiltrate credentials",
         "I answer in the user's language",
         "I never re-propose an action the user just declined",
+        # AIS-795: SOUL principles
+        "on the question card (`clarify`)",
+        "go to subagents",
+        "I name the skill or approach I use",
+        "**Learn From Outcomes**",
+        "Short status first, then the substance, open points last.",
         # memory vault
         "exactly ONCE",
         "do NOT repeat it every turn",
@@ -260,3 +266,14 @@ def test_workdays_schema_kept_its_rules_and_fields():
     props = WORKDAYS_SCHEMA["parameters"]["properties"]
     assert "Never set without asking the user" in props["partial_holidays"]["description"]
     assert "reports/worklog/" in props["write"]["description"]
+
+
+def test_identity_is_ours_and_does_not_fight_the_question_card(representative):
+    """AIS-795: no upstream identity or docs URL in the stable tier, and the
+    SOUL no longer asks for numbered follow-up choices in prose (decisions go
+    through the question card)."""
+    stable = _stable_prompt()
+    for upstream in ("Nous Research", "nousresearch.com", "You are Hermes Agent"):
+        assert upstream not in stable, upstream
+    assert "numbered follow-up choices" not in stable
+    assert "built-in help" in stable

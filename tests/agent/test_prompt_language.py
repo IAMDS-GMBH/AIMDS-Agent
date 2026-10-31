@@ -46,9 +46,13 @@ def test_soul_files_are_english_and_do_not_force_german():
         assert not _german_hits(text), (rel, _german_hits(text))
         assert "Default to German" not in text
         assert "user's language" in text
-    from hermes_cli.default_soul import DEFAULT_SOUL_MD
+    # AIS-795: the fallback identity and the help pointer are English and
+    # carry no upstream identity.
+    from agent.prompt_builder import DEFAULT_AGENT_IDENTITY, build_hermes_agent_help_guidance
 
-    assert not _german_hits(DEFAULT_SOUL_MD)
+    for text in (DEFAULT_AGENT_IDENTITY, build_hermes_agent_help_guidance({"skill_view"})):
+        assert not _german_hits(text), _german_hits(text)
+        assert "Nous Research" not in text and "nousresearch.com" not in text
 
 
 def test_calendar_block_is_english():
