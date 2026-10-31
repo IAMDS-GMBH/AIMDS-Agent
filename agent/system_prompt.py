@@ -48,6 +48,7 @@ from agent.prompt_builder import (
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
     build_data_handling_guidance,
+    build_delegation_guidance,
     build_hermes_agent_help_guidance,
     build_workspace_prompt,
 )
@@ -212,6 +213,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Keep todo persistence preference in the main prompt so the model always
     # knows the canonical todo-storage policy (guarded by "if available").
     stable_parts.append(TODO_PERSISTENCE_GUIDANCE)
+    # AIS-796: when to delegate, generated from the agent definitions offered
+    # on this surface — only when delegate_task is in the session.
+    stable_parts.append(build_delegation_guidance(agent.valid_tool_names, getattr(agent, "platform", "") or ""))
 
     # Universal task-completion / no-fabrication guidance.  Applied to ALL
     # models regardless of tool_use_enforcement gating — the failure modes

@@ -2875,13 +2875,11 @@ def _build_top_level_description() -> str:
         f"(delegation.max_concurrent_children), the rest wait in a queue. "
         f"Results are returned together. {nesting_clause}\n\n"
         "WHEN TO USE delegate_task:\n"
-        "- Work that would flood your context: many or large files, long "
-        "exports, sweeps over many items, month-by-month data fetches. Split "
-        "it into parts, delegate the parts, keep only the conclusions.\n"
+        "- Work that would flood your context (many similar reads or writes, "
+        "large results, several sources): pick the matching 'agent', delegate "
+        "the parts, keep only the conclusions.\n"
         "- Reasoning-heavy subtasks (debugging, code review, research synthesis)\n"
-        "- Parallel independent workstreams (research A and B simultaneously)\n"
-        "Pick an 'agent' definition that matches the kind of work (see the "
-        "'agent' parameter); you keep the conclusion, the bulk stays with the agent.\n\n"
+        "- Parallel independent workstreams (research A and B simultaneously)\n\n"
         "WHEN NOT TO USE (use these instead):\n"
         "- Mechanical multi-step work with no reasoning needed -> use execute_code\n"
         "- Single tool call -> just call the tool directly\n"
@@ -2964,7 +2962,9 @@ def _build_agent_param_description() -> str:
     ]
     for d in definitions:
         where = "" if set(d.surfaces) == {"tui", "cli"} else f" [{'/'.join(d.surfaces)} only]"
-        lines.append(f"- {d.name}{where}: {d.description}")
+        # AIS-796: the kind's "when" principle, the same text as the prompt line.
+        when = f" Use for {d.when}." if d.when else ""
+        lines.append(f"- {d.name}{where}: {d.description}{when}")
     return "\n".join(lines)
 
 

@@ -1,6 +1,7 @@
 ---
 name: verify
 description: Run the given checks (tests, linters, builds, probes) and report only what failed, with the minimal excerpt needed to understand it.
+when: running checks
 surfaces: [cli]
 toolsets: [terminal, file]
 model: inherit

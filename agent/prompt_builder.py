@@ -126,9 +126,7 @@ DEFAULT_AGENT_IDENTITY = (
     "analyzing information, creative work, and executing actions via your tools. "
     "You communicate clearly, admit uncertainty when appropriate, and prioritize "
     "being genuinely useful over being verbose unless otherwise directed below. "
-    "Be targeted and efficient in your exploration and investigations. "
-    "Proactively delegate multi-step tasks, deep codebase research, or extensive document operations "
-    "to sub-agents (task/explore/research) to maintain a compact main context window (under 64k tokens)."
+    "Be targeted and efficient in your exploration and investigations."
 )
 
 HERMES_AGENT_HELP_GUIDANCE = (
@@ -209,6 +207,24 @@ TODO_PERSISTENCE_GUIDANCE = (
     "Before adding tasks, call `todo` with no params to read the current list and avoid redundant entries. "
     "When changing part of the list, prefer `merge=true` updates to edit existing items by id instead of re-adding duplicates."
 )
+
+
+def build_delegation_guidance(valid_tool_names: "set[str] | None" = None, platform: str = "") -> str:
+    """The delegation sentence, generated from the agent definitions offered on
+    *platform* (AIS-796); empty without ``delegate_task`` in the session.
+
+    It replaced the hand-written identity line that named kinds which no
+    longer existed ("task/explore/research") and a fixed context size.
+    """
+    if "delegate_task" not in set(valid_tool_names or ()):
+        return ""
+    try:
+        from agent.agent_definitions import delegation_line
+
+        return delegation_line(platform)
+    except Exception:
+        return ""
+
 
 CRONJOB_SCHEDULING_GUIDANCE = (
     "# Cron job scheduling for repetitive tasks\n"

@@ -1,6 +1,7 @@
 ---
 name: investigate
 description: Reconstruct what happened from logs, dumps, state and case data, and return a timeline with a hypothesis and evidence.
+when: incident traces
 surfaces: [cli]
 toolsets: [file, terminal, sql]
 model: inherit

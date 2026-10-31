@@ -1,6 +1,7 @@
 ---
 name: collect
 description: Gather records from data tools across a range (period, project, mailbox, calendar) slice by slice and return them with a completeness proof.
+when: many similar reads
 surfaces: [tui, cli]
 toolsets: [mcp, sql, file]
 model: inherit
