@@ -2099,6 +2099,28 @@ export const de
         reconnecting: place => `Die Verbindung zu ${place} wird neu aufgebaut …`,
         showSteps: 'Schritte anzeigen',
         hideSteps: 'Schritte ausblenden'
+      },
+      subagent: {
+        kinds: {
+          apply: 'Änderungen umsetzen',
+          collect: 'Daten sammeln',
+          digest: 'Material durcharbeiten',
+          draft: 'Text entwerfen',
+          explore: 'Code durchsuchen',
+          investigate: 'Ursache suchen',
+          research: 'Recherche',
+          review: 'Änderungen prüfen',
+          sweep: 'Liste durchgehen',
+          verify: 'Prüfungen ausführen'
+        },
+        generic: 'Teilaufgabe',
+        working: 'Ein Helfer arbeitet daran',
+        queued: 'Wartet auf einen freien Helfer',
+        failed: 'Diese Teilaufgabe ist nicht fertig geworden.',
+        resultLabel: 'Ergebnis',
+        stepsLabel: 'Schritte',
+        showDetails: 'Details anzeigen',
+        hideDetails: 'Details ausblenden'
       }
     }
   },

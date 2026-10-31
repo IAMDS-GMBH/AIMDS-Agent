@@ -1729,6 +1729,7 @@ export interface Translations {
       statusRecovered: string
       statusDone: string
       activity: ToolActivityCopy
+      subagent: SubagentRunCopy
     }
   }
 
@@ -1852,6 +1853,20 @@ export interface Translations {
 }
 
 /** Readable step labels and the per-turn activity block (AIS-744). */
+/** AIS-796: one block per subagent run of a delegate_task call. */
+export interface SubagentRunCopy {
+  /** Headline per agent kind (definition name); unknown kinds use `generic`. */
+  kinds: Record<string, string>
+  generic: string
+  working: string
+  queued: string
+  failed: string
+  resultLabel: string
+  stepsLabel: string
+  showDetails: string
+  hideDetails: string
+}
+
 export interface ToolActivityPlace {
   /** "in OpenProject" / "im Gedächtnis" */
   in: string
