@@ -142,6 +142,12 @@ def finalize_turn(
     agent._drop_trailing_empty_response_scaffolding(messages)
     agent._persist_session(messages, conversation_history)
 
+    # AIS-796: the agent usage counters the client telemetry sends (main vs
+    # subagent tool calls, compressions per hour) — throttled, numbers only.
+    from agent.usage_telemetry import maybe_refresh_snapshot
+
+    maybe_refresh_snapshot(agent)
+
     # ── Turn-exit diagnostic log ─────────────────────────────────────
     # Always logged at INFO so agent.log captures WHY every turn ended.
     # When the last message is a tool result (agent was mid-work), log

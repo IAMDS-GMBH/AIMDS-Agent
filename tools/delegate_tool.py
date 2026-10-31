@@ -2091,6 +2091,36 @@ def _spill_result(text: str, subagent_id: str) -> Optional[str]:
         return None
 
 
+def _record_agent_run(entry: Dict[str, Any], child, definition, goal: str, parent_agent) -> None:
+    """One ``agent_runs`` row per child (AIS-796): numbers and a goal hash,
+    never the goal or the result text. Never raises."""
+    db = getattr(parent_agent, "_session_db", None)
+    session_id = getattr(parent_agent, "session_id", None)
+    if db is None or not isinstance(session_id, str) or not session_id:
+        return
+    try:
+        import hashlib
+
+        trace = entry.get("tool_trace") if isinstance(entry.get("tool_trace"), list) else []
+        summary = entry.get("summary")
+        child_session_id = getattr(child, "session_id", "") if child is not None else ""
+        db.record_agent_run(
+            session_id,
+            child_session_id=child_session_id if isinstance(child_session_id, str) else "",
+            definition=str(getattr(definition, "name", "") or ""),
+            definition_digest=str(getattr(definition, "digest", "") or ""),
+            goal_hash=hashlib.sha256(str(goal or "").encode("utf-8")).hexdigest()[:16] if goal else "",
+            duration_ms=int(float(entry.get("duration_seconds") or 0) * 1000),
+            iterations=int(entry.get("api_calls") or 0),
+            tool_calls=len(trace),
+            tool_errors=sum(1 for t in trace if isinstance(t, dict) and t.get("status") == "error"),
+            result_chars=len(summary) if isinstance(summary, str) else 0,
+            status=str(entry.get("status") or ""),
+        )
+    except Exception:
+        logger.debug("agent_runs record failed", exc_info=True)
+
+
 def _finish_child_result(entry: Dict[str, Any], child, goal: str, parent_agent) -> None:
     """Cap the summary to the definition's contract (spilling the full text
     to a file), log one outcome line per task and hand badly running tasks
@@ -2099,6 +2129,7 @@ def _finish_child_result(entry: Dict[str, Any], child, goal: str, parent_agent) 
     limit = getattr(definition, "max_result_chars", None) or _DEFAULT_RESULT_CHARS
     subagent_id = str(getattr(child, "_subagent_id", "") or "")
     summary = entry.get("summary")
+    _record_agent_run(entry, child, definition, goal, parent_agent)
     spilled = False
     if isinstance(summary, str) and len(summary) > limit:
         path = _spill_result(summary, subagent_id)

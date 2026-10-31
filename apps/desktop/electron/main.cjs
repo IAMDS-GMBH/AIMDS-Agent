@@ -39,6 +39,7 @@ const {
 const { reportIncident: reportAutoIncident } = require('./incident-report.cjs')
 const { getInstallId, legacyClientId } = require('./install-id.cjs')
 const { suiteKeyHashPrefixes } = require('./suite-key-hash.cjs')
+const { readAgentUsage } = require('./agent-usage.cjs')
 const {
   SPAWN_ATTEMPTS: BACKEND_SPAWN_ATTEMPTS,
   isPortRaceText,
@@ -7605,6 +7606,7 @@ async function sendClientTelemetry(updateInfo = null) {
       }
     }
 
+    const agentUsage = readAgentUsage({ hermesHome: HERMES_HOME })
     const payload = {
       client_id: clientId,
       legacy_client_id: legacyId !== clientId ? legacyId : '',
@@ -7619,6 +7621,8 @@ async function sendClientTelemetry(updateInfo = null) {
       // AIS-756: LiteLLM key hash prefix per Suite environment — never the key.
       suite_key_hash_prefix: suiteKeyHashPrefixes({ hermesHome: HERMES_HOME }),
       ...updateState,
+      // AIS-796: chat vs subagent tool calls, compressions per hour — counters only.
+      ...(agentUsage ? { agent_usage: agentUsage } : {}),
       ...(lastUpdateFailure ? { last_apply_error: lastUpdateFailure.error, last_apply_at: lastUpdateFailure.at } : {})
     }
 
