@@ -304,6 +304,7 @@ export interface Translations {
       keysSettings: string
       mcp: string
       archivedChats: string
+      skills: string
       about: string
     }
     sections: Record<string, string>
@@ -344,6 +345,10 @@ export interface Translations {
       installed: (name: string) => string
       removeTheme: string
       importedBadge: string
+      developerViewTitle: string
+      developerViewDesc: string
+      technicalDetailsTitle: string
+      technicalDetailsDesc: string
       updateChannelTitle: string
       updateChannelDesc: string
       updateChannelStable: string
@@ -926,6 +931,14 @@ export interface Translations {
     colorFor: (name: string) => string
     setColor: (color: string) => string
     autoColor: string
+    /** AIS-794: colour and order on the profiles page (no tech terms). */
+    colorAutomatic: string
+    /** One name per swatch of PROFILE_SWATCHES, in order (red → pink). */
+    colorNames: readonly string[]
+    pickColor: (profile: string, color: string) => string
+    moveUp: (profile: string) => string
+    moveDown: (profile: string) => string
+    orderHint: string
     noProfiles: string
     selectPrompt: string
     refresh: string
@@ -1122,6 +1135,22 @@ export interface Translations {
     pinned: string
     sessions: string
     cronJobs: string
+    background: string
+    backgroundActive: (count: number) => string
+    backgroundRun: Record<'done' | 'failed' | 'running', string>
+    openBackgroundAgents: string
+    openAutomations: string
+    timeGroups: Record<'older' | 'today' | 'week' | 'yesterday', string>
+    account: {
+      menu: string
+      profiles: string
+      allProfiles: string
+      newProfile: string
+      manageProfiles: string
+      settings: string
+      accounts: string
+      helpFeedback: string
+    }
     groupAriaGrouped: string
     groupAriaUngrouped: string
     groupTitleGrouped: string
@@ -1516,6 +1545,10 @@ export interface Translations {
       openModelPicker: string
       modelTitle: (provider: string, model: string) => string
       providerModelTitle: (provider: string, model: string) => string
+      /** Co-worker status bar (AIS-794): plain words, no tech terms. */
+      connection: Record<'connecting' | 'offline' | 'ready' | 'setup', string>
+      connectionSetupHint: string
+      contextRing: (percent: number) => string
     }
   }
 

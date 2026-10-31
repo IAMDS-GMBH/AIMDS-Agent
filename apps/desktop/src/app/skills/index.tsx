@@ -76,11 +76,18 @@ function filteredToolsets(toolsets: ToolsetInfo[], query: string): ToolsetInfo[]
 
 interface SkillsViewProps extends React.ComponentProps<'section'> {
   setStatusbarItemGroup?: SetStatusbarItemGroup
+  /** URL param holding the skills/toolsets tab. Settings → Fähigkeiten embeds
+   *  this view and owns `tab` itself, so it passes its own key (AIS-794). */
+  modeParam?: string
 }
 
-export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: SkillsViewProps) {
+export function SkillsView({
+  modeParam = 'tab',
+  setStatusbarItemGroup: _setStatusbarItemGroup,
+  ...props
+}: SkillsViewProps) {
   const { t } = useI18n()
-  const [mode, setMode] = useRouteEnumParam('tab', SKILLS_MODES, 'skills')
+  const [mode, setMode] = useRouteEnumParam(modeParam, SKILLS_MODES, 'skills')
 
   const [query, setQuery] = useState('')
   const [skills, setSkills] = useState<SkillInfo[] | null>(null)

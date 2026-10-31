@@ -371,6 +371,7 @@ export const de
       keysSettings: 'Einstellungen',
       mcp: 'MCP',
       archivedChats: 'Archivierte Chats',
+      skills: 'Fähigkeiten',
       about: 'Über'
     },
     sections: {
@@ -433,6 +434,12 @@ export const de
       installed: name => `„${name}" installiert.`,
       removeTheme: 'Theme entfernen',
       importedBadge: 'Importiert',
+      developerViewTitle: 'Entwickleransicht',
+      developerViewDesc:
+        'Zeigt Entdecken, den Schalter für technische Details und weitere Entwicklerwerkzeuge. Gilt für dieses Profil.',
+      technicalDetailsTitle: 'Technische Details',
+      technicalDetailsDesc:
+        'Statusleiste mit Gateway, Hintergrund-Agenten, Cron, Token-Zahlen, Tool-Anzahl und Sitzungsdauer.',
       updateChannelTitle: 'Update-Kanal',
       updateChannelDesc: 'Stable folgt freigegebenen Versionen, Preview erhält zusätzlich Release-Kandidaten, Main folgt dem Entwickler-Branch.',
       updateChannelStable: 'Stable',
@@ -1065,6 +1072,25 @@ export const de
     colorFor: name => `Farbe für ${name}`,
     setColor: color => `Farbe ${color} setzen`,
     autoColor: 'Auto',
+    colorAutomatic: 'Automatische Farbe',
+    colorNames: [
+      'Rot',
+      'Orange',
+      'Gelb',
+      'Limette',
+      'Grün',
+      'Mint',
+      'Türkis',
+      'Himmelblau',
+      'Blau',
+      'Violett',
+      'Magenta',
+      'Rosa'
+    ],
+    pickColor: (profile, color) => `${color} für ${profile}`,
+    moveUp: profile => `${profile} nach oben verschieben`,
+    moveDown: profile => `${profile} nach unten verschieben`,
+    orderHint: 'Die Reihenfolge hier gilt auch für die Tastenkürzel zum Profilwechsel.',
     noProfiles: 'Noch keine Profile.',
     selectPrompt: 'Profil auswählen, um Details anzuzeigen.',
     refresh: 'Profile aktualisieren',
@@ -1289,18 +1315,35 @@ export const de
   sidebar: {
     nav: {
       'new-session': 'Neue Sitzung',
-      skills: 'Skills & Tools',
-      discover: 'Entdecken',
-      artifacts: 'Artefakte'
+      start: 'Start',
+      tasks: 'Aufgaben',
+      todos: 'Todos',
+      discover: 'Entdecken'
     },
     searchAria: 'Sitzungen suchen',
     searchPlaceholder: 'Sitzungen suchen…',
     clearSearch: 'Suche löschen',
     noMatch: query => `Keine Sitzungen für „${query}".`,
     results: 'Ergebnisse',
-    pinned: 'Angeheftet',
+    pinned: 'Favoriten',
     sessions: 'Sitzungen',
     cronJobs: 'Automatische Aufgaben',
+    background: 'Im Hintergrund',
+    backgroundActive: count => `${count} aktiv`,
+    backgroundRun: { done: 'fertig', failed: 'gestoppt', running: 'arbeitet' },
+    openBackgroundAgents: 'Arbeit im Hintergrund anzeigen',
+    openAutomations: 'Alle Automationen',
+    timeGroups: { today: 'Heute', yesterday: 'Gestern', week: 'Diese Woche', older: 'Älter' },
+    account: {
+      menu: 'Konto und Einstellungen',
+      profiles: 'Profile',
+      allProfiles: 'Alle Profile',
+      newProfile: 'Neues Profil…',
+      manageProfiles: 'Profile verwalten',
+      settings: 'Einstellungen',
+      accounts: 'Konten',
+      helpFeedback: 'Hilfe & Feedback'
+    },
     groupAriaGrouped: 'Sitzungen als einzelne Liste anzeigen',
     groupAriaUngrouped: 'Sitzungen nach Arbeitsbereich gruppieren',
     groupTitleGrouped: 'Gruppierung aufheben',
@@ -1782,7 +1825,16 @@ export const de
       switchModel: 'Modell wechseln',
       openModelPicker: 'Modellauswahl öffnen',
       modelTitle: (provider, model) => `Modell · ${provider}: ${model}`,
-      providerModelTitle: (provider, model) => `${provider} · ${model}`
+      providerModelTitle: (provider, model) => `${provider} · ${model}`,
+      connection: {
+        connecting: 'Verbindung wird hergestellt …',
+        offline: 'Keine Verbindung',
+        ready: 'Verbunden',
+        setup: 'Einrichtung nötig'
+      },
+      connectionSetupHint: 'Einrichtung nötig — in den Einstellungen ein Konto verbinden, dann kann es losgehen.',
+      contextRing: percent =>
+        `Dieser Chat nutzt ${percent} % seines Platzes. Ist er voll, werden ältere Teile zusammengefasst.`
     }
   },
 

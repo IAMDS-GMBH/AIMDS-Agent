@@ -370,6 +370,7 @@ export const en: Translations = {
       keysSettings: 'Settings',
       mcp: 'MCP',
       archivedChats: 'Archived Chats',
+      skills: 'Skills',
       about: 'About'
     },
     sections: {
@@ -432,6 +433,11 @@ export const en: Translations = {
       installed: name => `Installed “${name}”.`,
       removeTheme: 'Remove theme',
       importedBadge: 'Imported',
+      developerViewTitle: 'Developer view',
+      developerViewDesc: 'Shows Discover, the technical details switch and other developer tools. Saved for this profile.',
+      technicalDetailsTitle: 'Technical details',
+      technicalDetailsDesc:
+        'Status bar with gateway, background agents, cron, token numbers, tool count and session timer.',
       updateChannelTitle: 'Update Channel',
       updateChannelDesc: 'Stable follows released versions, Preview also gets release candidates, Main follows the developer branch.',
       updateChannelStable: 'Stable',
@@ -1064,6 +1070,25 @@ export const en: Translations = {
     colorFor: name => `Color for ${name}`,
     setColor: color => `Set color ${color}`,
     autoColor: 'Auto',
+    colorAutomatic: 'Automatic color',
+    colorNames: [
+      'Red',
+      'Orange',
+      'Yellow',
+      'Lime',
+      'Green',
+      'Mint',
+      'Turquoise',
+      'Sky blue',
+      'Blue',
+      'Violet',
+      'Magenta',
+      'Pink'
+    ],
+    pickColor: (profile, color) => `${color} for ${profile}`,
+    moveUp: profile => `Move ${profile} up`,
+    moveDown: profile => `Move ${profile} down`,
+    orderHint: 'The order here is also the order of the shortcuts for switching profiles.',
     noProfiles: 'No profiles yet.',
     selectPrompt: 'Select a profile to view its details.',
     refresh: 'Refresh profiles',
@@ -1288,18 +1313,35 @@ export const en: Translations = {
   sidebar: {
     nav: {
       'new-session': 'New session',
-      skills: 'Skills & Tools',
-      discover: 'Discovery',
-      artifacts: 'Artifacts'
+      start: 'Start',
+      tasks: 'Tasks',
+      todos: 'Todos',
+      discover: 'Discover'
     },
     searchAria: 'Search sessions',
     searchPlaceholder: 'Search sessions…',
     clearSearch: 'Clear search',
     noMatch: query => `No sessions match “${query}”.`,
     results: 'Results',
-    pinned: 'Pinned',
+    pinned: 'Favorites',
     sessions: 'Sessions',
     cronJobs: 'Automated Tasks',
+    background: 'In the background',
+    backgroundActive: count => `${count} active`,
+    backgroundRun: { done: 'done', failed: 'stopped', running: 'working' },
+    openBackgroundAgents: 'Show background work',
+    openAutomations: 'All automations',
+    timeGroups: { today: 'Today', yesterday: 'Yesterday', week: 'This week', older: 'Older' },
+    account: {
+      menu: 'Account and settings',
+      profiles: 'Profiles',
+      allProfiles: 'All profiles',
+      newProfile: 'New profile…',
+      manageProfiles: 'Manage profiles',
+      settings: 'Settings',
+      accounts: 'Accounts',
+      helpFeedback: 'Help & feedback'
+    },
     groupAriaGrouped: 'Show sessions as a single list',
     groupAriaUngrouped: 'Group sessions by workspace',
     groupTitleGrouped: 'Ungroup sessions',
@@ -1780,7 +1822,11 @@ export const en: Translations = {
       switchModel: 'Switch model',
       openModelPicker: 'Open model picker',
       modelTitle: (provider, model) => `Model · ${provider}: ${model}`,
-      providerModelTitle: (provider, model) => `${provider} · ${model}`
+      providerModelTitle: (provider, model) => `${provider} · ${model}`,
+      connection: { connecting: 'Connecting…', offline: 'Offline', ready: 'Connected', setup: 'Setup needed' },
+      connectionSetupHint: 'Setup needed — connect an account in Settings to start.',
+      contextRing: percent =>
+        `This chat uses ${percent}% of its space. When it is full, older parts are summarised.`
     }
   },
 

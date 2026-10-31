@@ -111,6 +111,29 @@ export async function gatewayMediaDataUrl(path: string): Promise<string> {
   return result.data_url
 }
 
+/**
+ * A loadable `src` for an image path the agent produced (AIS-794, the
+ * artifacts page). Web and data URLs pass through. A local path cannot go
+ * into `<img src>` as `file://` — Chromium refuses it from the app origin
+ * ("Not allowed to load local resource") — so it is read through the desktop
+ * bridge, or over the gateway API when the files live on a remote gateway.
+ */
+export async function imageSrcForPath(path: string): Promise<string> {
+  if (/^(?:https?|data|blob):/i.test(path)) {
+    return path
+  }
+
+  if (window.hermesDesktop && isRemoteGateway()) {
+    return gatewayMediaDataUrl(path)
+  }
+
+  if (window.hermesDesktop?.readFileDataUrl) {
+    return window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
+  }
+
+  return mediaExternalUrl(path)
+}
+
 export function mediaDisplayLabel(path: string): string {
   const escaped = mediaName(path).replace(/[[\]\\]/g, '\\$&')
   const kind = mediaKind(path)

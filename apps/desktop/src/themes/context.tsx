@@ -156,13 +156,21 @@ function renderedModeFor(colors: DesktopThemeColors, mode: 'light' | 'dark'): 'l
 
 // Per-mode mix knobs. Light/dark fallbacks live in styles.css `:root` /
 // `:root.dark`; setting them inline keeps active-skin overrides surviving
-// the boot-time paint.
-const mixesFor = (isDark: boolean): Record<string, string> => ({
-  '--theme-mix-chrome': isDark ? '74%' : '92%',
+// the boot-time paint. An exact palette (AIS-794) paints its surfaces as given.
+const mixesFor = (isDark: boolean, exact = false): Record<string, string> => ({
+  '--theme-mix-chrome': exact ? '100%' : isDark ? '74%' : '92%',
   '--theme-mix-sidebar': '100%',
-  '--theme-mix-card': isDark ? '38%' : '22%',
-  '--theme-mix-elevated': isDark ? '46%' : '28%',
-  '--theme-mix-bubble': isDark ? '46%' : '0%'
+  '--theme-mix-card': exact ? '100%' : isDark ? '38%' : '22%',
+  '--theme-mix-elevated': exact ? '100%' : isDark ? '46%' : '28%',
+  '--theme-mix-bubble': exact ? '100%' : isDark ? '46%' : '0%'
+})
+
+// An exact palette's muted copy is its own `mutedForeground` instead of a
+// fade of the foreground. Empty values clear what a previous skin set, so the
+// styles.css fallbacks apply again.
+export const textTokensFor = (c: DesktopThemeColors, exact = false): Record<string, string> => ({
+  '--ui-text-secondary': exact ? `color-mix(in srgb, ${c.foreground} 50%, ${c.mutedForeground})` : '',
+  '--ui-text-tertiary': exact ? c.mutedForeground : ''
 })
 
 function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
@@ -195,7 +203,8 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
     '--theme-sidebar-seed': c.sidebarBackground ?? c.background,
     '--theme-card-seed': c.card,
     '--theme-elevated-seed': c.popover,
-    '--theme-bubble-seed': c.userBubble ?? c.popover
+    '--theme-bubble-seed': c.userBubble ?? c.popover,
+    '--theme-glow': c.glow ?? 'transparent'
   }
 
   // shadcn/Tailwind tokens that aren't derived from the seed chain.
@@ -218,8 +227,15 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
     '--noise-opacity-mul': isDark ? 'calc(0.04 / 0.21)' : 'calc(0.34 / 0.21)'
   }
 
-  for (const [k, v] of Object.entries({ ...seeds, ...mixesFor(isDark), ...palette })) {
-    root.style.setProperty(k, v)
+  const exact = theme.exactPalette === true
+  const tokens = { ...seeds, ...mixesFor(isDark, exact), ...palette, ...textTokensFor(c, exact) }
+
+  for (const [k, v] of Object.entries(tokens)) {
+    if (v) {
+      root.style.setProperty(k, v)
+    } else {
+      root.style.removeProperty(k)
+    }
   }
 
   window.hermesDesktop?.setTitleBarTheme?.({

@@ -163,6 +163,24 @@ describe('PaneShell composition', () => {
     expect(getColumnTemplate(gridContainer(rendered))).toEqual(['320px', 'minmax(0,1fr)'])
   })
 
+  // AIS-794: stored widths survive launches, so a width from a big window is
+  // capped by the pane's max on a smaller one.
+  it('caps a stored width override by the pane max width', () => {
+    setPaneOpen('files', true)
+    setPaneWidthOverride('files', 900)
+
+    const rendered = render(
+      <PaneShell>
+        <Pane id="files" maxWidth="40vw" resizable side="left" width="240px">
+          files
+        </Pane>
+        <PaneMain>main</PaneMain>
+      </PaneShell>
+    )
+
+    expect(gridContainer(rendered).style.gridTemplateColumns).toMatch(/^min\(900px, ?40vw\) minmax\(0,\s?1fr\)$/)
+  })
+
   it('preserves CSS-string widths verbatim (clamp, var, etc.)', () => {
     const rendered = render(
       <PaneShell>

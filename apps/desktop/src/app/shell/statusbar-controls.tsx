@@ -154,15 +154,32 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
   }
 
   if (item.variant === 'text' && !item.onSelect && !item.to && !item.href) {
-    return (
+    const text = (
       <div
+        aria-label={item.title}
         className={cn(
           'inline-flex h-full items-center gap-1 px-1.5 text-[0.6875rem] text-(--ui-text-tertiary)',
           item.className
         )}
+        data-statusbar-item={item.id}
+        role={item.title ? 'status' : undefined}
       >
         {content}
       </div>
+    )
+
+    // AIS-794: the co-worker items (connection dot, context ring) carry their
+    // words in a hover card.
+    return item.tooltip ? (
+      <Tip
+        className="max-w-xs px-2.5 py-2 text-left text-[11px] font-normal leading-snug"
+        label={item.tooltip}
+        side="top"
+      >
+        {text}
+      </Tip>
+    ) : (
+      text
     )
   }
 

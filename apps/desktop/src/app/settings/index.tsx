@@ -1,12 +1,13 @@
 import { IconDownload, IconRefresh, IconUpload } from '@tabler/icons-react'
-import { useRef, useState } from 'react'
+import { lazy, Suspense, useRef, useState } from 'react'
 
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Tip } from '@/components/ui/tooltip'
 import { getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { Archive, Globe, Info, KeyRound, Package, Sparkles, Wrench, Zap } from '@/lib/icons'
+import { Archive, Globe, Info, KeyRound, Package, Puzzle, Sparkles, Wrench, Zap } from '@/lib/icons'
+import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -25,6 +26,8 @@ import { McpCatalogSettings, PROVIDER_VIEWS, ProvidersSettings, type ProviderVie
 import { SessionsSettings } from './sessions-settings'
 import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
 
+const SkillsView = lazy(async () => ({ default: (await import('../skills')).SkillsView }))
+
 const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   ...SECTIONS.map(s => `config:${s.id}` as SettingsViewId),
   'providers',
@@ -32,9 +35,14 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   'gateway',
   'keys',
   'mcp',
+  'skills',
   'sessions',
   'about'
 ]
+
+// AIS-794: Settings → Fähigkeiten embeds the skills & tools view; its own
+// skills/toolsets tab rides on this param (`tab` is the settings page).
+const SKILLS_MODE_PARAM = 'sview'
 
 export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
   const { t } = useI18n()
@@ -139,6 +147,12 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
             </div>
           )}
           <OverlayNavItem
+            active={activeView === 'skills'}
+            icon={Puzzle}
+            label={t.settings.nav.skills}
+            onClick={() => setActiveView('skills')}
+          />
+          <OverlayNavItem
             active={activeView === 'mcp'}
             icon={Wrench}
             label={t.settings.nav.mcp}
@@ -199,8 +213,18 @@ export function SettingsView({ gateway, onClose, onConfigSaved, onMainModelChang
           </div>
         </OverlaySidebar>
 
-        <OverlayMain className="px-0 pb-0 pt-[calc(var(--titlebar-height)+1rem)]">
-          {activeView === 'config:appearance' ? (
+        <OverlayMain
+          className={cn(
+            'px-0 pb-0',
+            // The embedded skills page brings its own titlebar inset.
+            activeView === 'skills' ? 'pt-0' : 'pt-[calc(var(--titlebar-height)+1rem)]'
+          )}
+        >
+          {activeView === 'skills' ? (
+            <Suspense fallback={null}>
+              <SkillsView modeParam={SKILLS_MODE_PARAM} />
+            </Suspense>
+          ) : activeView === 'config:appearance' ? (
             <AppearanceSettings />
           ) : activeView === 'about' ? (
             <AboutSettings />

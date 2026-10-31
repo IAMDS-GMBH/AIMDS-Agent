@@ -92,6 +92,64 @@ const sessions = [
     started_at: NOW_S - 3 * 86_400 - 600,
     title: 'October invoices',
     tool_call_count: 0
+  },
+  // AIS-794: one session per time group (Heute / Gestern / Diese Woche / Älter).
+  {
+    ended_at: null,
+    id: 'screenshot-supplier-notes',
+    input_tokens: 300,
+    is_active: false,
+    last_active: NOW_S - 12 * 86_400,
+    message_count: 2,
+    model: 'suite-auto',
+    output_tokens: 120,
+    preview: 'Summarise the supplier contract',
+    source: 'desktop',
+    started_at: NOW_S - 12 * 86_400 - 600,
+    title: 'Supplier contract notes',
+    tool_call_count: 0
+  }
+]
+
+/** The pinned session ("Favoriten"). */
+export const PINNED_SESSION_ID = 'screenshot-weekly-report'
+
+// "Im Hintergrund": one automation with unseen output, one scheduled.
+const cronJobs = [
+  {
+    enabled: true,
+    id: 'screenshot-inbox-summary',
+    last_output_at: '2026-10-30T07:00:00Z',
+    last_run_at: '2026-10-30T07:00:00Z',
+    last_status: 'ok',
+    name: 'Inbox summary',
+    next_run_at: '2026-10-31T07:00:00Z',
+    state: 'scheduled'
+  },
+  {
+    enabled: true,
+    id: 'screenshot-invoice-reminder',
+    name: 'Invoice reminder',
+    next_run_at: '2026-10-30T13:00:00Z',
+    state: 'scheduled'
+  }
+]
+
+// Settings → Fähigkeiten.
+const skills = [
+  { category: 'productivity', description: 'Draft and tidy up meeting notes.', enabled: true, name: 'meeting-notes' },
+  { category: 'productivity', description: 'Prepare a weekly status report.', enabled: true, name: 'weekly-report' },
+  { category: 'research', description: 'Collect sources and summarise them.', enabled: false, name: 'deep-research' }
+]
+
+const toolsets = [
+  {
+    configured: true,
+    description: 'Search the web and read pages.',
+    enabled: true,
+    label: 'Web',
+    name: 'web',
+    tools: ['web_search', 'web_extract']
   }
 ]
 
@@ -169,12 +227,34 @@ const auxiliaryTasks = ['vision', 'web_extract', 'compression', 'title_generatio
 
 const emptySessionPage = { limit: 50, offset: 0, profile_totals: {}, sessions: [], total: 0 }
 
+const namedProfile = (name: string, skillCount: number) => ({
+  has_env: false,
+  is_default: false,
+  model: 'suite-auto',
+  name,
+  path: `/home/hermes/.hermes/profiles/${name}`,
+  provider: 'aimds-suite-prod',
+  skill_count: skillCount
+})
+
+/**
+ * The profiles page (AIS-794: colour and order per profile) needs more than
+ * one profile. Only that view gets them, so the other views keep the
+ * single-profile shell.
+ */
+export const PROFILES_VIEW_API: Record<string, unknown> = {
+  '/api/profiles': { profiles: [...profiles, namedProfile('work', 4), namedProfile('private', 1)] },
+  // SOUL.md of the selected profile.
+  '/api/profiles/*': { content: 'You help the team with clear, short answers in German or English.' }
+}
+
 export const FIXTURES: FakeDesktopFixtures = {
+  localStorage: { 'hermes.desktop.pinnedSessions': JSON.stringify([PINNED_SESSION_ID]) },
   api: {
     '/api/config': config,
     '/api/config/defaults': {},
     '/api/config/schema': { category_order: [], fields: {} },
-    '/api/cron/jobs': [],
+    '/api/cron/jobs': cronJobs,
     '/api/env': {},
     '/api/logs': { file: 'gui', lines: [] },
     '/api/mcp/servers': { servers: [] },
@@ -188,6 +268,8 @@ export const FIXTURES: FakeDesktopFixtures = {
     '/api/profiles/sessions?source=cron': emptySessionPage,
     '/api/providers/oauth': { providers: [] },
     '/api/sessions': sessionPage,
+    '/api/skills': skills,
+    '/api/tools/toolsets': toolsets,
     [`/api/sessions/${LONG_ANSWER_SESSION_ID}/messages`]: {
       messages: longAnswerMessages,
       session_id: LONG_ANSWER_SESSION_ID

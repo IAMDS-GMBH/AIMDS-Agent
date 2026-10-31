@@ -17,10 +17,16 @@ export interface FakeDesktopFixtures {
   api: Record<string, unknown>
   /** JSON-RPC results by method; unknown methods answer `{}`. */
   rpc: Record<string, unknown>
+  /** Seeded into localStorage before the app boots (pins, layout state). */
+  localStorage?: Record<string, string>
 }
 
 export function installFakeDesktop(fixtures: FakeDesktopFixtures) {
   const calls: string[] = []
+
+  for (const [key, value] of Object.entries(fixtures.localStorage ?? {})) {
+    window.localStorage.setItem(key, value)
+  }
 
   ;(window as unknown as { __fakeDesktopCalls: string[] }).__fakeDesktopCalls = calls
 

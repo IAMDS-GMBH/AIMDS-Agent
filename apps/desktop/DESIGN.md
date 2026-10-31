@@ -47,8 +47,31 @@ one-offs; if elevation needs to change, change the token.
 | `--chrome-action-hover` | hover fill for quiet controls |
 | `--theme-primary`, `--ui-accent` | brand/accent |
 
-Never hardcode `border-gray-*`, `bg-white`, `text-black`, etc. The white tile in
-`BrandMark` is the one sanctioned literal (the mark needs a fixed backdrop).
+| `--brand-gradient` (`-from` / `-to`) | the AIMDS Suite brand gradient (`BrandMark`, brand moments) |
+| `--ui-backdrop-glow` | the skin's soft top-left glow behind the chat (`Backdrop`) |
+
+Never hardcode `border-gray-*`, `bg-white`, `text-black`, etc. Status colours
+stay semantic (emerald = ok, amber = in progress / attention, rose = error,
+sky = info).
+
+**The default skin is the AIMDS Suite look** (`nous` in
+`src/themes/presets.ts`): navy `#0B1020` page under a radial glow, `#161D3D`
+cards, `#232C54` hairlines, `#E7ECFF` text, `#98A2C8` muted copy, `#4D7CFF`
+accent (`#6C95FF` strong), plus a derived light variant. It sets
+`exactPalette`, so the surfaces are painted as given instead of being mixed
+with the neutral greys the other skins use. Change Suite colours there, never
+in a component.
+
+## Shape
+
+| Token / utility | Radius | Use |
+| --- | --- | --- |
+| `rounded-control` | 8px | buttons, inputs, selects, menus, popovers |
+| `rounded-control-sm` | 6px | small icon / titlebar buttons, menu rows |
+| `rounded-card` | 14px | cards, dialogs, overlay cards |
+| `rounded-full` | round | pills, badges, status dots |
+
+The primitives already carry these; call sites don't re-specify a radius.
 
 ## Buttons — one component
 
@@ -127,10 +150,12 @@ Notes:
 ## Iconography & brand
 
 - **`Codicon`** is the icon set. No mixing icon libraries inline.
-- **`BrandMark`** (`src/components/brand-mark.tsx`) is the brand glyph — the
-  `nous-girl` mark on a white tile, softly rounded, identical in light/dark.
-  It replaced scattered Sparkles glyphs in updates / onboarding / about. Use it
-  for hero/brand moments; don't reintroduce decorative star/sparkle icons.
+- **`BrandMark`** (`src/components/brand-mark.tsx`) is the brand glyph — a
+  white "A" monogram on the `--brand-gradient` tile (36px, 9px radius by
+  default; the radius scales with the size), identical in light/dark. It is
+  product-neutral on purpose (no product name), so it survives the app rename.
+  The white glyph is the one sanctioned literal colour. Use it for hero/brand
+  moments; don't reintroduce decorative star/sparkle icons.
 
 ## Motion
 

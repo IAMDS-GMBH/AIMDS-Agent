@@ -126,6 +126,7 @@ import {
   routeSessionId,
   sessionRoute,
   SETTINGS_ROUTE,
+  SETTINGS_SKILLS_ROUTE,
   TODOS_ROUTE
 } from './routes'
 import { SessionPickerOverlay } from './session-picker-overlay'
@@ -172,7 +173,6 @@ const CronView = lazy(async () => ({ default: (await import('./cron')).CronView 
 const HubView = lazy(async () => ({ default: (await import('./hub')).HubView }))
 const ProfilesView = lazy(async () => ({ default: (await import('./profiles')).ProfilesView }))
 const SettingsView = lazy(async () => ({ default: (await import('./settings')).SettingsView }))
-const SkillsView = lazy(async () => ({ default: (await import('./skills')).SkillsView }))
 const TodosView = lazy(async () => ({ default: (await import('./todos')).TodosView }))
 
 // Latest cron-job sessions surfaced in the collapsed "Cron jobs" section. The
@@ -1192,6 +1192,8 @@ export function DesktopController() {
       }}
       onNavigate={selectSidebarItem}
       onNewSessionInWorkspace={startSessionInWorkspace}
+      onOpenAutomations={() => navigate(CRON_ROUTE)}
+      onOpenBackgroundRuns={() => navigate(AGENTS_ROUTE)}
       onOpenCronArtifact={(jobId, run) => {
         void findCronJob(jobId).then(job => {
           if (job) {
@@ -1464,14 +1466,8 @@ export function DesktopController() {
         <Routes>
           <Route element={chatView} index />
           <Route element={chatView} path=":sessionId" />
-          <Route
-            element={
-              <Suspense fallback={null}>
-                <SkillsView setStatusbarItemGroup={setStatusbarItemGroup} />
-              </Suspense>
-            }
-            path="skills"
-          />
+          {/* AIS-794: skills & tools moved to Settings → Fähigkeiten. */}
+          <Route element={<Navigate replace to={SETTINGS_SKILLS_ROUTE} />} path="skills" />
           <Route
             element={
               <Suspense fallback={null}>
@@ -1482,9 +1478,13 @@ export function DesktopController() {
           />
           <Route
             element={
-              <Suspense fallback={null}>
-                <ArtifactsView setStatusbarItemGroup={setStatusbarItemGroup} />
-              </Suspense>
+              // AIS-794: a crash on this page names itself in desktop.log
+              // instead of surfacing as the anonymous root boundary.
+              <ErrorBoundary label="artifacts">
+                <Suspense fallback={null}>
+                  <ArtifactsView setStatusbarItemGroup={setStatusbarItemGroup} />
+                </Suspense>
+              </ErrorBoundary>
             }
             path="artifacts"
           />

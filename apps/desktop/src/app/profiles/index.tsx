@@ -1,8 +1,10 @@
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 import {
   Dialog,
   DialogContent,
@@ -12,6 +14,7 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Textarea } from '@/components/ui/textarea'
 import {
   createProfile,
@@ -24,9 +27,19 @@ import {
   updateProfileSoul
 } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { triggerHaptic } from '@/lib/haptics'
 import { AlertTriangle, Pencil, Save, Terminal, Trash2, Users } from '@/lib/icons'
+import { PROFILE_SWATCHES, resolveProfileColor } from '@/lib/profile-color'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
+import {
+  $profileColors,
+  $profileOrder,
+  moveProfile,
+  normalizeProfileKey,
+  setProfileColor,
+  sortByProfileOrder
+} from '@/store/profile'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { OverlayMain, OverlayNewButton, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
@@ -80,6 +93,28 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
 
     return profiles.find(p => p.name === selectedName) ?? profiles[0] ?? null
   }, [profiles, selectedName])
+
+  const order = useStore($profileOrder)
+  const colors = useStore($profileColors)
+
+  const orderedProfiles = useMemo(
+    () =>
+      profiles
+        ? [
+            ...profiles.filter(profile => profile.is_default),
+            ...sortByProfileOrder(
+              profiles.filter(profile => !profile.is_default),
+              order
+            )
+          ]
+        : [],
+    [order, profiles]
+  )
+
+  const namedNames = useMemo(
+    () => orderedProfiles.filter(profile => !profile.is_default).map(profile => profile.name),
+    [orderedProfiles]
+  )
 
   const handleCreate = useCallback(
     async (name: string, cloneFromDefault: boolean) => {
@@ -145,14 +180,37 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
         <OverlaySplitLayout>
           <OverlaySidebar>
             <OverlayNewButton label={p.newProfile} onClick={() => setCreateOpen(true)} />
-            {profiles.map(profile => (
-              <ProfileRow
-                active={selected?.name === profile.name}
-                key={profile.name}
-                onSelect={() => setSelectedName(profile.name)}
-                profile={profile}
-              />
-            ))}
+            {/* The default profile leads; the named ones follow the stored
+                order — the same order the profile hotkeys use. */}
+            {orderedProfiles.map(profile => {
+              const namedIndex = namedNames.indexOf(profile.name)
+
+              return (
+                <ProfileRow
+                  active={selected?.name === profile.name}
+                  color={resolveProfileColor(profile.is_default ? null : profile.name, colors)}
+                  colorPicked={Boolean(colors[normalizeProfileKey(profile.name)])}
+                  key={profile.name}
+                  move={
+                    namedIndex < 0 || namedNames.length < 2
+                      ? undefined
+                      : {
+                          canMoveDown: namedIndex < namedNames.length - 1,
+                          canMoveUp: namedIndex > 0,
+                          onMove: direction => {
+                            triggerHaptic('selection')
+                            moveProfile(namedNames, profile.name, direction)
+                          }
+                        }
+                  }
+                  onSelect={() => setSelectedName(profile.name)}
+                  profile={profile}
+                />
+              )
+            })}
+            {namedNames.length > 1 && (
+              <p className="px-2 pt-2 text-[0.66rem] leading-4 text-muted-foreground">{p.orderHint}</p>
+            )}
             {profiles.length === 0 && (
               <p className="px-2 py-4 text-center text-xs text-muted-foreground">{p.noProfiles}</p>
             )}
@@ -214,28 +272,148 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
   )
 }
 
-function ProfileRow({ active, onSelect, profile }: { active: boolean; onSelect: () => void; profile: ProfileInfo }) {
+interface ProfileRowProps {
+  active: boolean
+  /** The profile's colour (override or automatic); null for the default profile. */
+  color: null | string
+  /** Whether the colour is the user's pick (else automatic). */
+  colorPicked: boolean
+  /** Order controls; absent for the default profile, which always leads. */
+  move?: { canMoveDown: boolean; canMoveUp: boolean; onMove: (direction: -1 | 1) => void }
+  onSelect: () => void
+  profile: ProfileInfo
+}
+
+// AIS-794: the account menu replaced the sidebar's profile rail, the only
+// place to recolour (long-press) and reorder (drag) profiles. Both live here
+// now and write the same stored colour and order the rail did, so the order
+// keeps driving the profile hotkeys.
+function ProfileRow({ active, color, colorPicked, move, onSelect, profile }: ProfileRowProps) {
   const { t } = useI18n()
   const p = t.profiles
 
   return (
-    <button
+    <div
       className={cn(
-        'flex w-full flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left transition-colors',
+        'group/profile flex w-full items-center gap-1.5 rounded-control-sm pl-1.5 pr-1 transition-colors',
         active ? 'bg-accent text-foreground' : 'text-foreground/85 hover:bg-accent/60'
       )}
-      onClick={onSelect}
-      type="button"
+      data-testid={`profile-row-${profile.name}`}
     >
-      <span className="flex w-full items-center justify-between gap-2">
-        <span className="truncate text-sm font-medium">{profile.name}</span>
-        {profile.is_default && <span className="text-[0.6rem] text-primary">{p.default}</span>}
-      </span>
-      <span className="text-[0.66rem] text-muted-foreground">
-        {p.skills(profile.skill_count)}
-        {profile.has_env ? ` · ${p.env}` : ''}
-      </span>
-    </button>
+      {color ? (
+        <ProfileColorPicker color={color} picked={colorPicked} profile={profile.name} />
+      ) : (
+        <span aria-hidden className="size-3.5 shrink-0 rounded-full border border-(--ui-stroke-secondary)" />
+      )}
+      <button
+        className="flex min-w-0 flex-1 flex-col items-start gap-0.5 py-1.5 text-left"
+        onClick={onSelect}
+        type="button"
+      >
+        <span className="flex w-full items-center justify-between gap-2">
+          <span className="truncate text-sm font-medium">{profile.name}</span>
+          {profile.is_default && <span className="text-[0.6rem] text-primary">{p.default}</span>}
+        </span>
+        <span className="text-[0.66rem] text-muted-foreground">
+          {p.skills(profile.skill_count)}
+          {profile.has_env ? ` · ${p.env}` : ''}
+        </span>
+      </button>
+      {move && (
+        <div
+          className={cn(
+            'flex shrink-0 items-center transition-opacity focus-within:opacity-100 group-hover/profile:opacity-100',
+            active ? 'opacity-100' : 'opacity-0'
+          )}
+        >
+          <Button
+            aria-label={p.moveUp(profile.name)}
+            disabled={!move.canMoveUp}
+            onClick={() => move.onMove(-1)}
+            size="icon-xs"
+            title={p.moveUp(profile.name)}
+            variant="ghost"
+          >
+            <Codicon name="arrow-up" size="0.75rem" />
+          </Button>
+          <Button
+            aria-label={p.moveDown(profile.name)}
+            disabled={!move.canMoveDown}
+            onClick={() => move.onMove(1)}
+            size="icon-xs"
+            title={p.moveDown(profile.name)}
+            variant="ghost"
+          >
+            <Codicon name="arrow-down" size="0.75rem" />
+          </Button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// The colour dot opens the same twelve swatches the rail's long-press offered,
+// plus "automatic" (the colour derived from the name).
+function ProfileColorPicker({ color, picked, profile }: { color: string; picked: boolean; profile: string }) {
+  const { t } = useI18n()
+  const p = t.profiles
+  const [open, setOpen] = useState(false)
+
+  const pick = (next: null | string) => {
+    setProfileColor(profile, next)
+    triggerHaptic('selection')
+    setOpen(false)
+  }
+
+  return (
+    <Popover onOpenChange={setOpen} open={open}>
+      <PopoverTrigger asChild>
+        <button
+          aria-label={p.colorFor(profile)}
+          className="grid size-5 shrink-0 place-items-center rounded-full transition-transform hover:scale-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          title={p.colorFor(profile)}
+          type="button"
+        >
+          <span aria-hidden className="size-3.5 rounded-full" style={{ backgroundColor: color }} />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-auto p-2" side="right">
+        <div aria-label={p.colorFor(profile)} className="grid grid-cols-6 gap-1.5" role="radiogroup">
+          {PROFILE_SWATCHES.map((swatch, index) => {
+            const checked = picked && swatch === color
+            const name = p.colorNames[index] ?? swatch
+
+            return (
+              <button
+                aria-checked={checked}
+                aria-label={p.pickColor(profile, name)}
+                className="size-5 rounded-full transition-transform hover:scale-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                key={swatch}
+                onClick={() => pick(swatch)}
+                role="radio"
+                style={{
+                  backgroundColor: swatch,
+                  boxShadow: checked ? '0 0 0 2px var(--ui-bg-elevated), 0 0 0 3.5px currentColor' : undefined,
+                  color: swatch
+                }}
+                title={name}
+                type="button"
+              />
+            )
+          })}
+        </div>
+        <button
+          aria-checked={!picked}
+          className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-control-sm py-1 text-xs text-(--ui-text-tertiary) transition hover:bg-(--ui-control-hover-background) hover:text-foreground aria-checked:text-foreground"
+          onClick={() => pick(null)}
+          role="radio"
+          type="button"
+        >
+          <Codicon name="sync" size="0.75rem" />
+          {p.colorAutomatic}
+        </button>
+      </PopoverContent>
+    </Popover>
   )
 }
 

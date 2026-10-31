@@ -64,10 +64,12 @@ export function Backdrop() {
     document.documentElement.style.setProperty('--radius-scalar', String(shape.radiusScalar))
   }, [shape.radiusScalar])
 
+  // AIS-794: the AIMDS Suite page is a clean navy surface under one soft glow,
+  // so the statue texture is off by default (still a dev control, Shift+Y).
   const statue = useControls(
     'Backdrop / Statue',
     {
-      enabled: { value: true, label: 'on' },
+      enabled: { value: false, label: 'on' },
       opacity: { value: 0.025, min: 0, max: 1, step: 0.005 },
       blendMode: { value: 'difference' as BlendMode, options: BLEND_MODES, label: 'blend' },
       invert: { value: true, label: 'invert color' },
@@ -86,6 +88,21 @@ export function Backdrop() {
   return (
     <>
       <Leva collapsed hidden={!import.meta.env.DEV || !controlsOpen} titleBar={{ title: 'backdrop', drag: true }} />
+
+      {/* The skin's radial glow (AIS-794, `--ui-backdrop-glow`), transparent for
+          skins without one. The chat column paints its own opaque surface, so
+          the glow lies on top and blends (`--ui-backdrop-glow-blend`: lighten
+          in dark, darken in light): it tints the surfaces and leaves text,
+          icons and accents as they are. */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 z-1"
+        data-slot="backdrop-glow"
+        style={{
+          backgroundImage: 'var(--ui-backdrop-glow)',
+          mixBlendMode: 'var(--ui-backdrop-glow-blend)' as CSSProperties['mixBlendMode']
+        }}
+      />
 
       {statue.enabled && (
         <div

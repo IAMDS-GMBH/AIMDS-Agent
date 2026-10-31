@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   $paneOpen,
@@ -97,14 +97,32 @@ describe('panes store', () => {
       expect(getPaneStateSnapshot('files')?.widthOverride).toBeUndefined()
     })
 
-    it('width override is in-memory only — not persisted across reloads', () => {
+    // AIS-794: the dragged width survives a reload, next to the open flag.
+    it('width override is persisted across reloads', () => {
       ensurePaneRegistered('files', { open: true })
       setPaneWidthOverride('files', 300)
 
       const persisted = window.localStorage.getItem(STORAGE_KEY)
 
       expect(persisted).not.toBeNull()
-      expect(JSON.parse(persisted ?? '{}')).toEqual({ files: { open: true } })
+      expect(JSON.parse(persisted ?? '{}')).toEqual({ files: { open: true, widthOverride: 300 } })
+    })
+
+    it('a cleared width override leaves the stored pane width-less', () => {
+      ensurePaneRegistered('files', { open: true })
+      setPaneWidthOverride('files', 300)
+      clearPaneWidthOverride('files')
+
+      expect(JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? '{}')).toEqual({ files: { open: true } })
+    })
+
+    it('reads a stored width back on load', async () => {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ files: { open: false, widthOverride: 410 } }))
+      vi.resetModules()
+
+      const fresh = await import('./panes')
+
+      expect(fresh.getPaneStateSnapshot('files')).toEqual({ open: false, widthOverride: 410 })
     })
 
     it('open flag is persisted across changes', () => {

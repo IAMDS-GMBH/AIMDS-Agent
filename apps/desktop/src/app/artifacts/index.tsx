@@ -23,6 +23,7 @@ import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { ExternalLink, ExternalLinkIcon, hostPathLabel, urlSlugTitleLabel, useLinkTitle } from '@/lib/external-link'
 import { FileImage, FileText, FolderOpen, Link2 } from '@/lib/icons'
+import { imageSrcForPath } from '@/lib/media'
 import { FILE_PATH_RE } from '@/lib/paths'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
@@ -271,9 +272,23 @@ function collectArtifactsFromMessage(message: SessionMessage, pushValue: (value:
   }
 }
 
-export function collectArtifactsForSession(session: SessionInfo, messages: SessionMessage[]): ArtifactRecord[] {
+// Session and message times come from the backend in Unix seconds; the page
+// formats and sorts milliseconds (AIS-794: every artifact used to read as a
+// day in January 1970).
+const secondsToMs = (seconds: null | number | undefined) =>
+  typeof seconds === 'number' && Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 0
+
+export function collectArtifactsForSession(
+  session: SessionInfo,
+  messages: null | SessionMessage[] | undefined
+): ArtifactRecord[] {
   const found = new Map<string, ArtifactRecord>()
   const title = sessionTitle(session)
+
+  // One session without a readable history must not take the whole page down.
+  if (!Array.isArray(messages)) {
+    return []
+  }
 
   for (const message of messages) {
     if (message.role !== 'assistant' && message.role !== 'tool') {
@@ -301,7 +316,11 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
         label: artifactLabel(value),
         sessionId: session.id,
         sessionTitle: title,
-        timestamp: message.timestamp || session.last_active || session.started_at || Date.now()
+        timestamp:
+          secondsToMs(message.timestamp) ||
+          secondsToMs(session.last_active) ||
+          secondsToMs(session.started_at) ||
+          Date.now()
       })
     })
   }
@@ -398,7 +417,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         }
 
         const session = sessions[index]
-        nextArtifacts.push(...collectArtifactsForSession(session, result.value.messages))
+        nextArtifacts.push(...collectArtifactsForSession(session, result.value?.messages))
       })
 
       setArtifacts(nextArtifacts.sort((left, right) => right.timestamp - left.timestamp))
@@ -680,10 +699,41 @@ interface ArtifactImageCardProps {
   onOpenChat: (sessionId: string) => void
 }
 
+// Local image paths load through the desktop bridge (AIS-794): a raw file://
+// src logged "Not allowed to load local resource" for every card and left it
+// blank. Null while loading; a read failure marks the image failed.
+function useArtifactImageSrc(artifact: ArtifactRecord, onImageError: (id: string) => void): null | string {
+  const [src, setSrc] = useState<null | string>(null)
+
+  useEffect(() => {
+    let cancelled = false
+
+    setSrc(null)
+    imageSrcForPath(artifact.value)
+      .then(value => {
+        if (!cancelled) {
+          setSrc(value)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          onImageError(artifact.id)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [artifact.id, artifact.value, onImageError])
+
+  return src
+}
+
 function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: ArtifactImageCardProps) {
   const { t } = useI18n()
   const a = t.artifacts
   const kindLabel = artifact.kind === 'image' ? a.kindImage : artifact.kind === 'file' ? a.kindFile : a.kindLink
+  const imageSrc = useArtifactImageSrc(artifact, onImageError)
 
   return (
     <article className="group/artifact overflow-hidden rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background)">
@@ -693,7 +743,7 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
           failedImage && 'cursor-default'
         )}
       >
-        {!failedImage && (
+        {!failedImage && imageSrc && (
           <ZoomableImage
             alt={artifact.label}
             className="max-h-40 max-w-full cursor-zoom-in rounded-md object-contain"
@@ -702,7 +752,7 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
             loading="lazy"
             onError={() => onImageError(artifact.id)}
             slot="artifact-media"
-            src={artifact.href}
+            src={imageSrc}
           />
         )}
       </div>

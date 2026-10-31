@@ -45,6 +45,11 @@ export interface DesktopThemeColors {
   sidebarBorder?: string
   userBubble?: string
   userBubbleBorder?: string
+  /**
+   * Seed of the soft radial glow behind the chat (top left, see
+   * `--ui-backdrop-glow`). Omitted → no glow.
+   */
+  glow?: string
 }
 
 export interface DesktopThemeTypography {
@@ -93,6 +98,12 @@ export interface DesktopTheme {
   colors: DesktopThemeColors
   /** Hand-tuned dark palette. Skins like `nous` ship one. */
   darkColors?: DesktopThemeColors
+  /**
+   * Paint the palette as given: surfaces skip the neutral grey mix and muted
+   * text uses `mutedForeground` (AIS-794, the AIMDS Suite skin). Off for
+   * skins tuned around the mix.
+   */
+  exactPalette?: boolean
   typography?: Partial<DesktopThemeTypography>
   /** Light-variant terminal ANSI palette (also the fallback for dark). */
   terminal?: DesktopTerminalPalette

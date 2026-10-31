@@ -43,12 +43,13 @@ import { profileColor } from '@/lib/profile-color'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
+import { $desktopActionTasks } from '@/store/activity'
 import { $cronJobs } from '@/store/cron'
 import {
   $panesFlipped,
   $pinnedSessionIds,
   $sidebarAgentsGrouped,
-  $sidebarCronOpen,
+  $sidebarBackgroundOpen,
   $sidebarMessagingOpenIds,
   $sidebarOpen,
   $sidebarOverlayMounted,
@@ -58,10 +59,9 @@ import {
   reorderPinnedSession,
   SESSION_SEARCH_FOCUS_EVENT,
   setSidebarAgentsGrouped,
-  setSidebarCronOpen,
+  setSidebarBackgroundOpen,
   setSidebarPinsOpen,
   setSidebarRecentsOpen,
-  SIDEBAR_SESSIONS_PAGE_SIZE,
   toggleSidebarMessagingOpen,
   unpinSession
 } from '@/store/layout'
@@ -87,14 +87,23 @@ import {
   $workingSessionIds,
   sessionPinId
 } from '@/store/session'
+import { $subagentsBySession } from '@/store/subagents'
+import { $developerView } from '@/store/view-mode'
 
-import { type AppView, ARTIFACTS_ROUTE, HUB_ROUTE, SKILLS_ROUTE, TODOS_ROUTE } from '../../routes'
+import { type AppView, appViewForPath } from '../../routes'
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import type { SidebarNavItem } from '../../types'
 
-import { SidebarCronJobsSection } from './cron-jobs-section'
-import { SidebarLoadMoreRow } from './load-more-row'
-import { ProfileRail } from './profile-switcher'
+import { SidebarBackgroundSection } from './background-section'
+import { SidebarLoadMoreRow, SidebarLoadMoreSentinel } from './load-more-row'
+import {
+  backgroundSummary,
+  groupSessionsByTime,
+  type SessionTimeGroup,
+  type SidebarNavSlot,
+  visibleNavSlots
+} from './nav-model'
+import { AccountMenu } from './profile-switcher'
 import { sessionTime, sortByLatestActivity, workspaceGroupsFor } from './session-order'
 import { SidebarSessionRow } from './session-row'
 import { VirtualSessionList } from './virtual-session-list'
@@ -111,28 +120,19 @@ const NON_SESSION_LOAD_STEP = 10
 // macOS, Ctrl+N on Windows/Linux — the `session.new` binding's `mod+n`.
 const NEW_SESSION_KBD: readonly string[] = comboTokens('mod+n')
 
-export const SIDEBAR_NAV: SidebarNavItem[] = [
-  {
-    id: 'new-session',
-    label: '',
-    icon: props => <Codicon name="robot" {...props} />,
-    action: 'new-session'
-  },
-  {
-    id: 'skills',
-    label: '',
-    icon: props => <Codicon name="symbol-misc" {...props} />,
-    route: SKILLS_ROUTE
-  },
-  {
-    id: 'discover',
-    label: '',
-    icon: props => <Codicon name="compass" {...props} />,
-    route: HUB_ROUTE
-  },
-  { id: 'todos', label: 'Todos', icon: props => <Codicon name="checklist" {...props} />, route: TODOS_ROUTE },
-  { id: 'artifacts', label: '', icon: props => <Codicon name="files" {...props} />, route: ARTIFACTS_ROUTE }
-]
+const NEW_SESSION_ITEM: SidebarNavItem = {
+  action: 'new-session',
+  icon: props => <Codicon name="add" {...props} />,
+  id: 'new-session',
+  label: ''
+}
+
+const navItemFor = (slot: SidebarNavSlot): SidebarNavItem => ({
+  icon: props => <Codicon name={slot.icon} {...props} />,
+  id: slot.id,
+  label: '',
+  route: slot.route
+})
 
 const WORKSPACE_PAGE = 5
 // ALL-profiles view: show only the latest N per profile up front to keep the
@@ -209,6 +209,10 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onManageCronJob: (jobId: string) => void
   onOpenCronArtifact: (jobId: string, run?: SessionInfo) => void
   onTriggerCronJob: (jobId: string) => void
+  /** "Im Hintergrund": the page listing every background agent run. */
+  onOpenBackgroundRuns: () => void
+  /** "Im Hintergrund": the page listing every automation. */
+  onOpenAutomations: () => void
   onSessionMaintenance: (mode: SessionMaintenanceMode) => Promise<number>
 }
 
@@ -244,10 +248,13 @@ export function ChatSidebar({
   onManageCronJob,
   onOpenCronArtifact,
   onTriggerCronJob,
+  onOpenBackgroundRuns,
+  onOpenAutomations,
   onSessionMaintenance
 }: ChatSidebarProps) {
   const { t } = useI18n()
   const s = t.sidebar
+  const developerView = useStore($developerView)
   const sidebarOpen = useStore($sidebarOpen)
   // Collapsed-but-overlay-mounted → render the full sidebar, not just the nav rail.
   const overlayMounted = useStore($sidebarOverlayMounted)
@@ -257,11 +264,13 @@ export function ChatSidebar({
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const pinsOpen = useStore($sidebarPinsOpen)
   const agentsOpen = useStore($sidebarRecentsOpen)
-  const cronOpen = useStore($sidebarCronOpen)
+  const backgroundOpen = useStore($sidebarBackgroundOpen)
   const selectedSessionId = useStore($selectedStoredSessionId)
   const sessions = useStore($sessions)
   const cronSessions = useStore($cronSessions)
   const cronJobs = useStore($cronJobs)
+  const subagentsBySession = useStore($subagentsBySession)
+  const desktopActionTasks = useStore($desktopActionTasks)
   const messagingSessions = useStore($messagingSessions)
   const messagingPlatformTotals = useStore($messagingPlatformTotals)
   const messagingTruncated = useStore($messagingTruncated)
@@ -631,11 +640,31 @@ export function ChatSidebar({
   )
 
   const hasMoreSessions = knownSessionTotal > loadedSessionCount
-  const remainingSessionCount = Math.max(0, knownSessionTotal - loadedSessionCount)
 
-  const recentsMeta = countLabel(agentSessions.length, knownSessionTotal)
+  // Workspace grouping is a developer tool (workspace = working directory);
+  // everyone else gets the sessions by time (AIS-794).
+  const workspaceGrouped = developerView && agentsGrouped
+  const displayAgentGroups = showAllProfiles ? profileGroups : workspaceGrouped ? agentGroups : undefined
 
-  const displayAgentGroups = showAllProfiles ? profileGroups : agentsGrouped ? agentGroups : undefined
+  // Heute / Gestern / Diese Woche / Älter. The day boundary is read at render;
+  // the list re-renders on every session update, which is often enough.
+  const timeGroups = useMemo(
+    () =>
+      displayAgentGroups
+        ? undefined
+        : groupSessionsByTime(displayAgentSessions, Date.now()).map(group => ({
+            ...group,
+            label: s.timeGroups[group.id]
+          })),
+    [displayAgentGroups, displayAgentSessions, s.timeGroups]
+  )
+
+  const background = useMemo(
+    () => backgroundSummary(cronJobs, subagentsBySession, desktopActionTasks),
+    [cronJobs, subagentsBySession, desktopActionTasks]
+  )
+
+  const navItems = useMemo(() => visibleNavSlots({ developer: developerView }).map(navItemFor), [developerView])
 
   // The recents list owns its own (virtualized) scroll container only when it's a
   // long flat list. In that case it must keep its scroller even in short mode, so
@@ -680,63 +709,38 @@ export function ChatSidebar({
       collapsible="none"
     >
       <SidebarContent className="gap-0 overflow-hidden bg-transparent px-2.5">
-        <SidebarGroup className="shrink-0 p-0 pb-2 pt-[calc(var(--titlebar-height)+0.375rem)]">
-          <SidebarGroupContent>
-            <SidebarMenu className="gap-px">
-              {SIDEBAR_NAV.map(item => {
-                const isInteractive = Boolean(item.action) || Boolean(item.route)
-
-                const active =
-                  (item.id === 'skills' && currentView === 'skills') ||
-                  (item.id === 'todos' && currentView === 'todos') ||
-                  (item.id === 'artifacts' && currentView === 'artifacts')
-
-                const isNewSession = item.id === 'new-session'
-
-                return (
-                  <SidebarMenuItem key={item.id}>
-                    <SidebarMenuButton
-                      aria-disabled={!isInteractive}
-                      className={cn(
-                        'flex h-7 w-full justify-start gap-2 rounded-md border border-transparent px-2 text-left text-[0.8125rem] font-medium text-(--ui-text-secondary) transition-colors duration-100 ease-out hover:bg-(--ui-control-hover-background) hover:text-foreground hover:transition-none',
-                        active &&
-                          'border-(--ui-stroke-tertiary) bg-(--ui-control-active-background) text-foreground shadow-none hover:border-(--ui-stroke-tertiary)!',
-                        !isInteractive &&
-                          'cursor-default hover:border-transparent hover:bg-transparent hover:text-inherit'
-                      )}
-                      onClick={() => {
-                        // A plain new session lands in whatever profile the live
-                        // gateway is on (= the active switcher context). null →
-                        // no swap. The switcher header is the single place to
-                        // change which profile that is.
-                        if (isNewSession) {
-                          $newChatProfile.set(null)
-                        }
-
-                        onNavigate(item)
-                      }}
-                      tooltip={s.nav[item.id] ?? item.label}
-                      type="button"
-                    >
-                      <item.icon className="size-4 shrink-0 text-[color-mix(in_srgb,currentColor_72%,transparent)]" />
-                      {contentVisible && (
-                        <>
-                          <span className="min-w-0 flex-1 truncate">{s.nav[item.id] ?? item.label}</span>
-                          {isNewSession && (
-                            <KbdGroup
-                              className={cn('ml-auto', newSessionKbdFlash && 'opacity-100!')}
-                              keys={[...NEW_SESSION_KBD]}
-                            />
-                          )}
-                        </>
-                      )}
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                )
-              })}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
+        {/* AIS-794 top: "Neue Sitzung" as the primary action, then the search. */}
+        <div className="shrink-0 pb-1 pt-[calc(var(--titlebar-height)+0.375rem)]">
+          {/* The label is on the button; the tooltip only helps the icon-only rail. */}
+          <Tip label={contentVisible ? undefined : s.nav['new-session']}>
+            <Button
+              aria-label={s.nav['new-session']}
+              className={cn('w-full', contentVisible ? 'justify-start' : 'justify-center')}
+              data-testid="sidebar-new-session"
+              onClick={() => {
+                // A plain new session lands in whatever profile the live
+                // gateway is on (= the active switcher context). null → no swap.
+                $newChatProfile.set(null)
+                onNavigate(NEW_SESSION_ITEM)
+              }}
+              type="button"
+            >
+              <NEW_SESSION_ITEM.icon className="size-4 shrink-0" />
+              {contentVisible && (
+                <>
+                  <span className="min-w-0 flex-1 truncate text-left">{s.nav['new-session']}</span>
+                  <KbdGroup
+                    className={cn(
+                      'ml-auto [&_[data-slot=kbd]]:border-current/25 [&_[data-slot=kbd]]:bg-transparent [&_[data-slot=kbd]]:text-current',
+                      newSessionKbdFlash && 'opacity-100!'
+                    )}
+                    keys={[...NEW_SESSION_KBD]}
+                  />
+                </>
+              )}
+            </Button>
+          </Tip>
+        </div>
 
         {contentVisible && showSessionSections && (
           <div className="shrink-0 px-2 pb-1 pt-1">
@@ -750,7 +754,39 @@ export function ChatSidebar({
           </div>
         )}
 
-        {contentVisible && showSessionSections && (
+        {navItems.length > 0 && (
+          <SidebarGroup className="shrink-0 p-0 pb-1.5">
+            <SidebarGroupContent>
+              <SidebarMenu className="gap-px">
+                {navItems.map(item => {
+                  const active = item.route ? appViewForPath(item.route) === currentView : false
+
+                  return (
+                    <SidebarMenuItem key={item.id}>
+                      <SidebarMenuButton
+                        className={cn(
+                          'flex h-7 w-full justify-start gap-2 rounded-control-sm border border-transparent px-2 text-left text-[0.8125rem] font-medium text-(--ui-text-secondary) transition-colors duration-100 ease-out hover:bg-(--ui-control-hover-background) hover:text-foreground hover:transition-none',
+                          active &&
+                            'border-(--ui-stroke-tertiary) bg-(--ui-control-active-background) text-foreground shadow-none hover:border-(--ui-stroke-tertiary)!'
+                        )}
+                        onClick={() => onNavigate(item)}
+                        tooltip={s.nav[item.id] ?? item.label}
+                        type="button"
+                      >
+                        <item.icon className="size-4 shrink-0 text-[color-mix(in_srgb,currentColor_72%,transparent)]" />
+                        {contentVisible && (
+                          <span className="min-w-0 flex-1 truncate">{s.nav[item.id] ?? item.label}</span>
+                        )}
+                      </SidebarMenuButton>
+                    </SidebarMenuItem>
+                  )
+                })}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
+
+        {contentVisible && (showSessionSections || background.items.length > 0) && (
           <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain pb-1.75">
             {trimmedQuery && (
               <SidebarSessionsSection
@@ -776,12 +812,27 @@ export function ChatSidebar({
               />
             )}
 
-            {!trimmedQuery && (
+            {!trimmedQuery && background.items.length > 0 && (
+              <SidebarBackgroundSection
+                onManageJob={onManageCronJob}
+                onOpenArtifact={onOpenCronArtifact}
+                onOpenAutomations={onOpenAutomations}
+                onOpenRun={onResumeSession}
+                onOpenRuns={onOpenBackgroundRuns}
+                onToggle={() => setSidebarBackgroundOpen(!backgroundOpen)}
+                onTriggerJob={onTriggerCronJob}
+                open={backgroundOpen}
+                summary={background}
+              />
+            )}
+
+            {/* "Favoriten" (AIS-794, formerly "Angeheftet"): only once something is pinned. */}
+            {!trimmedQuery && pinnedSessions.length > 0 && (
               <SidebarSessionsSection
                 activeSessionId={activeSidebarSessionId}
                 contentClassName={cn('flex max-h-44 flex-col gap-px rounded-lg pb-2 pt-1', GROUP_BODY)}
                 dndSensors={dndSensors}
-                emptyState={<SidebarPinnedEmptyState />}
+                emptyState={null}
                 label={s.pinned}
                 onArchiveSession={onArchiveSession}
                 onDeleteSession={onDeleteSession}
@@ -798,7 +849,7 @@ export function ChatSidebar({
               />
             )}
 
-            {!trimmedQuery && (
+            {!trimmedQuery && showSessionSections && (
               <SidebarSessionsSection
                 activeSessionId={activeSidebarSessionId}
                 contentClassName={cn(
@@ -813,14 +864,14 @@ export function ChatSidebar({
                 dndSensors={dndSensors}
                 emptyState={showSessionSkeletons ? <SidebarSessionSkeletons /> : <SidebarAllPinnedState />}
                 footer={
-                  // Hide "load more" only when workspace-grouped (those groups page
-                  // themselves). ALL-profiles now pages per-profile from each profile
-                  // header; the global footer only applies to non-ALL views.
-                  !showAllProfiles && !agentsGrouped && !showSessionSkeletons && hasMoreSessions ? (
-                    <SidebarLoadMoreRow
+                  // AIS-794: the next page loads when the end of the list scrolls
+                  // into view. Workspace groups page themselves; ALL-profiles pages
+                  // per profile from each profile header.
+                  !showAllProfiles && !workspaceGrouped && !showSessionSkeletons && hasMoreSessions ? (
+                    <SidebarLoadMoreSentinel
+                      loaded={loadedSessionCount}
                       loading={sessionsLoading}
-                      onClick={onLoadMoreSessions}
-                      step={Math.min(SIDEBAR_SESSIONS_PAGE_SIZE, remainingSessionCount)}
+                      onLoadMore={onLoadMoreSessions}
                     />
                   ) : null
                 }
@@ -828,28 +879,26 @@ export function ChatSidebar({
                 groups={displayAgentGroups}
                 headerAction={
                   <div className="flex shrink-0 items-center gap-1">
-                    <div className="grid size-6 shrink-0 place-items-center">
-                      {!showAllProfiles && agentSessions.length > 0 ? (
-                        <Tip label={agentsGrouped ? s.groupTitleGrouped : s.groupTitleUngrouped}>
-                          <Button
-                            aria-label={agentsGrouped ? s.groupAriaGrouped : s.groupAriaUngrouped}
-                            className={cn(
-                              'text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
-                              agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
-                            )}
-                            onClick={event => {
-                              event.stopPropagation()
-                              setSidebarRecentsOpen(true)
-                              setSidebarAgentsGrouped(!agentsGrouped)
-                            }}
-                            size="icon-xs"
-                            variant="ghost"
-                          >
-                            <Codicon name={agentsGrouped ? 'list-unordered' : 'root-folder'} size="0.75rem" />
-                          </Button>
-                        </Tip>
-                      ) : null}
-                    </div>
+                    {developerView && !showAllProfiles && agentSessions.length > 0 && (
+                      <Tip label={agentsGrouped ? s.groupTitleGrouped : s.groupTitleUngrouped}>
+                        <Button
+                          aria-label={agentsGrouped ? s.groupAriaGrouped : s.groupAriaUngrouped}
+                          className={cn(
+                            'text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
+                            agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
+                          )}
+                          onClick={event => {
+                            event.stopPropagation()
+                            setSidebarRecentsOpen(true)
+                            setSidebarAgentsGrouped(!agentsGrouped)
+                          }}
+                          size="icon-xs"
+                          variant="ghost"
+                        >
+                          <Codicon name={agentsGrouped ? 'list-unordered' : 'root-folder'} size="0.75rem" />
+                        </Button>
+                      </Tip>
+                    )}
                     <SessionMaintenanceMenu
                       busy={sessionMaintenanceBusy}
                       copy={sessionMaintenance}
@@ -861,7 +910,6 @@ export function ChatSidebar({
                   </div>
                 }
                 label={s.sessions}
-                labelMeta={recentsMeta}
                 onArchiveSession={onArchiveSession}
                 onDeleteSession={onDeleteSession}
                 onNewSessionInWorkspace={showAllProfiles ? undefined : onNewSessionInWorkspace}
@@ -876,6 +924,7 @@ export function ChatSidebar({
                 )}
                 sessions={displayAgentSessions}
                 sortable={!showAllProfiles && agentSessions.length > 1}
+                timeGroups={timeGroups}
                 workingSessionIdSet={workingSessionIdSet}
               />
             )}
@@ -925,27 +974,14 @@ export function ChatSidebar({
                   />
                 )
               })}
-
-            {!trimmedQuery && cronJobs.length > 0 && (
-              <SidebarCronJobsSection
-                jobs={cronJobs}
-                label={s.cronJobs}
-                onManageJob={onManageCronJob}
-                onOpenArtifact={onOpenCronArtifact}
-                onOpenRun={onResumeSession}
-                onToggle={() => setSidebarCronOpen(!cronOpen)}
-                onTriggerJob={onTriggerCronJob}
-                open={cronOpen}
-              />
-            )}
           </div>
         )}
 
-        {contentVisible && !showSessionSections && <div className="min-h-0 flex-1" />}
+        {contentVisible && !showSessionSections && background.items.length === 0 && <div className="min-h-0 flex-1" />}
 
         {contentVisible && (
           <div className="shrink-0 px-0.5 pb-1 pt-0.5">
-            <ProfileRail />
+            <AccountMenu />
           </div>
         )}
       </SidebarContent>
@@ -1079,6 +1115,10 @@ interface SidebarSessionGroup {
   totalCount?: number
 }
 
+interface SidebarTimeGroup extends SessionTimeGroup {
+  label: string
+}
+
 interface MessagingSection {
   sourceId: string
   label: string
@@ -1107,6 +1147,8 @@ interface SidebarSessionsSectionProps {
   headerAction?: React.ReactNode
   footer?: React.ReactNode
   groups?: SidebarSessionGroup[]
+  /** Sessions by time (Heute / Gestern / …), each under a small label. */
+  timeGroups?: SidebarTimeGroup[]
   labelMeta?: React.ReactNode
   labelIcon?: React.ReactNode
   sortable?: boolean
@@ -1134,6 +1176,7 @@ function SidebarSessionsSection({
   headerAction,
   footer,
   groups,
+  timeGroups,
   labelMeta,
   labelIcon,
   sortable = false,
@@ -1185,7 +1228,8 @@ function SidebarSessionsSection({
       renderRows(items)
     )
 
-  const flatVirtualized = !showEmptyState && !groups?.length && sessions.length >= VIRTUALIZE_THRESHOLD
+  const flatVirtualized =
+    !showEmptyState && !groups?.length && !timeGroups?.length && sessions.length >= VIRTUALIZE_THRESHOLD
 
   let inner: React.ReactNode
   let bodyOwnsDndContext = dndActive && !showEmptyState
@@ -1193,6 +1237,15 @@ function SidebarSessionsSection({
   if (showEmptyState) {
     inner = emptyState
     bodyOwnsDndContext = false
+  } else if (timeGroups?.length) {
+    inner = timeGroups.map(group => (
+      <div className="grid gap-px" data-time-group={group.id} key={group.id}>
+        <div className="px-2 pb-0.5 pt-2 text-[0.6875rem] font-medium text-(--ui-text-tertiary) first:pt-0.5">
+          {group.label}
+        </div>
+        {renderSessionList(group.sessions)}
+      </div>
+    ))
   } else if (groups?.length) {
     const groupNodes = groups.map(group =>
       dndActive ? (

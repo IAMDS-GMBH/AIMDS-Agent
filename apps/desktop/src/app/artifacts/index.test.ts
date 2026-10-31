@@ -60,3 +60,28 @@ describe('collectArtifactsForSession', () => {
     })
   })
 })
+
+// AIS-794: the artifacts page logged errors and showed every date in 1970.
+describe('collectArtifactsForSession robustness (AIS-794)', () => {
+  it('reads backend times as Unix seconds', () => {
+    const artifacts = collectArtifactsForSession(makeSession({ last_active: 1_761_800_000 }), [
+      { content: 'See https://example.com/report', role: 'assistant', timestamp: 1_761_816_600 }
+    ])
+
+    expect(artifacts[0]?.timestamp).toBe(1_761_816_600_000)
+    expect(new Date(artifacts[0]?.timestamp ?? 0).getUTCFullYear()).toBe(2025)
+  })
+
+  it('falls back to the session time when a message has none', () => {
+    const artifacts = collectArtifactsForSession(makeSession({ last_active: 1_761_800_000 }), [
+      { content: 'See https://example.com/report', role: 'assistant' }
+    ])
+
+    expect(artifacts[0]?.timestamp).toBe(1_761_800_000_000)
+  })
+
+  it('skips a session without a readable history instead of failing the page', () => {
+    expect(collectArtifactsForSession(makeSession(), undefined)).toEqual([])
+    expect(collectArtifactsForSession(makeSession(), null)).toEqual([])
+  })
+})

@@ -153,7 +153,7 @@ export function OverlayView({
     >
       <div
         className={cn(
-          'relative flex min-h-0 flex-col overflow-hidden rounded-xl border border-(--ui-stroke-secondary) bg-(--ui-chat-surface-background)',
+          'relative flex min-h-0 flex-col overflow-hidden rounded-card border border-(--ui-stroke-secondary) bg-(--ui-chat-surface-background)',
           showFloating ? 'pointer-events-auto absolute shadow-nous' : 'h-full shadow-md',
           rootClassName
         )}

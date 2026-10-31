@@ -166,12 +166,18 @@ describe('IdleView end-user release notes (AIS-750)', () => {
     expect(screen.getByText('+ 11 weitere Änderungen enthalten.')).toBeTruthy()
   })
 
-  it('shows the app icon uncropped as the brand mark', () => {
+  // AIS-794: the brand mark is the product-neutral "A" monogram on the brand
+  // gradient, drawn whole (no cropped bitmap, no product wordmark).
+  it('shows the A monogram on the brand gradient as the brand mark', () => {
     render(renderIdleView(previewStatus))
 
-    const img = screen.getByTestId('brand-mark') as HTMLImageElement
-    expect(img.getAttribute('src')).toMatch(/apple-touch-icon\.png$/)
-    expect(img.className).toContain('object-contain')
-    expect(img.parentElement?.className ?? '').not.toMatch(/overflow-hidden|bg-white/)
+    const mark = screen.getByTestId('brand-mark')
+    const gradient = mark.querySelector('linearGradient')
+    const tile = mark.querySelector('rect')
+
+    expect(mark.querySelector('img')).toBeNull()
+    expect(gradient?.querySelector('stop')?.getAttribute('style')).toContain('--brand-gradient-from')
+    expect(tile?.getAttribute('fill')).toBe(`url(#${gradient?.id})`)
+    expect(tile?.getAttribute('rx')).toBe('9')
   })
 })
