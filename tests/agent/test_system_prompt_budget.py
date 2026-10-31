@@ -25,7 +25,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SOUL = _REPO_ROOT / "installer" / "skills-hidden" / "aimds-loadout" / "identity" / "SOUL.md"
 _VAULT = "/Users/jane.doe/Documents/AIMDS-Suite-Vault"
 
-# AIS-795: size of the representative stable tier (8,820 tokens; 9,033 after
+# AIS-795: size of the representative stable tier (8,810 tokens; 9,033 after
 # AIS-784, 9,592 after AIS-757, 11,095 before it) plus ~3 % headroom. Skills
 # index, environment hints, MCP status and the M365 identity line are
 # environment-dependent and excluded.
@@ -34,7 +34,7 @@ SYSTEM_PROMPT_TOKEN_BUDGET = 9_100
 # AIS-757: the trimmed blocks individually (after-trim size + ~4 % headroom),
 # so a regression names the block that grew.
 BLOCK_TOKEN_BUDGETS = {
-    "soul": 680,         # 652 after AIS-795 (778 after AIS-757, 1,408 before)
+    "soul": 670,         # 642 after AIS-795 (778 after AIS-757, 1,408 before)
     "memory": 1_190,     # 1,144 incl. the workspace block (was 1,591)
     "teams": 885,        # 849 (was 1,157)
     "sharepoint": 555,   # 531 (was 650)
@@ -192,7 +192,7 @@ def test_trim_kept_the_behavioural_rules(representative):
         "I answer in the user's language",
         "I never re-propose an action the user just declined",
         # AIS-795: SOUL principles
-        "on the question card (`clarify`)",
+        "I ask them as a clickable question with concrete options",
         "go to subagents",
         "I name the skill or approach I use",
         "**Learn From Outcomes**",

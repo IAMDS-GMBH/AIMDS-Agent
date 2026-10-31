@@ -178,7 +178,7 @@
       "from": "install.ps1 @2012abb8f"
     },
     {
-      "sha256": "95165aa9b6e728bdd493b5d9b45363e62fba7773d6f519185e8beb8dbb365f90",
+      "sha256": "ecb61fb88449bb7c450e6b345da4487ef56f43526f3ae8c6c73bc670f39865aa",
       "from": "loadout SOUL.md (AIS-795, current)"
     }
   ],
@@ -192,7 +192,7 @@
       "from": "loadout SOUL.dev.md @e1b5cbcb0"
     },
     {
-      "sha256": "3fae9637150695c26437f776e3934f67315c23afcbc3d60b5ba01b18f1412d6c",
+      "sha256": "c24c5ce1b37c40aeda977513aee087553dffa3bf340559435b03f3f46d7ef92b",
       "from": "loadout SOUL.dev.md (AIS-795, current)"
     }
   ]
