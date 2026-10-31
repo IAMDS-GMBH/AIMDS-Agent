@@ -950,6 +950,12 @@ export interface Translations {
     emptySoul: string
     saving: string
     saveSoul: string
+    soulTemplateNotice: string
+    soulTemplateHint: string
+    soulTemplateShowDiff: string
+    soulTemplateHideDiff: string
+    soulTemplateLoad: string
+    soulTemplateDismiss: string
     deleteTitle: string
     deleteDescPrefix: string
     deleteDescMid: string

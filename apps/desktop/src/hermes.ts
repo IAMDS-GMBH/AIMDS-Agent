@@ -99,6 +99,7 @@ export type {
   ProfileInfo,
   ProfileSetupCommand,
   ProfileSoul,
+  ProfileSoulTemplate,
   ProfilesResponse,
   RemoteHealthResponse,
   RpcEvent,
@@ -791,6 +792,13 @@ export function deleteProfile(name: string): Promise<{ ok: boolean; path: string
 export function getProfileSoul(name: string): Promise<ProfileSoul> {
   return window.hermesDesktop.api<ProfileSoul>({
     path: `/api/profiles/${encodeURIComponent(name)}/soul`
+  })
+}
+
+export function acknowledgeProfileSoulTemplate(name: string): Promise<{ ok: boolean; template_hash: string }> {
+  return window.hermesDesktop.api<{ ok: boolean; template_hash: string }>({
+    path: `/api/profiles/${encodeURIComponent(name)}/soul/template/ack`,
+    method: 'POST'
   })
 }
 
