@@ -485,7 +485,6 @@ _EXTRA_ENV_KEYS = frozenset({
 import yaml
 
 from hermes_cli.colors import Colors, color
-from hermes_cli.default_soul import DEFAULT_SOUL_MD
 
 
 # =============================================================================
@@ -972,12 +971,15 @@ def _secure_file(path):
 
 
 def _ensure_default_soul_md(home: Path) -> None:
-    """Seed a default SOUL.md into HERMES_HOME if the user doesn't have one yet."""
-    soul_path = home / "SOUL.md"
-    if soul_path.exists():
-        return
-    soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
-    _secure_file(soul_path)
+    """Seed the shipped SOUL template into HERMES_HOME if there is none yet.
+
+    Seeding only: updating an older shipped SOUL runs explicitly (update,
+    gateway start, installers), never on a bare import (AIS-795).
+    """
+    from hermes_cli.soul_template import seed_soul
+
+    if seed_soul(home):
+        _secure_file(home / "SOUL.md")
 
 
 def _is_windows_reparse_point(path: Path) -> bool:

@@ -32,6 +32,8 @@ import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { OverlayMain, OverlayNewButton, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
 
+import { type SoulTemplateInfo, SoulTemplateNotice } from './soul-template-notice'
+
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 
 function isValidProfileName(name: string): boolean {
@@ -365,6 +367,7 @@ function SoulEditor({ profileName }: { profileName: string }) {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
+  const [template, setTemplate] = useState<null | SoulTemplateInfo>(null)
   const requestRef = useRef<string>(profileName)
 
   useEffect(() => {
@@ -373,6 +376,7 @@ function SoulEditor({ profileName }: { profileName: string }) {
     setError(null)
     setContent('')
     setOriginal('')
+    setTemplate(null)
 
     void (async () => {
       try {
@@ -381,6 +385,7 @@ function SoulEditor({ profileName }: { profileName: string }) {
         if (requestRef.current === profileName) {
           setContent(soul.content)
           setOriginal(soul.content)
+          setTemplate(soul.template?.notice ? soul.template : null)
         }
       } catch (err) {
         if (requestRef.current === profileName) {
@@ -421,6 +426,15 @@ function SoulEditor({ profileName }: { profileName: string }) {
         </div>
         {dirty && <span className="text-[0.65rem] text-muted-foreground">{p.unsavedChanges}</span>}
       </div>
+
+      {template && !loading && (
+        <SoulTemplateNotice
+          onDismissed={() => setTemplate(null)}
+          onLoad={text => setContent(text)}
+          profileName={profileName}
+          template={template}
+        />
+      )}
 
       {loading ? (
         <PageLoader className="min-h-44" label={p.loadingSoul} />

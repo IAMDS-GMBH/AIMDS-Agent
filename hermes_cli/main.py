@@ -9074,25 +9074,20 @@ def _seed_aimds_default_cron_after_update() -> None:
 
 
 def _sync_canonical_soul_after_update() -> None:
-    """Best-effort SOUL.md sync for update/reinstall flows.
+    """Best-effort SOUL template update for update/reinstall flows (AIS-795).
 
-    Some update paths run ``hermes update`` directly and do not execute the
-    installer config stage that rewrites ``~/.hermes/SOUL.md``. Keep identity
-    consistent by copying the canonical loadout SOUL after update.
+    Every profile whose SOUL.md is still a text we shipped gets the current
+    template; an edited SOUL.md is kept as it is and only learns that a new
+    template exists (Profiles shows the diff).
     """
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_cli.soul_template import migrate_all, summarize
+        from hermes_constants import get_default_hermes_root
 
-        source = PROJECT_ROOT / "installer" / "skills-hidden" / "aimds-loadout" / "identity" / "SOUL.md"
-        target = get_hermes_home() / "SOUL.md"
-        if not source.is_file():
-            print(f"  ℹ SOUL sync skipped: canonical source missing ({source})")
-            return
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
-        print(f"  ✓ Synced canonical SOUL.md to {target}")
+        for line in summarize(migrate_all(get_default_hermes_root())):
+            print(f"  • {line}")
     except Exception as exc:
-        logger.debug("Canonical SOUL post-update sync failed: %s", exc)
+        logger.debug("SOUL template post-update sync failed: %s", exc)
 
 
 def cmd_update(args):

@@ -2770,6 +2770,31 @@ class TestNewEndpoints:
         resp = self.client.get("/api/profiles/nonexistent/soul")
         assert resp.status_code == 404
 
+    def test_profile_soul_template_notice(self, monkeypatch):
+        """AIS-795: a fresh profile carries the template (no notice); an edited
+        SOUL.md gets the notice with a diff until it is dismissed."""
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "_cleanup_gateway_service", lambda *a, **kw: None)
+
+        self.client.post("/api/profiles", json={"name": "tmpl-prof"})
+        fresh = self.client.get("/api/profiles/tmpl-prof/soul").json()
+        assert fresh["template"]["status"] == "current"
+        assert fresh["template"]["notice"] is False
+
+        self.client.put("/api/profiles/tmpl-prof/soul", json={"content": "# My own soul\n"})
+        edited = self.client.get("/api/profiles/tmpl-prof/soul").json()
+        assert edited["content"] == "# My own soul\n"
+        assert edited["template"]["notice"] is True
+        assert "-# My own soul" in edited["template"]["diff"]
+
+        ack = self.client.post("/api/profiles/tmpl-prof/soul/template/ack")
+        assert ack.status_code == 200
+        after = self.client.get("/api/profiles/tmpl-prof/soul").json()
+        assert after["template"]["notice"] is False
+        assert after["content"] == "# My own soul\n"
+
+        self.client.delete("/api/profiles/tmpl-prof")
+
     # --- New profiles endpoints: active / description / model / describe-auto ---
 
     def test_profiles_active_defaults(self):

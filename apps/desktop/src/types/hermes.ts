@@ -514,9 +514,19 @@ export interface ProfileSetupCommand {
   command: string
 }
 
+/** AIS-795: an edited SOUL.md is never overwritten; this says a newer template exists. */
+export interface ProfileSoulTemplate {
+  status: 'current' | 'edited' | 'missing' | 'shipped' | 'unknown'
+  notice: boolean
+  template_hash?: string
+  template?: string
+  diff?: string
+}
+
 export interface ProfileSoul {
   content: string
   exists: boolean
+  template?: ProfileSoulTemplate
 }
 
 export interface ProfilesResponse {

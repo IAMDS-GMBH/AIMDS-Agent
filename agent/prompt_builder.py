@@ -119,31 +119,26 @@ def _strip_yaml_frontmatter(content: str) -> str:
 # Constants
 # =========================================================================
 
+# Fallback identity when no SOUL.md is loaded (AIS-795: the shipped SOUL in
+# installer/skills-hidden/aimds-loadout/identity/ is the real one).
 DEFAULT_AGENT_IDENTITY = (
-    "You are Hermes Agent, an intelligent AI assistant created by Nous Research. "
-    "You are helpful, knowledgeable, and direct. You assist users with a wide "
-    "range of tasks including answering questions, writing and editing code, "
-    "analyzing information, creative work, and executing actions via your tools. "
-    "You communicate clearly, admit uncertainty when appropriate, and prioritize "
-    "being genuinely useful over being verbose unless otherwise directed below. "
+    "You are the AIMDS assistant: helpful, knowledgeable and direct. You answer "
+    "questions, write and edit code and documents, analyze information and act "
+    "through your tools. You communicate clearly, admit uncertainty and prefer "
+    "being useful over being verbose unless otherwise directed below. "
     "Be targeted and efficient in your exploration and investigations. "
     "Proactively delegate multi-step tasks, deep codebase research, or extensive document operations "
     "to sub-agents (task/explore/research) to maintain a compact main context window (under 64k tokens)."
 )
 
+# No hosted docs for this product (AIS-795): the pointer names the built-in
+# help, never an upstream URL.
 HERMES_AGENT_HELP_GUIDANCE = (
-    "You run on Hermes Agent (by Nous Research). When the user needs help with "
-    "Hermes itself — configuring, setting up, using, extending, or troubleshooting "
-    "it — or when you need to understand your own features, tools, or capabilities, "
-    "the documentation at https://hermes-agent.nousresearch.com/docs is your "
-    "authoritative reference and always holds the latest, most up-to-date "
-    "information."
+    "For help with this agent itself (setup, configuration, features, "
+    "troubleshooting) or with your own tools and capabilities, use the "
+    "built-in help instead of guessing."
 )
-HERMES_AGENT_HELP_SKILL_HINT = (
-    " Load the `hermes-agent` skill with skill_view(name='hermes-agent') "
-    "for additional guidance and proven workflows, but treat the docs as the source "
-    "of truth when the two differ."
-)
+HERMES_AGENT_HELP_SKILL_HINT = " Load it with skill_view(name='hermes-agent')."
 
 
 def build_hermes_agent_help_guidance(valid_tool_names: "set[str] | None" = None) -> str:
@@ -1582,7 +1577,7 @@ def build_skills_system_prompt(
             "their names by category. Before a non-trivial task, find the matching skill — "
             f"{find_hint} — then {load_hint} and follow it, even for tasks you could do "
             "without it: the skill defines how the task is done here. "
-            "For anything about configuring, installing or troubleshooting Hermes Agent itself, "
+            "For anything about configuring, installing or troubleshooting this agent itself, "
             "load the `hermes-agent` skill first. "
             "If a skill you used was missing steps or had wrong commands, fix it with "
             "skill_manage(action='patch') before finishing.\n"

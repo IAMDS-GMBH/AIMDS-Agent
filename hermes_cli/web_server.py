@@ -11097,15 +11097,41 @@ async def delete_profile_endpoint(name: str):
     return {"ok": True, "path": str(path)}
 
 
+def _soul_template_info(profile_dir: Path) -> Dict[str, Any]:
+    """AIS-795: whether an edited SOUL.md has a newer template to look at."""
+    try:
+        from hermes_cli.soul_template import template_notice
+
+        return template_notice(profile_dir)
+    except Exception:
+        _log.debug("SOUL template notice unavailable for %s", profile_dir, exc_info=True)
+        return {"status": "unknown", "notice": False}
+
+
 @app.get("/api/profiles/{name}/soul")
 async def get_profile_soul(name: str):
-    soul_path = _resolve_profile_dir(name) / "SOUL.md"
+    profile_dir = _resolve_profile_dir(name)
+    soul_path = profile_dir / "SOUL.md"
+    template = _soul_template_info(profile_dir)
     if soul_path.exists():
         try:
-            return {"content": soul_path.read_text(encoding="utf-8"), "exists": True}
+            return {"content": soul_path.read_text(encoding="utf-8"), "exists": True, "template": template}
         except OSError as e:
             raise HTTPException(status_code=500, detail=f"Could not read SOUL.md: {e}")
-    return {"content": "", "exists": False}
+    return {"content": "", "exists": False, "template": template}
+
+
+@app.post("/api/profiles/{name}/soul/template/ack")
+async def acknowledge_profile_soul_template(name: str):
+    """Dismiss "new template available" for the current template version."""
+    profile_dir = _resolve_profile_dir(name)
+    try:
+        from hermes_cli.soul_template import acknowledge_template
+
+        digest = acknowledge_template(profile_dir)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Could not store the dismissal: {e}")
+    return {"ok": True, "template_hash": digest}
 
 
 @app.put("/api/profiles/{name}/soul")
