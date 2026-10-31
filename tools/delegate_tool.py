@@ -928,13 +928,27 @@ def _build_child_progress_callback(
 def _make_child_lean(child, definition=None) -> None:
     """AIS-456: a child runs on a lean system prompt instead of the parent's
     full one, skips the session-start memory round, and — for a read-only
-    definition — never sees Hermes' own write tools."""
+    definition — never sees Hermes' own write tools.
+
+    AIS-796: a definition that writes through MCP only (``writes: true``,
+    no toolset besides ``mcp``) loses Hermes' write tools as well, and every
+    definition's tool rule (``agent_definitions.tool_call_denial``) is
+    installed on the child's guardrail controller, which both execution
+    paths consult before a call runs."""
     child._lean_system_prompt = True
     child._lean_identity = getattr(definition, "body", "") or ""
     child._enforce_initial_memory_context = False
     child._session_start_bootstrap_contract_enabled = False
     child._session_start_compact_workspace_hydration = False
-    if definition is not None and not definition.writes:
+    if definition is not None:
+        import functools
+
+        from agent.agent_definitions import tool_call_denial
+
+        guardrails = getattr(child, "_tool_guardrails", None)
+        if guardrails is not None:
+            guardrails.call_policy = functools.partial(tool_call_denial, definition)
+    if definition is not None and not definition.keeps_hermes_write_tools:
         from agent.agent_definitions import WRITE_TOOL_NAMES
 
         tools = getattr(child, "tools", None)

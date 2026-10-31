@@ -65,16 +65,18 @@ def test_home_override_wins_and_surfaces_filter(tmp_path):
     assert ad.get_definition("explore", platform="cli", dirs=dirs).name == "explore"
 
 
-def test_bundled_definitions_are_lean_english_and_read_only():
+def test_bundled_definitions_are_lean_english_and_read_only_except_apply():
     bundled = ad.load_definitions([ad.BUNDLED_AGENTS_DIR])
     assert set(bundled) == {
-        "digest", "collect", "sweep", "research", "draft",
+        "apply", "digest", "collect", "sweep", "research", "draft",
         "explore", "verify", "review", "investigate",
     }
     for d in bundled.values():
-        assert not d.writes, d.name
+        assert d.writes is (d.name == "apply"), d.name
+        assert not d.keeps_hermes_write_tools, d.name
         assert len(d.body) < 1500, d.name
         assert d.body.isascii() or "—" in d.body, d.name  # English prose
+        assert len(d.when) <= 30, d.name  # a principle, not a recipe
     for name in ("explore", "verify", "review", "investigate"):
         assert bundled[name].surfaces == ("cli",)
 

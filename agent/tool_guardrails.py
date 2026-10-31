@@ -12,7 +12,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from utils import safe_json_loads
 from agent.tool_result_classification import file_mutation_result_landed
@@ -209,7 +209,9 @@ class ToolCallSignature:
 class ToolGuardrailDecision:
     """Decision returned by the tool-call guardrail controller."""
 
-    action: str = "allow"  # allow | warn | block | halt
+    # deny = this call is not allowed here (AIS-796 tool rule): it does not
+    # run, the turn goes on.
+    action: str = "allow"  # allow | warn | deny | block | halt
     code: str = "allow"
     message: str = ""
     tool_name: str = ""
@@ -292,6 +294,10 @@ class ToolCallGuardrailController:
 
     def __init__(self, config: ToolCallGuardrailConfig | None = None):
         self.config = config or ToolCallGuardrailConfig()
+        # AIS-796: ``(tool_name, args) -> reason | None`` — a delegated
+        # child's tool rule (agent_definitions.tool_call_denial). A reason
+        # denies the call; the child gets it as the tool result.
+        self.call_policy: Callable[[str, Mapping[str, Any]], str | None] | None = None
         self.reset_for_turn()
 
     def reset_for_turn(self) -> None:
@@ -308,6 +314,19 @@ class ToolCallGuardrailController:
 
     def before_call(self, tool_name: str, args: Mapping[str, Any] | None) -> ToolGuardrailDecision:
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
+        if self.call_policy is not None:
+            try:
+                reason = self.call_policy(tool_name, _coerce_args(args))
+            except Exception as exc:  # a broken rule denies, never allows
+                reason = f"Blocked {tool_name}: the tool rule could not be checked ({exc})."
+            if reason:
+                return ToolGuardrailDecision(
+                    action="deny",
+                    code="tool_rule_deny",
+                    message=reason,
+                    tool_name=tool_name,
+                    signature=signature,
+                )
         if not self.config.hard_stop_enabled:
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
