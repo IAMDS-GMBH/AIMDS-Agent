@@ -63,11 +63,13 @@ async function settle(page: Page, view: ScreenshotView) {
 
 test.beforeEach(async ({ page }) => {
   await page.clock.setFixedTime(FROZEN_NOW)
-  await page.addInitScript(installFakeDesktop, FIXTURES)
 })
 
 for (const view of VIEWS) {
   test(view.name, async ({ page }) => {
+    // A view may add REST answers of its own (e.g. more profiles).
+    await page.addInitScript(installFakeDesktop, { ...FIXTURES, api: { ...FIXTURES.api, ...view.api } })
+
     // An uncaught error means the view (or its fixtures) is broken; never bake
     // that into a baseline.
     const pageErrors: string[] = []

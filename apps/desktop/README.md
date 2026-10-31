@@ -147,7 +147,7 @@ npm run screenshots:update   # re-record this OS's baselines
 SCREENSHOTS_DEBUG=1 npm run screenshots   # print every bridge/REST/RPC call and page error
 ```
 
-**Add a view:** one line in `screenshots/views.ts` (name, hash route, a selector that is visible once the view has rendered, optionally `colorScheme: 'dark'`); put any data it needs into `screenshots/fixtures.ts` — REST and RPC answers, plus `localStorage` entries seeded before boot (pins, layout state); `SCREENSHOTS_DEBUG=1` lists the calls the view makes — then record its baselines.
+**Add a view:** one line in `screenshots/views.ts` (name, hash route, a selector that is visible once the view has rendered, optionally `colorScheme: 'dark'` and `api` answers for that view only); put any data it needs into `screenshots/fixtures.ts` — REST and RPC answers, plus `localStorage` entries seeded before boot (pins, layout state); `SCREENSHOTS_DEBUG=1` lists the calls the view makes — then record its baselines.
 
 **Update baselines after an intended UI change:**
 

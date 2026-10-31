@@ -227,6 +227,27 @@ const auxiliaryTasks = ['vision', 'web_extract', 'compression', 'title_generatio
 
 const emptySessionPage = { limit: 50, offset: 0, profile_totals: {}, sessions: [], total: 0 }
 
+const namedProfile = (name: string, skillCount: number) => ({
+  has_env: false,
+  is_default: false,
+  model: 'suite-auto',
+  name,
+  path: `/home/hermes/.hermes/profiles/${name}`,
+  provider: 'aimds-suite-prod',
+  skill_count: skillCount
+})
+
+/**
+ * The profiles page (AIS-794: colour and order per profile) needs more than
+ * one profile. Only that view gets them, so the other views keep the
+ * single-profile shell.
+ */
+export const PROFILES_VIEW_API: Record<string, unknown> = {
+  '/api/profiles': { profiles: [...profiles, namedProfile('work', 4), namedProfile('private', 1)] },
+  // SOUL.md of the selected profile.
+  '/api/profiles/*': { content: 'You help the team with clear, short answers in German or English.' }
+}
+
 export const FIXTURES: FakeDesktopFixtures = {
   localStorage: { 'hermes.desktop.pinnedSessions': JSON.stringify([PINNED_SESSION_ID]) },
   api: {
