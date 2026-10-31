@@ -117,6 +117,27 @@ function resolveCanonicalSoulSource({ sourceRepoRoot, activeRoot, hermesHome }) 
   return null
 }
 
+// AIS-795: the SOUL text belongs to its owner. Same rule as
+// hermes_cli/soul_template.py: hash = sha256 of the text with CRLF -> LF and
+// BOM / outer whitespace removed.
+function normalizedSoulHash(text) {
+  const norm = String(text).replace(/\r\n/g, '\n').replace(/^\uFEFF/, '').trim()
+  return require('node:crypto').createHash('sha256').update(norm, 'utf8').digest('hex')
+}
+
+function readShippedSoulHashes(source) {
+  try {
+    const data = JSON.parse(fs.readFileSync(path.join(path.dirname(source), 'shipped-hashes.json'), 'utf8'))
+    return new Set((data['SOUL.md'] || []).map(entry => entry && entry.sha256).filter(Boolean))
+  } catch {
+    return new Set()
+  }
+}
+
+// A missing SOUL.md gets the shipped template; one that still equals a text
+// we shipped (shipped-hashes.json next to the template) follows the new
+// template; an edited one is never overwritten (the profile page offers the
+// new template instead).
 function enforceCanonicalSoul({ sourceRepoRoot, activeRoot, hermesHome, emit }) {
   const source = resolveCanonicalSoulSource({ sourceRepoRoot, activeRoot, hermesHome })
   if (!source) {
@@ -125,13 +146,29 @@ function enforceCanonicalSoul({ sourceRepoRoot, activeRoot, hermesHome, emit }) 
     )
   }
   const target = path.join(hermesHome, 'SOUL.md')
-  fs.mkdirSync(path.dirname(target), { recursive: true })
-  fs.copyFileSync(source, target)
+  let current = null
+  try {
+    current = fs.readFileSync(target, 'utf8')
+  } catch {
+    current = null
+  }
+  let action = 'kept'
+  if (current === null) {
+    action = 'seeded'
+  } else {
+    const digest = normalizedSoulHash(current)
+    if (digest === normalizedSoulHash(fs.readFileSync(source, 'utf8'))) action = 'current'
+    else if (readShippedSoulHashes(source).has(digest)) action = 'updated'
+  }
+  if (action === 'seeded' || action === 'updated') {
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    fs.copyFileSync(source, target)
+  }
   emit({
     type: 'log',
-    line: `[bootstrap] enforced canonical SOUL.md from ${source} -> ${target}`
+    line: `[bootstrap] SOUL.md ${action} (template ${source} -> ${target})`
   })
-  return { source, target }
+  return { source, target, action }
 }
 
 // The install.sh / install.ps1 that ships inside the already-installed agent
@@ -863,7 +900,7 @@ async function runBootstrap(opts) {
       }
     }
 
-    // 4. Enforce canonical SOUL.md after install stages complete.
+    // 4. Seed or update SOUL.md after install stages complete (an edited one is kept).
     enforceCanonicalSoul({ sourceRepoRoot, activeRoot, hermesHome, emit })
 
     // 5. Write the bootstrap-complete marker.
@@ -892,6 +929,7 @@ module.exports = {
   // Exposed for testability
   parseStageResult,
   enforceCanonicalSoul,
+  normalizedSoulHash,
   resolveCanonicalSoulSource,
   resolveLocalInstallScript,
   resolveInstallScript,

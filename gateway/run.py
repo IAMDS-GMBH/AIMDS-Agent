@@ -16012,6 +16012,14 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             upgrade_configured_workspace()
         except Exception as _ws_exc:
             logger.debug("workspace template upgrade skipped: %s", _ws_exc)
+        # A SOUL.md that is still a shipped text follows the current
+        # template; an edited one is never touched (AIS-795).
+        try:
+            from hermes_cli.soul_template import migrate_soul
+
+            migrate_soul(get_hermes_home())
+        except Exception as _soul_exc:
+            logger.debug("SOUL template update skipped: %s", _soul_exc)
     except Exception:
         pass
 

@@ -1,0 +1,199 @@
+{
+  "about": "Normalised sha256 (CRLF to LF, BOM and outer whitespace stripped) of every SOUL text ever shipped. A profile SOUL.md that matches one of these is updated to the current template; anything else counts as edited and is never overwritten (AIS-795). Add the hash of every new template version here.",
+  "SOUL.md": [
+    {
+      "sha256": "700e98499261241803540c881218d5968d9a0adb406d161dde511f805e6a4bb1",
+      "from": "doctor --fix @60812ae04"
+    },
+    {
+      "sha256": "e4d3e4f79763c4e245c4bd4bf203a24e7051e51888cac36192705ee7635a5531",
+      "from": "doctor --fix @ededaaa87"
+    },
+    {
+      "sha256": "3b405545a520a9f2e72f9bd3e2ee4323609c15884a3a78bc490ea3483a506d1b",
+      "from": "loadout SOUL.md @54cd4e90b"
+    },
+    {
+      "sha256": "558d7602ff2adc4c5ef82643131dae9a075095f722d07307d9ad0b7a24794d50",
+      "from": "loadout SOUL.md @8a7671e1c"
+    },
+    {
+      "sha256": "076a61e1030afb600d28099f15a0cce1c8a1d7f190029eaceb17cbab97eab3d3",
+      "from": "loadout SOUL.md @46ba95a63"
+    },
+    {
+      "sha256": "0dd0947ae1269f09057db5cadaa485b0fbc81930fffbfc645635a968d8d7175f",
+      "from": "loadout SOUL.md @5e7c70263"
+    },
+    {
+      "sha256": "72938341f6da41921440b2df5f50d2736f8a5588ad067a952eb3b4ae900d6aa9",
+      "from": "loadout SOUL.md @30a93f1e8"
+    },
+    {
+      "sha256": "b9eebb27b2a8f9db3d6ba99e3710d8f0047bac93245e4950ef23346caa524c87",
+      "from": "loadout SOUL.md @6267d448b"
+    },
+    {
+      "sha256": "30b4d078b433416b849def4302b241a4da38a9cd202c22965fa0752c96ae8778",
+      "from": "loadout SOUL.md @af242bc19"
+    },
+    {
+      "sha256": "8831b619be974fd6cb05c8e214af9713624df6a619be1088e25712134e1867f6",
+      "from": "docker/SOUL.md @3409bf3e9"
+    },
+    {
+      "sha256": "9e3eccd8f3027993d3f8fcb15a880fe35f13fe1f84a2ca0baa4717e0fabf3774",
+      "from": "loadout SOUL.md @e87389890"
+    },
+    {
+      "sha256": "bb3389cb0de9214bf566063c033f90a1121c273e08abcb6814b244c2ea9f3649",
+      "from": "loadout SOUL.md @96f6c3517"
+    },
+    {
+      "sha256": "8e325b2bbf7f96add00b1d0c5d19c9890bcdd46be609259f0cb9b50f82d79531",
+      "from": "loadout SOUL.md @e0e7f6f6d"
+    },
+    {
+      "sha256": "8f5e3b3d1ac428c06037d2a24878d273ee4d784c34747877e358cfce004fa8d2",
+      "from": "loadout SOUL.md @9006a2774"
+    },
+    {
+      "sha256": "e807ee996f3f0fd226138d2ea20c33c83515400deaf3f162412eec4e8fe64c05",
+      "from": "loadout SOUL.md @2557e73e7"
+    },
+    {
+      "sha256": "365da856ff9cfaf9086e3707bd1d561281ca4f51ffa9e14b64cace64d47584ca",
+      "from": "loadout SOUL.md @251e63c7d"
+    },
+    {
+      "sha256": "2dac8d10a03ddca78a9073d52beaee2a3b4d63b0743f9893f7ebb12ccfb591f0",
+      "from": "loadout SOUL.md @eff9ba10d"
+    },
+    {
+      "sha256": "d1fbb7c65ec70e28ac6938299dc54e4f3d97305670df4253c395dcbbe521d8ed",
+      "from": "loadout SOUL.md @bde9cfb87"
+    },
+    {
+      "sha256": "0cb2deaa5c6d005787c62dc43942e27ca732b11e76cb0fc2e67b6411742f0cd6",
+      "from": "loadout SOUL.md @a63f414dd"
+    },
+    {
+      "sha256": "170af6fbb559c0bb0b4ec6a5939e10df66c0c5ee3ee406e1a4c00e52f0d5b594",
+      "from": "loadout SOUL.md @0967f4e98"
+    },
+    {
+      "sha256": "cd69d08811ad82a14d8f75df187f8fb04a1640e214dea4cf836780df5d87680e",
+      "from": "loadout SOUL.md @f9a82b7e6"
+    },
+    {
+      "sha256": "1851bd1e1a2992147e9275992c3e6cabf4402a9e9742f2ddc754cd41665c85e2",
+      "from": "loadout SOUL.md @1cee7f123"
+    },
+    {
+      "sha256": "ca3a83973ddd3e643d4cdc80f79e772bdd71d4487d7b653bacdf1460350127e4",
+      "from": "loadout SOUL.md @a1e79d282"
+    },
+    {
+      "sha256": "3e750921b484234633d22e8e76e62da5fbf9af981dfed49539e534f6309868e5",
+      "from": "loadout SOUL.md @a0a2a1377"
+    },
+    {
+      "sha256": "9fab9db88c8a9f1eb0a388212de6954895c70b5599c7f4212e322274a57948ca",
+      "from": "loadout SOUL.md @e998d9886"
+    },
+    {
+      "sha256": "d98114e3646b277fc430dc0a5ac2c0b0073ecdf3b908196f77c37999a73ce059",
+      "from": "install.sh @1205b1169"
+    },
+    {
+      "sha256": "91740a62bbd4cf35292e02b9fdba86a301a2fde0e9e8094cd2b5b440de8215f3",
+      "from": "loadout SOUL.md @e64a5d260"
+    },
+    {
+      "sha256": "45894a73c05bb6e0e6395524c9dcc22833b28efbc0c1f6c251c48007c847ea03",
+      "from": "docker/SOUL.md @8a7671e1c"
+    },
+    {
+      "sha256": "fdad569fd8faa814c8d56ea24c70d5f447ea82c3f0ed64baca44ed22a8f2f146",
+      "from": "docker/SOUL.md @46ba95a63"
+    },
+    {
+      "sha256": "683888cb16b5bf2345d59e40da95d4cd3f87e294391ea867ace17a28bd01a385",
+      "from": "docker/SOUL.md @5e7c70263"
+    },
+    {
+      "sha256": "bc94d2a8a972bd0c33fdd2beb188961af623fd35ec19badd91757fcec9c165d4",
+      "from": "docker/SOUL.md @30a93f1e8"
+    },
+    {
+      "sha256": "05ae84c86966aca5aa2ba89c1eb6043480b0ce90ee8f5390552cdc5cbacecafb",
+      "from": "docker/SOUL.md @7011c9464"
+    },
+    {
+      "sha256": "12df3564772aad1e6986a555cf19ec80c90390343ed64d1c22eb092813afd72c",
+      "from": "docker/SOUL.md @1205b1169"
+    },
+    {
+      "sha256": "82fa3438d86f8b95c6e96be89d853c8b561b3e6973ed61c90e70e0231dd24a7e",
+      "from": "install.ps1 @8f91d7bfa"
+    },
+    {
+      "sha256": "a0709bd148f0011d432b42e14a13ea0ae2a015f5cdf57cf01dd955f93fa325f3",
+      "from": "DEFAULT_SOUL_MD @906e25f29"
+    },
+    {
+      "sha256": "5f1663e5e02317013009a2fec7c7d96084a854be3a4965873d690ded7ca838de",
+      "from": "DEFAULT_SOUL_MD @46ba95a63"
+    },
+    {
+      "sha256": "3a9367eb769ef87d061d6e9d871b5c95474340db7d9484def273800b03abafaf",
+      "from": "DEFAULT_SOUL_MD @88a5ce346"
+    },
+    {
+      "sha256": "2765a846e1bb371d78d3b93b403dfb0f8d1ba1a9895edb5f608367abfe81194d",
+      "from": "DEFAULT_SOUL_MD @0426bb745"
+    },
+    {
+      "sha256": "2e4aaabf23d34c878d98df45bbd4fb4ca89504866d7bba726f30ea0c2762860b",
+      "from": "install.sh @2608c7337"
+    },
+    {
+      "sha256": "04c91efad50b1cb856c79d9241d2e1ddcbd8f543dab21f1a35c351eddc9ee815",
+      "from": "install.ps1 @d35738677"
+    },
+    {
+      "sha256": "7ea5e02279dd4190ba8df831084b3a4c0394ac574656c6143ed8804f3b9a8822",
+      "from": "install.sh @60812ae04"
+    },
+    {
+      "sha256": "b044006807addd5cbd00f78b90c0f6c1e4096a1c50331ad5952e0cb4aad07ebb",
+      "from": "install.ps1 @1205b1169"
+    },
+    {
+      "sha256": "a9f8579183a78ab4c344f2f19e9583abb5382ee189ad1e86f3b374cceb45a08c",
+      "from": "install.ps1 @2608c7337"
+    },
+    {
+      "sha256": "0d6210a4569653b6d61a777fe6d892bcfaa87066750e4b895b6895af888371bc",
+      "from": "install.ps1 @2012abb8f"
+    },
+    {
+      "sha256": "95165aa9b6e728bdd493b5d9b45363e62fba7773d6f519185e8beb8dbb365f90",
+      "from": "loadout SOUL.md (AIS-795, current)"
+    }
+  ],
+  "SOUL.dev.md": [
+    {
+      "sha256": "3eae3c53f9d5589250a2fcf9ba5f37ab71c14269cacdf15bf0f228060f9f89f1",
+      "from": "loadout SOUL.dev.md @8a7671e1c"
+    },
+    {
+      "sha256": "c4f6795212413006c1567d6ad9c11da8111d394a992fae34a912e689c4e906ed",
+      "from": "loadout SOUL.dev.md @e1b5cbcb0"
+    },
+    {
+      "sha256": "3fae9637150695c26437f776e3934f67315c23afcbc3d60b5ba01b18f1412d6c",
+      "from": "loadout SOUL.dev.md (AIS-795, current)"
+    }
+  ]
+}

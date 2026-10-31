@@ -503,7 +503,9 @@ class TestBuildContextFilesPrompt:
         with patch("pathlib.Path.home", return_value=fake_home):
             result = build_context_files_prompt(cwd=str(tmp_path))
         assert "Project Context" in result
-        assert "Hermes Agent" in result
+        # AIS-795: the seed is the shipped AIMDS template, not the upstream text.
+        assert "Executive Principal & Chief of Staff" in result
+        assert "Nous Research" not in result
 
     def test_loads_agents_md(self, tmp_path):
         (tmp_path / "AGENTS.md").write_text("Use Ruff for linting.")

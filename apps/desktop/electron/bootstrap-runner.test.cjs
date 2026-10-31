@@ -7,6 +7,7 @@ const path = require('node:path')
 const {
   runBootstrap,
   enforceCanonicalSoul,
+  normalizedSoulHash,
   resolveCanonicalSoulSource,
   resolveInstallScript,
   installedAgentInstallScript,
@@ -177,17 +178,20 @@ test('resolveCanonicalSoulSource prefers sourceRepoRoot then activeRoot then ins
   }
 })
 
-test('enforceCanonicalSoul overwrites HERMES_HOME/SOUL.md from canonical source', () => {
+// AIS-795: seed a missing SOUL.md, update one that is still a shipped text,
+// never overwrite an edited one.
+function soulFixture() {
   const home = mkTmpHome()
   const active = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-active-'))
-  try {
-    const rel = path.join('installer', 'skills-hidden', 'aimds-loadout', 'identity')
-    const canonical = path.join(active, rel, 'SOUL.md')
-    fs.mkdirSync(path.dirname(canonical), { recursive: true })
-    fs.writeFileSync(canonical, '# SOUL canonical\n')
-
-    const target = path.join(home, 'SOUL.md')
-    fs.writeFileSync(target, '# old soul\n')
+  const rel = path.join('installer', 'skills-hidden', 'aimds-loadout', 'identity')
+  const canonical = path.join(active, rel, 'SOUL.md')
+  fs.mkdirSync(path.dirname(canonical), { recursive: true })
+  fs.writeFileSync(canonical, '# SOUL canonical\n')
+  fs.writeFileSync(
+    path.join(active, rel, 'shipped-hashes.json'),
+    JSON.stringify({ 'SOUL.md': [{ sha256: normalizedSoulHash('# old shipped soul'), from: 'test' }] })
+  )
+  const run = () => {
     const events = []
     const result = enforceCanonicalSoul({
       sourceRepoRoot: null,
@@ -195,15 +199,57 @@ test('enforceCanonicalSoul overwrites HERMES_HOME/SOUL.md from canonical source'
       hermesHome: home,
       emit: ev => events.push(ev)
     })
-
-    assert.equal(result.source, canonical)
-    assert.equal(result.target, target)
-    assert.equal(fs.readFileSync(target, 'utf8'), '# SOUL canonical\n')
-    assert.ok(events.some(ev => ev.type === 'log' && /enforced canonical SOUL\.md/.test(ev.line || '')))
-  } finally {
+    return { events, result }
+  }
+  const cleanup = () => {
     fs.rmSync(active, { recursive: true, force: true })
     fs.rmSync(home, { recursive: true, force: true })
   }
+  return { canonical, cleanup, run, target: path.join(home, 'SOUL.md') }
+}
+
+test('enforceCanonicalSoul seeds a missing SOUL.md from the canonical source', () => {
+  const fx = soulFixture()
+  try {
+    const { events, result } = fx.run()
+    assert.equal(result.source, fx.canonical)
+    assert.equal(result.target, fx.target)
+    assert.equal(result.action, 'seeded')
+    assert.equal(fs.readFileSync(fx.target, 'utf8'), '# SOUL canonical\n')
+    assert.ok(events.some(ev => ev.type === 'log' && /SOUL\.md seeded/.test(ev.line || '')))
+  } finally {
+    fx.cleanup()
+  }
+})
+
+test('enforceCanonicalSoul updates a SOUL.md that is still a shipped version (CRLF, BOM tolerated)', () => {
+  const fx = soulFixture()
+  try {
+    fs.writeFileSync(fx.target, '\uFEFF# old shipped soul\r\n')
+    assert.equal(fx.run().result.action, 'updated')
+    assert.equal(fs.readFileSync(fx.target, 'utf8'), '# SOUL canonical\n')
+    assert.equal(fx.run().result.action, 'current')
+  } finally {
+    fx.cleanup()
+  }
+})
+
+test('enforceCanonicalSoul never overwrites an edited SOUL.md', () => {
+  const fx = soulFixture()
+  try {
+    fs.writeFileSync(fx.target, '# my own soul\n')
+    assert.equal(fx.run().result.action, 'kept')
+    assert.equal(fs.readFileSync(fx.target, 'utf8'), '# my own soul\n')
+  } finally {
+    fx.cleanup()
+  }
+})
+
+test('normalizedSoulHash matches the Python rule for the shipped template', () => {
+  const identity = path.join(__dirname, '..', '..', '..', 'installer', 'skills-hidden', 'aimds-loadout', 'identity')
+  const shipped = JSON.parse(fs.readFileSync(path.join(identity, 'shipped-hashes.json'), 'utf8'))
+  const hashes = new Set(shipped['SOUL.md'].map(entry => entry.sha256))
+  assert.ok(hashes.has(normalizedSoulHash(fs.readFileSync(path.join(identity, 'SOUL.md'), 'utf8'))))
 })
 
 // --- AIS-313: release-tag stamps ---------------------------------------------

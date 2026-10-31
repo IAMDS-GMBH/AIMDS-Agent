@@ -841,15 +841,15 @@ def create_profile(
             if default_skills.is_dir():
                 shutil.copytree(default_skills, profile_dir / "skills", dirs_exist_ok=True)
 
-    # Seed a default SOUL.md so the user has a file to customize immediately.
-    # Skipped when the profile already has one (from --clone / --clone-all).
-    soul_path = profile_dir / "SOUL.md"
-    if not soul_path.exists():
-        try:
-            from hermes_cli.default_soul import DEFAULT_SOUL_MD
-            soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
-        except Exception:
-            pass  # best-effort — don't fail profile creation over this
+    # Seed the shipped SOUL template so the user has a file to customize
+    # immediately. Skipped when the profile already has one (--clone /
+    # --clone-all).
+    try:
+        from hermes_cli.soul_template import seed_soul
+
+        seed_soul(profile_dir)
+    except Exception:
+        pass  # best-effort — don't fail profile creation over this
 
     # Write the opt-out marker so seed_profile_skills() and `hermes update`'s
     # all-profile sync loop both skip this profile for bundled-skill seeding.

@@ -13,7 +13,9 @@
 Hermes-AIMDS-Loadout/
 ├── README.md                     ← dieses Dokument (Deploy-Anleitung)
 ├── identity/
-│   └── SOUL.md                   ← globale Identität/Persona  → ~/.hermes/SOUL.md
+│   ├── SOUL.md                   ← Identität (Co-Worker), einzige Quelle → Profil-SOUL.md
+│   ├── SOUL.dev.md               ← Identität im Terminal-CLI (Entwickler-Haltung)
+│   └── shipped-hashes.json       ← Hash jeder je ausgelieferten Fassung (AIS-795)
 ├── workspace/                    ← Default-Arbeitsordner ("Company-Workspace")
 │   └── PLAN.template.md          ← Vorlage für die Recitation-/Plan-Datei
 │   # Herzstück Routing/Topologie = AGENTS.md — die liegt NICHT hier, sondern
@@ -66,7 +68,13 @@ Hermes-AIMDS-Loadout/
 ## Deploy pro Arbeitsplatz (Soll-Ablauf)
 
 1. **Hermes installieren** (Desktop, Mac/Windows).
-2. **`identity/SOUL.md`** → nach `~/.hermes/SOUL.md` kopieren.
+2. **`identity/SOUL.md`** legt jedes neue Profil an (Installer, `hermes profile
+   create`). Eine Profil-SOUL.md, die noch einer ausgelieferten Fassung entspricht
+   (`shipped-hashes.json`), zieht bei Update/Gateway-Start auf die neue Vorlage
+   nach; eine bearbeitete bleibt unangetastet und zeigt in den Profilen „Neue
+   Vorlage verfügbar“ samt Unterschieden. Jede Änderung an `SOUL.md`/`SOUL.dev.md`
+   trägt ihren Hash in `shipped-hashes.json` ein (Test erzwingt das);
+   `docker/SOUL.md` ist eine identische Kopie.
 3. **`config/config.hermes.example.yaml`** → angepasst nach `~/.hermes/config.yaml`
    (LiteLLM-Endpoint, Aux-Modelle on-prem, `tools.tool_search: on`,
    `write_approval`, MCP-Server + Office-Allowlist).
