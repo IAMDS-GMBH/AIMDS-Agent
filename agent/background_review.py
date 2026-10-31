@@ -523,6 +523,7 @@ def _run_review_in_thread(
             review_agent._user_profile_enabled = agent._user_profile_enabled
             review_agent._memory_nudge_interval = 0
             review_agent._skill_nudge_interval = 0
+            review_agent._delegation_nudge = None
             # The fork must never review itself: its own run_conversation goes
             # through the same turn finalizer, and its memory_save calls trip
             # the tool-findings trigger — one review became two on every cron

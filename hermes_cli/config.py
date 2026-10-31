@@ -2358,6 +2358,10 @@ DEFAULT_CONFIG = {
         # Flip to true only if you trust delegated work to run dangerous cmds
         # without human review (cron pipelines, batch automation, etc.).
         "subagent_auto_approve": False,
+        # AIS-796: after more than this many calls of one tool in a turn (or
+        # one MCP result over the result shaper's list budget) the tool result
+        # gets a one-line delegation hint. Never blocks; 0 switches it off.
+        "nudge_threshold": 6,
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts
