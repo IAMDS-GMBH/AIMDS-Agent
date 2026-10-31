@@ -42,6 +42,7 @@ describe('sidebar nav entries (AIS-794)', () => {
 
 // Local time: Friday 2026-10-30, 10:30.
 const NOW = new Date(2026, 9, 30, 10, 30).getTime()
+
 const at = (year: number, month: number, day: number, hour = 12) =>
   new Date(year, month - 1, day, hour).getTime() / 1000
 

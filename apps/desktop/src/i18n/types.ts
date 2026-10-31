@@ -931,6 +931,14 @@ export interface Translations {
     colorFor: (name: string) => string
     setColor: (color: string) => string
     autoColor: string
+    /** AIS-794: colour and order on the profiles page (no tech terms). */
+    colorAutomatic: string
+    /** One name per swatch of PROFILE_SWATCHES, in order (red → pink). */
+    colorNames: readonly string[]
+    pickColor: (profile: string, color: string) => string
+    moveUp: (profile: string) => string
+    moveDown: (profile: string) => string
+    orderHint: string
     noProfiles: string
     selectPrompt: string
     refresh: string

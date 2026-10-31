@@ -52,6 +52,34 @@ export function setProfileOrder(names: string[]): void {
   }
 }
 
+// One step of a named profile in a display order: -1 earlier, 1 later. The
+// ends are no-ops, so the result is always a permutation of `ordered`.
+export function moveInProfileOrder(ordered: readonly string[], name: string, direction: -1 | 1): string[] {
+  const from = ordered.indexOf(name)
+  const to = from + direction
+
+  if (from < 0 || to < 0 || to >= ordered.length) {
+    return [...ordered]
+  }
+
+  const next = [...ordered]
+  next.splice(to, 0, ...next.splice(from, 1))
+
+  return next
+}
+
+// AIS-794: the profiles page moves a named profile one step. `names` are the
+// named (non-default) profiles that exist now; the result is stored as the
+// full order, so it keeps driving the slot hotkeys and the account menu.
+export function moveProfile(names: readonly string[], name: string, direction: -1 | 1): void {
+  const ordered = sortByProfileOrder(
+    names.map(entry => ({ name: entry })),
+    $profileOrder.get()
+  ).map(entry => entry.name)
+
+  setProfileOrder(moveInProfileOrder(ordered, name, direction))
+}
+
 // Sort items by the stored order; unordered names alphabetise at the tail.
 export function sortByProfileOrder<T extends { name: string }>(items: T[], order: string[]): T[] {
   const rank = new Map(order.map((name, index) => [name, index]))
