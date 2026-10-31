@@ -24,10 +24,12 @@ import { midTurnPhaseLine } from '@/lib/turn-phase-copy'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { $activeSessionId } from '@/store/session'
+import { $subagentsBySession, type SubagentProgress } from '@/store/subagents'
 import { $toolInlineDiffs } from '@/store/tool-diffs'
 import { $toolDisclosureOpen, $toolViewMode, setToolDisclosureOpen } from '@/store/tool-view'
 import { $turnPhaseBySession } from '@/store/turn-phase'
 
+import { subagentRuns, type SubagentRunView, summaryLine } from './subagent-runs'
 import { useAwaitingApproval } from './tool-approval'
 import {
   activitySummary,
@@ -610,16 +612,169 @@ function ActivityBlock({ atEnd, parts }: { atEnd: boolean; parts: ToolPart[] }) 
   )
 }
 
+const NO_SUBAGENTS: SubagentProgress[] = []
+
+function stepTitle(toolName: string, pending: boolean): string {
+  return buildToolView({ args: {}, result: pending ? undefined : {}, toolName, type: 'tool-call' }, '').title
+}
+
+/**
+ * One block per child run of a delegate_task call (AIS-796). The headline
+ * names the kind of work and the goal; while the child works, the line below
+ * says what it is doing; afterwards that line is the child's summary. The
+ * whole summary and the child's steps open on demand — the main chat no
+ * longer lists the child's tool calls.
+ */
+function SubagentRunBlock({ icon, part, run }: { icon?: string; part: ToolPart; run: SubagentRunView }) {
+  const { t } = useI18n()
+  const copy = t.assistant.tool
+  const sub = copy.subagent
+  const messageId = useAuiState(s => s.message.id)
+  const turnRunning = useAuiState(selectMessageRunning)
+  const toolViewMode = useStore($toolViewMode)
+  const unfinished = run.status === 'running' || run.status === 'queued'
+  const live = turnRunning && unfinished
+  // A stopped turn leaves a run without result: it did not finish.
+  const failed = run.status === 'failed' || (unfinished && !live)
+  const disclosureId = `subagent:${messageId}:${toolPartDisclosureId(part)}:${run.index}`
+  const open = useDisclosureOpen(disclosureId)
+  const enterRef = useEnterAnimation(turnRunning, disclosureId)
+  const elapsed = useElapsedSeconds(live, `subagent-run:${disclosureId}`)
+  const kind = sub.kinds[run.kind] ?? sub.generic
+  const goal = summaryLine(run.goal, 140)
+  const headline = goal ? `${kind} · ${goal}` : kind
+
+  const line = live
+    ? run.status === 'queued'
+      ? sub.queued
+      : run.currentTool
+        ? stepTitle(run.currentTool, true)
+        : sub.working
+    : failed
+      ? sub.failed
+      : summaryLine(run.summary)
+
+  const meta = live
+    ? ''
+    : [run.stepTotal ? copy.activity.stepCount(run.stepTotal) : '', formatActivityDuration(run.durationSeconds ?? 0)]
+        .filter(Boolean)
+        .join(' · ')
+
+  const showError = failed && Boolean(run.error) && toolViewMode === 'technical'
+  const hasDetails = Boolean(run.summary || run.steps.length || showError)
+  const status: ToolStatus | undefined = live ? 'running' : failed ? 'warning' : undefined
+
+  return (
+    <div
+      className={cn(
+        'min-w-0 max-w-full overflow-hidden text-[length:var(--conversation-tool-font-size)] text-(--ui-text-tertiary)',
+        open && 'rounded-[0.625rem] border border-(--ui-stroke-tertiary)'
+      )}
+      data-slot="tool-block"
+      data-subagent-run={run.kind || 'generic'}
+      ref={enterRef}
+    >
+      <div
+        className={cn(open && 'border-b border-(--ui-stroke-tertiary) px-2 py-1.5')}
+        title={hasDetails ? (open ? sub.hideDetails : sub.showDetails) : undefined}
+      >
+        <DisclosureRow
+          onToggle={hasDetails ? () => setToolDisclosureOpen(disclosureId, !open) : undefined}
+          open={open}
+          trailing={
+            live ? (
+              <ActivityTimerText className={TOOL_HEADER_DURATION_CLASS} seconds={elapsed} />
+            ) : meta ? (
+              <span className={TOOL_HEADER_DURATION_CLASS}>{meta}</span>
+            ) : undefined
+          }
+        >
+          <span aria-live={live ? 'polite' : undefined} className="flex min-w-0 items-center gap-1.5">
+            <ToolGlyph copy={copy} icon={icon} status={status} />
+            <FadeText className={cn(TOOL_HEADER_TITLE_CLASS, live && 'shimmer text-(--ui-text-tertiary)')}>
+              {headline}
+            </FadeText>
+          </span>
+          {line && (
+            <span
+              className={cn(TOOL_HEADER_SUBTITLE_CLASS, failed && 'text-amber-700 dark:text-amber-300')}
+              data-subagent-line=""
+            >
+              {line}
+            </span>
+          )}
+        </DisclosureRow>
+      </div>
+      {open && (
+        <div className="grid w-full min-w-0 max-w-full gap-1.5 overflow-hidden p-1.5">
+          {run.summary && (
+            <div className="max-w-full text-xs leading-relaxed text-(--ui-text-secondary)">
+              <p className={TOOL_SECTION_LABEL_CLASS}>{sub.resultLabel}</p>
+              <CompactMarkdown
+                className={cn(TOOL_SECTION_SURFACE_CLASS, 'max-h-64 wrap-anywhere')}
+                text={run.summary}
+              />
+            </div>
+          )}
+          {showError && (
+            <pre className={cn(TOOL_SECTION_PRE_CLASS, 'whitespace-pre-wrap wrap-anywhere text-destructive/90')}>
+              {run.error}
+            </pre>
+          )}
+          {run.steps.length > 0 && (
+            <div className="max-w-full text-xs leading-relaxed text-(--ui-text-secondary)">
+              <p className={TOOL_SECTION_LABEL_CLASS}>{sub.stepsLabel}</p>
+              <ul className="grid gap-0.5 px-2">
+                {run.steps.map((step, index) => (
+                  <li
+                    className={cn(step.failed > 0 && 'text-amber-700 dark:text-amber-300')}
+                    key={`${index}:${step.toolName}`}
+                  >
+                    {stepTitle(step.toolName, false)}
+                    {step.count > 1 ? ` ×${step.count}` : ''}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SubagentRunBlocks({ part }: { part: ToolPart }) {
+  const sessionId = useStore($activeSessionId)
+  const bySession = useStore($subagentsBySession)
+  const live = (sessionId && bySession[sessionId]) || NO_SUBAGENTS
+  const runs = useMemo(() => subagentRuns(part, live), [part, live])
+  const icon = useMemo(() => buildToolView({ ...part, result: part.result ?? {} }, '').icon, [part])
+
+  return (
+    <div className="grid min-w-0 max-w-full gap-(--tool-row-gap) overflow-hidden" data-subagent-runs="">
+      {runs.map(run => (
+        <SubagentRunBlock icon={icon} key={`${run.index}:${run.goal}`} part={part} run={run} />
+      ))}
+    </div>
+  )
+}
+
 /**
  * Per-tool fallback. Each run of two or more consecutive groupable steps
  * shows as one ActivityBlock, rendered in place of the run's first step; the
  * run's other steps render nothing here (AIS-786). A step on its own and
- * ungrouped tools keep their row.
+ * ungrouped tools keep their row; a delegate_task call shows one block per
+ * child run (AIS-796).
  */
 export const ToolFallback = ({ toolCallId, toolName, args, isError, result }: ToolCallMessagePartProps) => {
   const part: ToolPart = { args, isError, result, toolCallId, toolName, type: 'tool-call' }
   const content = useAuiState(s => s.message.content)
   const runs = useMemo(() => toolStepRuns(content), [content])
+
+  if (toolName === 'delegate_task') {
+    return <SubagentRunBlocks part={part} />
+  }
+
   const run = toolCallId ? runs.find(entry => entry.parts.some(step => step.toolCallId === toolCallId)) : undefined
 
   if (!run || run.parts.length < 2) {

@@ -98,5 +98,23 @@ def test_memory_seeds_and_cron_prompts_are_english():
     assert not _german_hits(seeds), _german_hits(seeds)
 
 
+def test_agent_definitions_delegation_line_and_hints_are_english():
+    """AIS-796: subagent identities, the generated delegation line and the
+    delegation hints reach the model every time they apply."""
+    from agent.agent_definitions import BUNDLED_AGENTS_DIR, delegation_line, load_definitions
+    from agent.delegation_nudge import DelegationNudge
+
+    for d in load_definitions([BUNDLED_AGENTS_DIR]).values():
+        text = " ".join((d.description, d.when, d.body))
+        assert not _german_hits(text), (d.name, _german_hits(text))
+    for platform in ("tui", "cli"):
+        line = delegation_line(platform, dirs=[BUNDLED_AGENTS_DIR])
+        assert line and not _german_hits(line), _german_hits(line)
+    nudge = DelegationNudge(platform="tui")
+    hints = [nudge.observe("mcp_x_create_item", "{}") for _ in range(7)]
+    hints.append(nudge.observe("mcp_x_list_items", "x" * 50_000))
+    assert all(not _german_hits(h) for h in hints if h)
+
+
 def test_loadout_pack_ships_no_skill_duplicates():
     assert not (_REPO_ROOT / "installer" / "skills-hidden" / "aimds-loadout" / "skills").exists()

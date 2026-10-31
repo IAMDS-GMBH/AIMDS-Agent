@@ -148,6 +148,9 @@ def build_turn_context(
     agent._unicode_sanitization_passes = 0
     agent._tool_guardrails.reset_for_turn()
     agent._tool_guardrail_halt_decision = None
+    _nudge = getattr(agent, "_delegation_nudge", None)
+    if _nudge is not None:
+        _nudge.reset_for_turn()
     agent._vision_supported = True
 
     # Pre-turn connection health check: clean up dead TCP connections.

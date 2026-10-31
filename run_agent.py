@@ -5334,6 +5334,13 @@ class AIAgent:
             function_result = append_toolguard_guidance(function_result, decision)
         if decision.should_halt:
             self._set_tool_guardrail_halt(decision)
+        # AIS-796: one hint line when the turn repeats a tool or pulls a large
+        # MCP result without delegating (never blocks, no LLM call).
+        nudge = getattr(self, "_delegation_nudge", None)
+        if nudge is not None and isinstance(function_result, str) and "delegate_task" in (self.valid_tool_names or ()):
+            hint = nudge.observe(tool_name, function_result)
+            if hint:
+                function_result = f"{function_result}\n\n{hint}"
         return function_result
 
     def _guardrail_block_result(self, decision: ToolGuardrailDecision) -> str:

@@ -1,6 +1,7 @@
 ---
 name: sweep
 description: Walk a list of items (tickets, mails, files, entries), check each against the given criteria and propose an action per item.
+when: many similar reads
 surfaces: [tui, cli]
 toolsets: [mcp, sql, file]
 model: inherit

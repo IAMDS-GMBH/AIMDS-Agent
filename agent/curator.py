@@ -1830,6 +1830,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         # Disable recursive nudges — the curator must never spawn its own review.
         review_agent._memory_nudge_interval = 0
         review_agent._skill_nudge_interval = 0
+        review_agent._delegation_nudge = None
 
         # Redirect the forked agent's stdout/stderr to /dev/null while it
         # runs so its tool-call chatter doesn't pollute the foreground

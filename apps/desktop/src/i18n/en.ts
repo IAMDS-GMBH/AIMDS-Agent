@@ -2097,6 +2097,28 @@ export const en: Translations = {
         reconnecting: place => `Reconnecting to ${place} …`,
         showSteps: 'Show steps',
         hideSteps: 'Hide steps'
+      },
+      subagent: {
+        kinds: {
+          apply: 'Carrying out changes',
+          collect: 'Collecting data',
+          digest: 'Reading through material',
+          draft: 'Drafting a text',
+          explore: 'Searching the code',
+          investigate: 'Looking for the cause',
+          research: 'Researching',
+          review: 'Reviewing changes',
+          sweep: 'Going through a list',
+          verify: 'Running checks'
+        },
+        generic: 'Subtask',
+        working: 'A helper is working on it',
+        queued: 'Waiting for a free helper',
+        failed: 'This subtask did not finish.',
+        resultLabel: 'Result',
+        stepsLabel: 'Steps',
+        showDetails: 'Show details',
+        hideDetails: 'Hide details'
       }
     }
   },

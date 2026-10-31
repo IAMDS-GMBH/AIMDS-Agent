@@ -1,6 +1,7 @@
 ---
 name: review
 description: Review a change (diff, branch, files) for correctness and report concrete defects with evidence.
+when: checking a change
 surfaces: [cli]
 toolsets: [file, terminal]
 model: inherit

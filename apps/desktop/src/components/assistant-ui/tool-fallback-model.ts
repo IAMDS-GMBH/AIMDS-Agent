@@ -585,8 +585,17 @@ export function toolPartDisclosureId(part: ToolPart): string {
 
 // Tools that stay their own row instead of joining the per-message activity
 // block (AIS-744): they carry UI the user acts on or reviews (questions,
-// todos, generated images, file diffs).
-const UNGROUPED_TOOLS = new Set(['clarify', 'edit_file', 'image_generate', 'patch', 'todo', 'write_file'])
+// todos, generated images, file diffs) — and delegate_task, whose child runs
+// each get their own block with the child's summary (AIS-796).
+const UNGROUPED_TOOLS = new Set([
+  'clarify',
+  'delegate_task',
+  'edit_file',
+  'image_generate',
+  'patch',
+  'todo',
+  'write_file'
+])
 
 export function isGroupableToolName(name: string): boolean {
   return !UNGROUPED_TOOLS.has(name)

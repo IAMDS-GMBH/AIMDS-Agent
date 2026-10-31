@@ -1344,6 +1344,19 @@ def init_agent(
     except Exception:
         pass
 
+    # AIS-796: delegation hint after more than N calls of one tool in a turn
+    # (or one MCP result over the shaper's list budget); 0 switches it off.
+    from agent.delegation_nudge import DEFAULT_NUDGE_THRESHOLD, DelegationNudge
+
+    _nudge_threshold = DEFAULT_NUDGE_THRESHOLD
+    try:
+        _delegation_cfg = _agent_cfg.get("delegation", {})
+        if isinstance(_delegation_cfg, dict):
+            _nudge_threshold = int(_delegation_cfg.get("nudge_threshold", DEFAULT_NUDGE_THRESHOLD))
+    except Exception:
+        pass
+    agent._delegation_nudge = DelegationNudge(_nudge_threshold, platform=getattr(agent, "platform", "") or "")
+
     # Tool-use enforcement config: "auto" (default — matches hardcoded
     # model list), true (always), false (never), or list of substrings.
     _agent_section = _agent_cfg.get("agent", {})

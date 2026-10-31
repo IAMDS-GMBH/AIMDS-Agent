@@ -228,6 +228,16 @@ def _suite_key_hash_prefixes() -> dict[str, str]:
         return {}
 
 
+def _agent_usage_snapshot() -> dict[str, Any]:
+    """The agent usage counters the chats wrote last (AIS-796), or ``{}``."""
+    try:
+        from agent.usage_telemetry import read_snapshot
+
+        return read_snapshot()
+    except Exception:
+        return {}
+
+
 def send_client_telemetry(args: Any = None) -> dict[str, Any]:
     """Send client version telemetry to the support server.
 
@@ -275,6 +285,11 @@ def send_client_telemetry(args: Any = None) -> dict[str, Any]:
             # hex chars of LiteLLM's key hash — never the key itself.
             "suite_key_hash_prefix": _suite_key_hash_prefixes(),
         }
+        # AIS-796: tool calls of the chats vs. their subagent runs and
+        # compressions per hour per chat — counters only, no content.
+        agent_usage = _agent_usage_snapshot()
+        if agent_usage:
+            payload["agent_usage"] = agent_usage
 
         data_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers = {

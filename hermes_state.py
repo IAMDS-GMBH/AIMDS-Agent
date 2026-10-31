@@ -554,6 +554,28 @@ CREATE TABLE IF NOT EXISTS api_calls (
 CREATE INDEX IF NOT EXISTS idx_api_calls_session ON api_calls(session_id, ts);
 CREATE INDEX IF NOT EXISTS idx_api_calls_ts ON api_calls(ts);
 
+-- AIS-796: one row per subagent run (delegate_task child) — which agent
+-- definition, how long, how many model calls and tool calls, how big the
+-- result, how it ended. The goal is kept as a hash only, never as text.
+-- Basis for the learning loop that tunes the definitions.
+CREATE TABLE IF NOT EXISTS agent_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    child_session_id TEXT,
+    ts REAL NOT NULL,
+    definition TEXT NOT NULL DEFAULT '',
+    definition_digest TEXT,
+    goal_hash TEXT,
+    duration_ms INTEGER DEFAULT 0,
+    iterations INTEGER DEFAULT 0,
+    tool_calls INTEGER DEFAULT 0,
+    tool_errors INTEGER DEFAULT 0,
+    result_chars INTEGER DEFAULT 0,
+    status TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_session ON agent_runs(session_id, ts);
+CREATE INDEX IF NOT EXISTS idx_agent_runs_ts ON agent_runs(ts);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
@@ -1608,6 +1630,136 @@ class SessionDB:
         with self._lock:
             rows = self._conn.execute(f"SELECT * FROM api_calls{where} ORDER BY ts ASC, id ASC", params).fetchall()
         return [dict(r) for r in rows]
+
+    # ── agent_runs (AIS-796) ──────────────────────────────────────────────
+
+    AGENT_RUNS_RETENTION_DAYS = 180
+
+    def record_agent_run(
+        self,
+        session_id: str,
+        *,
+        child_session_id: str = "",
+        definition: str = "",
+        definition_digest: str = "",
+        goal_hash: str = "",
+        duration_ms: int = 0,
+        iterations: int = 0,
+        tool_calls: int = 0,
+        tool_errors: int = 0,
+        result_chars: int = 0,
+        status: str = "",
+    ) -> None:
+        """Append one agent_runs row; prunes rows older than the retention window.
+
+        Callers pass the goal as a hash (``goal_hash``), never as text.
+        """
+        if not session_id:
+            return
+        now = time.time()
+
+        def _insert(conn):
+            conn.execute(
+                """INSERT INTO agent_runs (session_id, child_session_id, ts, definition,
+                   definition_digest, goal_hash, duration_ms, iterations, tool_calls, tool_errors,
+                   result_chars, status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    session_id, str(child_session_id or ""), now, str(definition or ""),
+                    str(definition_digest or ""), str(goal_hash or ""), int(duration_ms or 0),
+                    int(iterations or 0), int(tool_calls or 0), int(tool_errors or 0),
+                    int(result_chars or 0), str(status or ""),
+                ),
+            )
+            conn.execute("DELETE FROM agent_runs WHERE ts < ?", (now - self.AGENT_RUNS_RETENTION_DAYS * 86400,))
+
+        self._execute_write(_insert)
+
+    def get_agent_runs(self, session_id: Optional[str] = None, days: Optional[int] = None) -> List[Dict[str, Any]]:
+        """agent_runs rows (oldest first), optionally for one parent session / a window."""
+        clauses, params = [], []
+        if session_id:
+            clauses.append("session_id = ?"); params.append(session_id)
+        if days:
+            clauses.append("ts >= ?"); params.append(time.time() - days * 86400)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        with self._lock:
+            rows = self._conn.execute(f"SELECT * FROM agent_runs{where} ORDER BY ts ASC, id ASC", params).fetchall()
+        return [dict(r) for r in rows]
+
+    def agent_usage_counters(self, days: int = 7) -> Dict[str, Any]:
+        """Counters for the client telemetry (AIS-796) — numbers only, no content.
+
+        * ``tool_calls_main`` / ``tool_calls_child``: tool calls of the chats
+          themselves vs. of their subagent runs, sessions started in the window;
+        * ``agent_runs`` and ``agent_runs_by_definition``;
+        * compressions per hour per chat: a chat is a chain of sessions a
+          context compression continued (``end_reason = 'compression'``);
+          ``compressions_per_hour`` gives the median and the maximum over the
+          chats that compressed at least once.
+        """
+        import statistics
+
+        since = time.time() - max(1, int(days)) * 86400
+        with self._lock:
+            runs = self._conn.execute(
+                "SELECT definition, child_session_id, tool_calls FROM agent_runs WHERE ts >= ?", (since,)
+            ).fetchall()
+            sessions = self._conn.execute(
+                """SELECT s.id, s.parent_session_id, s.started_at, s.ended_at, s.end_reason,
+                          COALESCE(s.tool_call_count, 0) AS tool_calls,
+                          (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = s.id) AS last_ts
+                   FROM sessions s WHERE s.started_at >= ?""",
+                (since,),
+            ).fetchall()
+        child_ids = {r["child_session_id"] for r in runs if r["child_session_id"]}
+        by_definition: Dict[str, int] = {}
+        for r in runs:
+            name = r["definition"] or "generic"
+            by_definition[name] = by_definition.get(name, 0) + 1
+        main = {r["id"]: dict(r) for r in sessions if r["id"] not in child_ids}
+
+        # Walk compression chains: a session continues its parent when the
+        # parent ended with 'compression'.
+        def _root(sid: str) -> str:
+            seen = set()
+            while sid in main and sid not in seen:
+                seen.add(sid)
+                parent = main[sid].get("parent_session_id")
+                if parent in main and main[parent].get("end_reason") == "compression":
+                    sid = parent
+                else:
+                    break
+            return sid
+
+        chains: Dict[str, Dict[str, float]] = {}
+        for sid, row in main.items():
+            chain = chains.setdefault(_root(sid), {"start": row["started_at"], "end": row["started_at"], "compressions": 0})
+            chain["start"] = min(chain["start"], row["started_at"])
+            chain["end"] = max(chain["end"], row["ended_at"] or 0, row["last_ts"] or 0, row["started_at"])
+            if row.get("end_reason") == "compression":
+                chain["compressions"] += 1
+        # Below six minutes a chat counts as six minutes: one early summary is
+        # no rate of ten per hour worth chasing.
+        rates = sorted(
+            c["compressions"] / max((c["end"] - c["start"]) / 3600.0, 0.1)
+            for c in chains.values()
+            if c["compressions"] > 0
+        )
+        median = statistics.median(rates) if rates else 0.0
+        return {
+            "window_days": int(days),
+            "chats": len(chains),
+            "tool_calls_main": int(sum(r["tool_calls"] for r in main.values())),
+            "tool_calls_child": int(sum(r["tool_calls"] or 0 for r in runs)),
+            "agent_runs": len(runs),
+            "agent_runs_by_definition": dict(sorted(by_definition.items())),
+            "compressions": int(sum(c["compressions"] for c in chains.values())),
+            "compressions_per_hour": {
+                "chats": len(rates),
+                "median": round(median, 1),
+                "max": round(rates[-1], 1) if rates else 0.0,
+            },
+        }
 
     def update_token_counts(
         self,

@@ -1,6 +1,7 @@
 ---
 name: explore
 description: Locate code, configuration or files relevant to a question and return a map of file:line references with one-line explanations.
+when: finding code
 surfaces: [cli]
 toolsets: [file, terminal]
 model: inherit

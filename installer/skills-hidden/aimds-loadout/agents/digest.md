@@ -1,6 +1,7 @@
 ---
 name: digest
 description: Read many or large inputs (files, exports, long tool results) in parts and return a structured extract in the shape the caller asks for.
+when: large results
 surfaces: [tui, cli]
 toolsets: [file]
 model: inherit

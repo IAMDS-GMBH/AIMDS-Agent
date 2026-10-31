@@ -928,13 +928,27 @@ def _build_child_progress_callback(
 def _make_child_lean(child, definition=None) -> None:
     """AIS-456: a child runs on a lean system prompt instead of the parent's
     full one, skips the session-start memory round, and — for a read-only
-    definition — never sees Hermes' own write tools."""
+    definition — never sees Hermes' own write tools.
+
+    AIS-796: a definition that writes through MCP only (``writes: true``,
+    no toolset besides ``mcp``) loses Hermes' write tools as well, and every
+    definition's tool rule (``agent_definitions.tool_call_denial``) is
+    installed on the child's guardrail controller, which both execution
+    paths consult before a call runs."""
     child._lean_system_prompt = True
     child._lean_identity = getattr(definition, "body", "") or ""
     child._enforce_initial_memory_context = False
     child._session_start_bootstrap_contract_enabled = False
     child._session_start_compact_workspace_hydration = False
-    if definition is not None and not definition.writes:
+    if definition is not None:
+        import functools
+
+        from agent.agent_definitions import tool_call_denial
+
+        guardrails = getattr(child, "_tool_guardrails", None)
+        if guardrails is not None:
+            guardrails.call_policy = functools.partial(tool_call_denial, definition)
+    if definition is not None and not definition.keeps_hermes_write_tools:
         from agent.agent_definitions import WRITE_TOOL_NAMES
 
         tools = getattr(child, "tools", None)
@@ -2077,6 +2091,37 @@ def _spill_result(text: str, subagent_id: str) -> Optional[str]:
         return None
 
 
+def _record_agent_run(entry: Dict[str, Any], child, definition, goal: str, parent_agent) -> None:
+    """One ``agent_runs`` row per child (AIS-796): numbers and a goal hash,
+    never the goal or the result text. Never raises."""
+    db = getattr(parent_agent, "_session_db", None)
+    session_id = getattr(parent_agent, "session_id", None)
+    if db is None or not isinstance(session_id, str) or not session_id:
+        return
+    try:
+        import hashlib
+
+        raw_trace = entry.get("tool_trace")
+        trace: List[Any] = raw_trace if isinstance(raw_trace, list) else []
+        summary = entry.get("summary")
+        child_session_id = getattr(child, "session_id", "") if child is not None else ""
+        db.record_agent_run(
+            session_id,
+            child_session_id=child_session_id if isinstance(child_session_id, str) else "",
+            definition=str(getattr(definition, "name", "") or ""),
+            definition_digest=str(getattr(definition, "digest", "") or ""),
+            goal_hash=hashlib.sha256(str(goal or "").encode("utf-8")).hexdigest()[:16] if goal else "",
+            duration_ms=int(float(entry.get("duration_seconds") or 0) * 1000),
+            iterations=int(entry.get("api_calls") or 0),
+            tool_calls=len(trace),
+            tool_errors=sum(1 for t in trace if isinstance(t, dict) and t.get("status") == "error"),
+            result_chars=len(summary) if isinstance(summary, str) else 0,
+            status=str(entry.get("status") or ""),
+        )
+    except Exception:
+        logger.debug("agent_runs record failed", exc_info=True)
+
+
 def _finish_child_result(entry: Dict[str, Any], child, goal: str, parent_agent) -> None:
     """Cap the summary to the definition's contract (spilling the full text
     to a file), log one outcome line per task and hand badly running tasks
@@ -2085,6 +2130,7 @@ def _finish_child_result(entry: Dict[str, Any], child, goal: str, parent_agent) 
     limit = getattr(definition, "max_result_chars", None) or _DEFAULT_RESULT_CHARS
     subagent_id = str(getattr(child, "_subagent_id", "") or "")
     summary = entry.get("summary")
+    _record_agent_run(entry, child, definition, goal, parent_agent)
     spilled = False
     if isinstance(summary, str) and len(summary) > limit:
         path = _spill_result(summary, subagent_id)
@@ -2861,13 +2907,11 @@ def _build_top_level_description() -> str:
         f"(delegation.max_concurrent_children), the rest wait in a queue. "
         f"Results are returned together. {nesting_clause}\n\n"
         "WHEN TO USE delegate_task:\n"
-        "- Work that would flood your context: many or large files, long "
-        "exports, sweeps over many items, month-by-month data fetches. Split "
-        "it into parts, delegate the parts, keep only the conclusions.\n"
+        "- Work that would flood your context (many similar reads or writes, "
+        "large results, several sources): pick the matching 'agent', delegate "
+        "the parts, keep only the conclusions.\n"
         "- Reasoning-heavy subtasks (debugging, code review, research synthesis)\n"
-        "- Parallel independent workstreams (research A and B simultaneously)\n"
-        "Pick an 'agent' definition that matches the kind of work (see the "
-        "'agent' parameter); you keep the conclusion, the bulk stays with the agent.\n\n"
+        "- Parallel independent workstreams (research A and B simultaneously)\n\n"
         "WHEN NOT TO USE (use these instead):\n"
         "- Mechanical multi-step work with no reasoning needed -> use execute_code\n"
         "- Single tool call -> just call the tool directly\n"
@@ -2950,7 +2994,9 @@ def _build_agent_param_description() -> str:
     ]
     for d in definitions:
         where = "" if set(d.surfaces) == {"tui", "cli"} else f" [{'/'.join(d.surfaces)} only]"
-        lines.append(f"- {d.name}{where}: {d.description}")
+        # AIS-796: the kind's "when" principle, the same text as the prompt line.
+        when = f" Use for {d.when}." if d.when else ""
+        lines.append(f"- {d.name}{where}: {d.description}{when}")
     return "\n".join(lines)
 
 

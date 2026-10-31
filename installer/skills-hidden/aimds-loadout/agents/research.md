@@ -1,6 +1,7 @@
 ---
 name: research
 description: Search the available sources (mail, chats, documents, tickets, web) for a topic and return a synthesis with sources.
+when: several sources
 surfaces: [tui, cli]
 toolsets: [mcp, web, file]
 model: inherit
