@@ -2101,7 +2101,8 @@ def _record_agent_run(entry: Dict[str, Any], child, definition, goal: str, paren
     try:
         import hashlib
 
-        trace = entry.get("tool_trace") if isinstance(entry.get("tool_trace"), list) else []
+        raw_trace = entry.get("tool_trace")
+        trace: List[Any] = raw_trace if isinstance(raw_trace, list) else []
         summary = entry.get("summary")
         child_session_id = getattr(child, "session_id", "") if child is not None else ""
         db.record_agent_run(
